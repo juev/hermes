@@ -69,6 +69,12 @@ class TurnWatcher(
         if (title.isNotBlank()) titles[storedId] = title
     }
 
+    private val notified = ConcurrentHashMap<String, Long>()
+
+    /** True when the watcher announced an answer of [storedId] within the last minutes; push then stays quiet. */
+    fun notifiedRecently(storedId: String): Boolean =
+        notified[storedId]?.let { System.currentTimeMillis() - it < 5 * 60_000 } ?: false
+
     /** The live id under which the app has [storedId] open, if it has. */
     fun liveOf(storedId: String): String? = chats.entries.firstOrNull { it.value == storedId }?.key
 
@@ -94,7 +100,10 @@ class TurnWatcher(
                 val failed = event.payload.string("status") == "error"
                 if (!inForeground || visibleChat != stored) {
                     val shown = if (failed) event.payload.string("error") ?: context.getString(R.string.notify_model_error) else stripMedia(text).take(400)
-                    if (shown.isNotBlank()) notifications.answer(stored, titles[stored] ?: "Hermes", shown, failed)
+                    if (shown.isNotBlank()) {
+                        notifications.answer(stored, titles[stored] ?: "Hermes", shown, failed)
+                        notified[stored] = System.currentTimeMillis()
+                    }
                 }
                 settle()
             }

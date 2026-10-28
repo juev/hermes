@@ -88,7 +88,8 @@ class ActivityCheck(private val context: Context) {
 class ActivityWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val container = (applicationContext as HermesApplication).container
-        if (container.turns.inForeground) return Result.success()
+        // With push working the server announces new answers itself.
+        if (container.turns.inForeground || container.push.active) return Result.success()
         val session = container.connection.value?.session ?: return Result.success()
         return try {
             container.activity.run(session, container.notifications, null)

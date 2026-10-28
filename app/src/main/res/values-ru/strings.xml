@@ -385,4 +385,18 @@
         <item quantity="many">%1$s: работает, %2$d инструментов</item>
         <item quantity="other">%1$s: работает, %2$d инструмента</item>
     </plurals>
+    <string name="settings_push">Push</string>
+    <string name="settings_push_switch">Push с сервера</string>
+    <string name="settings_push_switch_hint">Ответы, результаты cron и сообщения из других каналов приходят сразу, даже при закрытом приложении</string>
+    <string name="push_state_off">Push выключен.</string>
+    <string name="push_state_no_distributor">Чтобы получать push, установите дистрибьютор UnifiedPush, например ntfy.</string>
+    <string name="push_state_choose">Выберите приложение, через которое придёт push:</string>
+    <string name="push_state_connecting">Подключение…</string>
+    <string name="push_state_on">Включён: сервер шлёт push через %1$s.</string>
+    <string name="push_state_unsupported">На сервере нет плагина hermes-push; приложение проверяет новости само.</string>
+    <string name="push_state_failed">Push не подключился; приложение проверяет новости само и попробует снова при следующем запуске.</string>
+    <string name="push_test">Отправить пробный push</string>
+    <string name="push_test_sent">Отправлено на телефонов: %1$d</string>
+    <string name="push_test_title">Push Hermes</string>
+    <string name="push_test_text">Push с сервера работает.</string>
 </resources>

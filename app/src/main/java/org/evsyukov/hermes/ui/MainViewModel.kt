@@ -141,6 +141,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 _accessError.value = null
                 connection.socket.start()
                 refreshChats()
+                container.scope.launch { runCatching { container.push.reconcile() } }
             } catch (e: SignInRequiredException) {
                 _access.value = Access.SIGN_IN
             } catch (e: Exception) {

@@ -29,6 +29,9 @@ import org.evsyukov.hermes.data.server.ServerStore
 import org.evsyukov.hermes.data.server.baseClient
 import org.evsyukov.hermes.data.server.clientFor
 import org.evsyukov.hermes.data.settings.AppSettings
+import org.evsyukov.hermes.push.PushManager
+import org.evsyukov.hermes.push.PushMessages
+import org.evsyukov.hermes.push.UnifiedPushDistributor
 import org.evsyukov.hermes.tailnet.Tailnet
 import java.io.File
 
@@ -67,6 +70,8 @@ class AppContainer(context: Context) {
     val notifications = Notifications(context)
     val turns = TurnWatcher(context, scope, connection, notifications) { settings.current.value.keepConnected }
     val activity = ActivityCheck(context)
+    val push = PushManager(context, UnifiedPushDistributor(context), { connection.value?.session }, { settings.current.value.push })
+    val pushMessages = PushMessages(this)
 
     init {
         scope.launch {
@@ -90,6 +95,11 @@ class AppContainer(context: Context) {
                         runCatching { activity.run(c.session, notifications, turns.visibleChat) }
                     }
                 }
+        }
+        // A new server or the push switch registers again; a sign-in does it through MainViewModel.
+        scope.launch {
+            combine(connection.map { it?.session?.profile?.id }.distinctUntilChanged(), settings.current.map { it.push }.distinctUntilChanged()) { _, _ -> }
+                .collect { runCatching { push.reconcile() } }
         }
         // The node runs only while the active server goes through it.
         scope.launch {

@@ -30,6 +30,8 @@ data class Settings(
     val checkMinutes: Int = 15,
     /** Keeps the chat socket open in a foreground service, so events arrive at once. */
     val keepConnected: Boolean = false,
+    /** Push through UnifiedPush when the server has the hermes-push plugin and a distributor is installed. */
+    val push: Boolean = true,
 )
 
 class AppSettings(private val context: Context, scope: CoroutineScope) {
@@ -43,6 +45,7 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
             notifyActivity = prefs[NOTIFY_ACTIVITY] ?: true,
             checkMinutes = prefs[CHECK_MINUTES] ?: 15,
             keepConnected = prefs[KEEP_CONNECTED] ?: false,
+            push = prefs[PUSH] ?: true,
         )
     }.stateIn(scope, SharingStarted.Eagerly, Settings())
 
@@ -57,6 +60,7 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
             prefs[NOTIFY_ACTIVITY] = next.notifyActivity
             prefs[CHECK_MINUTES] = next.checkMinutes
             prefs[KEEP_CONNECTED] = next.keepConnected
+            prefs[PUSH] = next.push
         }
     }
 
@@ -69,5 +73,6 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
         val NOTIFY_ACTIVITY = booleanPreferencesKey("notify_activity")
         val CHECK_MINUTES = intPreferencesKey("check_minutes")
         val KEEP_CONNECTED = booleanPreferencesKey("keep_connected")
+        val PUSH = booleanPreferencesKey("push")
     }
 }

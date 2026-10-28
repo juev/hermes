@@ -3,6 +3,7 @@ package org.evsyukov.hermes.ui.settings
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +40,7 @@ import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.BuildConfig
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.settings.Settings
+import org.evsyukov.hermes.push.PushState
 import org.evsyukov.hermes.ui.admin.AdminScaffold
 import org.evsyukov.hermes.ui.admin.ClickRow
 import org.evsyukov.hermes.ui.admin.SectionTitle
@@ -101,6 +103,38 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
             ClickRow(stringResource(R.string.settings_battery), stringResource(R.string.settings_battery_hint), onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
             })
+
+            SectionTitle(stringResource(R.string.settings_push))
+            val push by container.push.status.collectAsState()
+            Toggle(stringResource(R.string.settings_push_switch), stringResource(R.string.settings_push_switch_hint), settings.push) { v -> change { it.copy(push = v) } }
+            val pushApp = push.distributors.firstOrNull { it.packageName == push.distributor }?.label ?: push.distributor.orEmpty()
+            Text(
+                when (push.state) {
+                    PushState.OFF -> stringResource(R.string.push_state_off)
+                    PushState.NO_DISTRIBUTOR -> stringResource(R.string.push_state_no_distributor)
+                    PushState.CHOOSE -> stringResource(R.string.push_state_choose)
+                    PushState.CONNECTING -> stringResource(R.string.push_state_connecting)
+                    PushState.ON -> stringResource(R.string.push_state_on, pushApp)
+                    PushState.UNSUPPORTED -> stringResource(R.string.push_state_unsupported)
+                    PushState.FAILED -> stringResource(R.string.push_state_failed)
+                },
+                color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            if (push.state == PushState.CHOOSE) {
+                push.distributors.forEach { d -> ClickRow(d.label, d.packageName, onClick = { scope.launch { container.push.choose(d.packageName) } }) }
+            }
+            if (push.state == PushState.ON) {
+                ClickRow(stringResource(R.string.push_test), null, onClick = {
+                    scope.launch {
+                        val text = try {
+                            context.getString(R.string.push_test_sent, container.push.test())
+                        } catch (e: Exception) {
+                            e.message ?: e.javaClass.simpleName
+                        }
+                        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
 
             SectionTitle(stringResource(R.string.settings_tailscale))
             if (!tailnet.available) {

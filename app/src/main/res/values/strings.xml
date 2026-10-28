@@ -381,4 +381,18 @@
         <item quantity="one">%1$s: works, %2$d tool</item>
         <item quantity="other">%1$s: works, %2$d tools</item>
     </plurals>
+    <string name="settings_push">Push</string>
+    <string name="settings_push_switch">Push from the server</string>
+    <string name="settings_push_switch_hint">Answers, cron results and messages from other channels arrive at once, with the app closed</string>
+    <string name="push_state_off">Push is off.</string>
+    <string name="push_state_no_distributor">Install a UnifiedPush distributor, such as ntfy, to receive push.</string>
+    <string name="push_state_choose">Choose the app that delivers push:</string>
+    <string name="push_state_connecting">Connecting…</string>
+    <string name="push_state_on">On: the server pushes to %1$s.</string>
+    <string name="push_state_unsupported">The server has no hermes-push plugin; the app checks for news by itself.</string>
+    <string name="push_state_failed">Push did not connect; the app checks for news by itself and tries again at the next start.</string>
+    <string name="push_test">Send a test push</string>
+    <string name="push_test_sent">Sent to %1$d phone(s)</string>
+    <string name="push_test_title">Hermes push</string>
+    <string name="push_test_text">Push from the server works.</string>
 </resources>

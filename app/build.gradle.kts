@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.webkit)
+    implementation(libs.unifiedpush.connector)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
