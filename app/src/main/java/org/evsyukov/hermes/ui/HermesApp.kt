@@ -60,10 +60,15 @@ fun HermesApp(vm: MainViewModel) {
     val settings by container.settings.current.collectAsState()
     val loaded by container.servers.loaded.collectAsState()
     val servers by container.servers.state.collectAsState()
+    val draft by vm.draftServer.collectAsState()
     HermesTheme(settings.theme) {
         Box(Modifier.fillMaxSize().background(ChatTheme.colors.background)) {
             when {
                 !loaded -> Unit
+                draft != null -> {
+                    BackHandler { vm.closeDraftServer() }
+                    ServerEditScreen(container, id = null, onBack = vm::closeDraftServer, onSaved = vm::closeDraftServer, draft = draft)
+                }
                 servers.servers.isEmpty() -> ServerEditScreen(container, id = null, onBack = null, onSaved = {})
                 else -> MainScreen(vm)
             }

@@ -27,6 +27,8 @@ import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
 import org.evsyukov.hermes.data.server.ProxySettings
+import org.evsyukov.hermes.data.server.ServerProfile
+import org.evsyukov.hermes.data.server.parseServerLink
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
@@ -145,6 +147,21 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 _access.value = Access.OFFLINE
             }
         }
+    }
+
+    private val _draftServer = MutableStateFlow<ServerProfile?>(null)
+
+    /** A server from an `add-server` link, shown in the form until it is saved or dismissed. */
+    val draftServer: StateFlow<ServerProfile?> = _draftServer.asStateFlow()
+
+    /** Fills the server form from a link; a malformed link is reported, nothing else happens. */
+    fun openServerLink(link: String) {
+        val profile = parseServerLink(link)
+        if (profile == null) _notice.value = "Ссылка на сервер не разобрана" else _draftServer.value = profile
+    }
+
+    fun closeDraftServer() {
+        _draftServer.value = null
     }
 
     /** The route the in-app sign-in page must take; null when the server is reached directly. */

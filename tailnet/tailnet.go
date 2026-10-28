@@ -12,10 +12,14 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"tailscale.com/envknob"
+	"tailscale.com/logtail"
 	"tailscale.com/net/netmon"
 	"tailscale.com/tsnet"
 )
@@ -31,6 +35,9 @@ func init() {
 	// Android denies app processes the netlink socket that net.Interfaces needs; the kernel still
 	// tells which source address it would use, which is enough for the node to find its endpoints.
 	netmon.RegisterInterfaceGetter(syntheticInterfaces)
+	// The node belongs to the user's own control server: its logs stay on the phone.
+	envknob.SetNoLogsNoSupport()
+	logtail.Disable()
 }
 
 // Start brings the node up and returns "host:port\npassword" of its SOCKS5 proxy (user "tsnet").
@@ -43,6 +50,12 @@ func Start(dir, controlURL, authKey, hostname string) (string, error) {
 		srv = nil
 	}
 	authURL = ""
+	// An app process has no home or cache directory, where Tailscale looks for its log state.
+	logDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", err
+	}
+	os.Setenv("TS_LOGS_DIR", logDir)
 	s := &tsnet.Server{
 		Dir:        dir,
 		Hostname:   hostname,

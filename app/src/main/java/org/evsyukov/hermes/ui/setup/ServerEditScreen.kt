@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,20 +63,22 @@ import org.evsyukov.hermes.data.server.normalizeBaseUrl
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 /** Adds or edits a server; the first run of the app starts here with [onBack] null. */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit) {
+fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit, draft: ServerProfile? = null) {
     val existing = container.servers.state.value.servers.firstOrNull { it.id == id }
-    var name by remember { mutableStateOf(existing?.name ?: "Hermes") }
-    var url by remember { mutableStateOf(existing?.baseUrl ?: "") }
-    var proxyType by remember { mutableStateOf(existing?.proxy?.type ?: ProxyType.NONE) }
-    var proxyHost by remember { mutableStateOf(existing?.proxy?.host ?: "") }
-    var proxyPort by remember { mutableStateOf(existing?.proxy?.port?.takeIf { it > 0 }?.toString() ?: "") }
-    var proxyUser by remember { mutableStateOf(existing?.proxy?.username ?: "") }
-    var proxyPassword by remember { mutableStateOf(existing?.proxy?.password ?: "") }
-    var controlUrl by remember { mutableStateOf(existing?.tailnet?.controlUrl ?: "") }
-    var authKey by remember { mutableStateOf(existing?.tailnet?.authKey ?: "") }
-    var hostname by remember { mutableStateOf(existing?.tailnet?.hostname ?: "hermes-android") }
+    // A server from a link fills the form; the user still checks and saves it.
+    val source = draft ?: existing
+    var name by remember(source) { mutableStateOf(source?.name ?: "Hermes") }
+    var url by remember(source) { mutableStateOf(source?.baseUrl ?: "") }
+    var proxyType by remember(source) { mutableStateOf(source?.proxy?.type ?: ProxyType.NONE) }
+    var proxyHost by remember(source) { mutableStateOf(source?.proxy?.host ?: "") }
+    var proxyPort by remember(source) { mutableStateOf(source?.proxy?.port?.takeIf { it > 0 }?.toString() ?: "") }
+    var proxyUser by remember(source) { mutableStateOf(source?.proxy?.username ?: "") }
+    var proxyPassword by remember(source) { mutableStateOf(source?.proxy?.password ?: "") }
+    var controlUrl by remember(source) { mutableStateOf(source?.tailnet?.controlUrl ?: "") }
+    var authKey by remember(source) { mutableStateOf(source?.tailnet?.authKey ?: "") }
+    var hostname by remember(source) { mutableStateOf(source?.tailnet?.hostname ?: "hermes-android") }
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -82,7 +86,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
     val tailnetStatus by container.tailnet.status.collectAsState()
 
     fun profile() = ServerProfile(
-        id = existing?.id ?: UUID.randomUUID().toString(),
+        id = existing?.id ?: draft?.id ?: UUID.randomUUID().toString(),
         name = name.trim().ifEmpty { "Hermes" },
         baseUrl = normalizeBaseUrl(url) ?: url.trim(),
         proxy = ProxySettings(proxyType, proxyHost.trim(), proxyPort.toIntOrNull() ?: 0, proxyUser, proxyPassword),
@@ -133,7 +137,8 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
             )
 
             Text("Как добраться до сервера", color = ChatTheme.colors.secondaryText, fontSize = 14.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Chips wrap: with a large system font four of them do not fit one line.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(ProxyType.NONE to "Напрямую", ProxyType.TAILSCALE to "Tailscale", ProxyType.SOCKS5 to "SOCKS5", ProxyType.HTTP to "HTTP").forEach { (type, label) ->
                     FilterChip(selected = proxyType == type, onClick = { proxyType = type }, label = { Text(label) })
                 }

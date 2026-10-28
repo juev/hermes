@@ -35,6 +35,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="org.evsyukov.hermes" android:host="signed-in" />
+                <data android:scheme="org.evsyukov.hermes" android:host="add-server" />
             </intent-filter>
         </activity>
         <service

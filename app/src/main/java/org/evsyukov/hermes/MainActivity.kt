@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import org.evsyukov.hermes.data.server.SCHEME
 import org.evsyukov.hermes.ui.HermesApp
 import org.evsyukov.hermes.ui.MainViewModel
 
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
     /** A notification opens its chat; the return from the sign-in page needs nothing, the loopback got the code. */
     private fun handle(intent: Intent?) {
         intent?.getStringExtra(EXTRA_CHAT)?.let { vm.openChat(it) }
+        intent?.data?.takeIf { it.scheme == SCHEME && it.host == "add-server" }?.let { vm.openServerLink(it.toString()) }
     }
 
     companion object {
