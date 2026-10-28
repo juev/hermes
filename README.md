@@ -82,3 +82,7 @@ a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release.
   process, so the app renames, archives and deletes them over the socket. Pinning has no socket
   method and may fail for such chats.
 - The dashboard in gateway mode (`session_authority`) is handled for the common calls only.
+
+## License
+
+[MIT](LICENSE).
