@@ -1,11 +1,18 @@
 package org.evsyukov.hermes
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
@@ -17,7 +24,6 @@ import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.background.ActivityCheck
-import org.evsyukov.hermes.background.HermesService
 import org.evsyukov.hermes.background.Notifications
 import org.evsyukov.hermes.background.TurnWatcher
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
@@ -68,10 +74,15 @@ class AppContainer(context: Context) {
         .stateIn(scope, SharingStarted.Eagerly, null)
 
     val notifications = Notifications(context)
-    val turns = TurnWatcher(context, scope, connection, notifications) { settings.current.value.keepConnected }
+    val turns = TurnWatcher(context, scope, connection, notifications, settings.keepConnected)
     val activity = ActivityCheck(context)
     val push = PushManager(context, UnifiedPushDistributor(context), { connection.value?.session }, { settings.current.value.push })
     val pushMessages = PushMessages(this)
+
+    private val _online = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** Emits when a network becomes the default one, e.g. when the phone is back online. */
+    val online: SharedFlow<Unit> = _online.asSharedFlow()
 
     init {
         scope.launch {
@@ -79,11 +90,21 @@ class AppContainer(context: Context) {
                 if (on) ActivityCheck.schedule(context, minutes) else ActivityCheck.cancel(context)
             }
         }
+        // The screens open the socket only while the app is in front; a permanent connection opens
+        // every connection itself, also one built while only the service runs. A connection replaced
+        // meanwhile has its socket stopped, and a stopped socket does not open again.
         scope.launch {
-            settings.current.map { it.keepConnected }.distinctUntilChanged().collect { keep ->
-                if (keep) HermesService.start(context, context.getString(R.string.notify_connected)) else turns.settle()
-            }
+            connection.keptOpen(settings.keepConnected.filterNotNull()).collect { it.socket.start() }
         }
+        // A network that came back or changed is tried at once, not after the pause of the socket.
+        context.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    connection.value?.socket?.checkAlive()
+                    _online.tryEmit(Unit)
+                }
+            },
+        )
         // With a permanent connection the gateway's change signal replaces the periodic check.
         scope.launch {
             connection.filterNotNull().flatMapLatest { c -> c.socket.events.map { c to it } }
@@ -109,3 +130,7 @@ class AppContainer(context: Context) {
         }
     }
 }
+
+/** Each connection that must stay open: the current one whenever [keep] is on. */
+internal fun <T : Any> Flow<T?>.keptOpen(keep: Flow<Boolean>): Flow<T> =
+    combine(this, keep) { connection, on -> connection.takeIf { on } }.filterNotNull()

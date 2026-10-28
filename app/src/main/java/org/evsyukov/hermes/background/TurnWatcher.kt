@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -22,6 +23,27 @@ import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.ServerRequest
 import org.evsyukov.hermes.data.remote.string
 import java.util.concurrent.ConcurrentHashMap
+
+/** A turn the app asked for, from its submission until it starts on the server or fails to reach it. */
+interface TurnHold {
+    /** The session the turn goes to, once it is known; its start ends the hold. */
+    fun live(id: String)
+
+    /** The submission reached the server; its start is awaited from now on. */
+    fun submitted()
+
+    /** The submission did not reach the server, failed or was cancelled. */
+    fun release()
+
+    companion object {
+        /** Holds nothing, for a chat that runs without the watcher. */
+        val NONE = object : TurnHold {
+            override fun live(id: String) = Unit
+            override fun submitted() = Unit
+            override fun release() = Unit
+        }
+    }
+}
 
 /**
  * Follows the turns of the chats opened in the app, whatever screen is shown: while one runs, the
@@ -35,7 +57,9 @@ class TurnWatcher(
     private val scope: CoroutineScope,
     private val connection: StateFlow<Connection?>,
     private val notifications: Notifications,
-    private val keepConnected: () -> Boolean,
+    /** The permanent-connection switch as read from disk; null until it is. */
+    private val keepConnected: StateFlow<Boolean?>,
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** Live session id to the stored id the notification opens. */
     private val chats = ConcurrentHashMap<String, String>()
@@ -52,17 +76,6 @@ class TurnWatcher(
     val inForeground: Boolean
         get() = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
 
-    init {
-        scope.launch {
-            connection.collectLatest { c ->
-                if (c == null) return@collectLatest
-                launch { c.socket.events.collect(::onEvent) }
-                c.socket.requests.collect(::onRequest)
-            }
-        }
-        scope.launch { watchdog() }
-    }
-
     /** Called when a chat of the app joins its live session. */
     fun bind(liveId: String, storedId: String, title: String) {
         chats[liveId] = storedId
@@ -78,21 +91,96 @@ class TurnWatcher(
     /** The live id under which the app has [storedId] open, if it has. */
     fun liveOf(storedId: String): String? = chats.entries.firstOrNull { it.value == storedId }?.key
 
-    /** The app is about to start a turn; the service starts now, while the app may still start it. */
-    fun turnStarting() = HermesService.start(context, context.getString(R.string.notify_replying))
+    /** Turns the app submitted whose start has not arrived; they hold the service like running ones. */
+    private val holds: MutableSet<Hold> = ConcurrentHashMap.newKeySet()
 
-    private fun onEvent(event: GatewayEvent) {
+    /** Orders the checks of [settle] against the start of a turn, so a stop never overtakes it. */
+    private val service = Any()
+
+    // After every property: a dispatcher that runs at once enters these coroutines here, and a switch
+    // read already settles the service, which needs the holds and their lock.
+    init {
+        scope.launch {
+            connection.collectLatest { c ->
+                if (c == null) return@collectLatest
+                launch { c.socket.events.collect(::onEvent) }
+                c.socket.requests.collect(::onRequest)
+            }
+        }
+        scope.launch { watchdog() }
+        // The switch the user set, not the defaults: a process restarted for the service must not stop
+        // it before its settings are read.
+        scope.launch {
+            keepConnected.filterNotNull().collect { keep ->
+                if (keep) HermesService.start(context, context.getString(R.string.notify_connected)) else settle()
+            }
+        }
+    }
+
+    private inner class Hold : TurnHold {
+        @Volatile
+        var session: String? = null
+
+        /**
+         * When the submit returned; until then the submission runs and holds without a limit, whatever
+         * the events of its session say.
+         */
+        @Volatile
+        var submittedAt: Long? = null
+
+        /** A start of the session came while submitting: the turn is under way, or over already. */
+        var started = false
+
+        override fun live(id: String) {
+            session = id
+        }
+
+        override fun submitted() {
+            synchronized(service) {
+                submittedAt = now()
+                // The turn holds the service itself now, or has ended.
+                if (started && holds.remove(this)) settle()
+            }
+        }
+
+        override fun release() {
+            synchronized(service) {
+                if (holds.remove(this)) settle()
+            }
+        }
+    }
+
+    /**
+     * The app is about to start a turn; the service starts now, while the app may still start it, and
+     * stays until the turn starts or its submission fails.
+     */
+    fun turnStarting(): TurnHold {
+        val hold = Hold()
+        synchronized(service) {
+            holds += hold
+            HermesService.start(context, context.getString(R.string.notify_replying))
+        }
+        return hold
+    }
+
+    internal fun onEvent(event: GatewayEvent) {
         val live = event.sessionId ?: return
         when (event.type) {
             "session.title" -> event.payload.string("session_id")?.let { stored ->
                 event.payload.string("title")?.let { titles[stored] = it }
             }
-            "message.start" -> if (chats.containsKey(live)) {
-                streamed[live] = StringBuilder()
-                _running.update { it + live }
+            "message.start" -> {
+                if (chats.containsKey(live)) {
+                    streamed[live] = StringBuilder()
+                    _running.update { it + live }
+                }
+                started(live)
             }
             "message.delta" -> streamed[live]?.append(event.payload.string("text").orEmpty())
             "message.complete" -> {
+                // An end never lets a hold go. One still submitting holds until its submit returns; one
+                // submitted awaits a start, so an end before it is of an earlier turn, e.g. one interrupted
+                // for the answer asked for again, and a start that never came is the watchdog's to find.
                 val stored = chats[live] ?: return
                 val text = event.payload.string("text")?.takeIf { it.isNotBlank() } ?: streamed[live]?.toString().orEmpty()
                 streamed.remove(live)
@@ -108,6 +196,19 @@ class TurnWatcher(
                 settle()
             }
             "request.cancel" -> event.payload.string("id")?.let(notifications::cancelRequest)
+        }
+    }
+
+    /**
+     * A turn of [live] started. A submitted hold awaited it and lets go: the turn holds the service
+     * itself. A hold still submitting keeps holding until its submit returns.
+     */
+    private fun started(live: String) {
+        synchronized(service) {
+            for (hold in holds) {
+                if (hold.session != live) continue
+                if (hold.submittedAt != null) holds.remove(hold) else hold.started = true
+            }
         }
     }
 
@@ -139,9 +240,14 @@ class TurnWatcher(
         notifications.cancelRequest(requestId)
     }
 
-    /** Stops the service once nothing runs, unless the user keeps the connection open. */
+    /**
+     * Stops the service once nothing runs or is being submitted, unless the user keeps the connection
+     * open; before the switch is read it stays, and the switch settles it once read.
+     */
     fun settle() {
-        if (_running.value.isEmpty() && !keepConnected()) HermesService.stop(context)
+        synchronized(service) {
+            if (_running.value.isEmpty() && holds.isEmpty() && keepConnected.value == false) HermesService.stop(context)
+        }
     }
 
     /**
@@ -164,6 +270,22 @@ class TurnWatcher(
                     _running.update { it - live }
                     streamed.remove(live)
                 }
+            }
+            // A submission under way, e.g. uploading its attachments, holds the service until it returns
+            // or fails; once submitted, its start is awaited a minute at most, or as long as its chat says
+            // a turn runs.
+            for (hold in holds) {
+                val submittedAt = hold.submittedAt ?: continue
+                if (now() - submittedAt < 60_000) continue
+                val stored = hold.session?.let(chats::get)
+                val active = stored?.let {
+                    try {
+                        session.chat.get(it)?.active
+                    } catch (e: Exception) {
+                        true
+                    }
+                }
+                if (active != true) holds.remove(hold)
             }
             settle()
         }

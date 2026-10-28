@@ -4,10 +4,12 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +38,7 @@ import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
 import org.evsyukov.hermes.ui.viewer.ViewerFile
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 /** Screens above the chat; the chat itself is the bottom of the stack. */
 sealed interface Screen {
@@ -67,6 +70,31 @@ data class SearchState(val query: String = "", val hits: List<SearchHit> = empty
 /** What the app needs from the server before chatting: nothing, a sign-in, or a working network. */
 enum class Access { UNKNOWN, OK, SIGN_IN, OFFLINE }
 
+/**
+ * Checks a server found offline again when the network comes back. A network that comes while a
+ * check runs finds no offline server, so it is counted: the check that then fails runs once more.
+ * Only networks bring checks, so a server that stays down is not polled, and a server that answered,
+ * if only to ask for a sign-in, is not checked again.
+ */
+internal class OfflineRecovery(private val access: StateFlow<Access>, private val recheck: () -> Unit) {
+    private val networks = AtomicLong()
+
+    /** What a check remembers from its start. */
+    fun checkStarting(): Long = networks.get()
+
+    /** The check that started with [startedAt] found the server offline. */
+    fun checkFailed(startedAt: Long) {
+        if (networks.get() != startedAt) recheck()
+    }
+
+    suspend fun follow(online: Flow<Unit>) {
+        online.collect {
+            networks.incrementAndGet()
+            if (access.value == Access.OFFLINE) recheck()
+        }
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class MainViewModel(val container: AppContainer) : ViewModel() {
     val stack = mutableStateListOf<Screen>()
@@ -89,6 +117,11 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     val connection: StateFlow<Connection?> get() = container.connection
 
     private var loadJob: Job? = null
+
+    /** The check of the server under way; a new one replaces it, so an older answer cannot win. */
+    private var accessJob: Job? = null
+
+    private val recovery = OfflineRecovery(access) { checkAccess() }
 
     /** A chat asked for before the server connection exists, e.g. by a notification at a cold start. */
     private var pendingChat: String? = null
@@ -115,6 +148,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 .debounce(700)
                 .collect { refreshChats() }
         }
+        // A server found offline is checked again when the network comes back; the button stays for
+        // the cases the network does not explain.
+        viewModelScope.launch { recovery.follow(container.online) }
         viewModelScope.launch {
             _search.debounce(300).distinctUntilChanged { a, b -> a.query == b.query }.collectLatest { state ->
                 runSearch(state.query)
@@ -125,8 +161,10 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     /** Probes the server; a valid session opens the socket and loads the chats. */
     fun checkAccess() {
         val connection = container.connection.value ?: return
-        viewModelScope.launch {
-            _access.value = Access.UNKNOWN
+        accessJob?.cancel()
+        _access.value = Access.UNKNOWN
+        val since = recovery.checkStarting()
+        accessJob = viewModelScope.launch {
             try {
                 val info = connection.session.authInfo()
                 val hasTokens = container.servers.load().tokens[connection.session.profile.id] != null
@@ -143,12 +181,15 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 connection.socket.start()
                 refreshChats()
                 container.scope.launch { runCatching { container.push.reconcile() } }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: SignInRequiredException) {
                 _access.value = Access.SIGN_IN
             } catch (e: Exception) {
                 Log.w(TAG, "Server check failed", e)
                 _accessError.value = e.message ?: e.javaClass.simpleName
                 _access.value = Access.OFFLINE
+                recovery.checkFailed(since)
             }
         }
     }
