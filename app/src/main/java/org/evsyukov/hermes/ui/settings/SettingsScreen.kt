@@ -42,6 +42,8 @@ import org.evsyukov.hermes.ui.admin.ClickRow
 import org.evsyukov.hermes.ui.admin.SectionTitle
 import org.evsyukov.hermes.ui.theme.ChatTheme
 import org.evsyukov.hermes.ui.theme.ThemeMode
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () -> Unit) {
@@ -107,6 +109,19 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
                 ClickRow("Журнал узла", null, onClick = { tailnetLogs = container.tailnet.logs() })
                 ClickRow("Выйти из tailnet", "Ключ узла удалится, при следующем запуске нужен новый вход", onClick = { container.tailnet.reset() })
             }
+
+            SectionTitle("Сессия")
+            val servers by container.servers.state.collectAsState()
+            val tokens = servers.active?.let { servers.tokens[it.id] }
+            Text(
+                when {
+                    tokens == null -> "Вход не выполнен или сервер его не требует."
+                    tokens.expiresAt == 0L -> "Вход без срока действия."
+                    else -> "Токен действует до " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(tokens.expiresAt * 1000)) +
+                        if (tokens.refreshToken.isNotEmpty()) ", дальше продлится сам." else ", токена обновления нет: потом понадобится новый вход."
+                },
+                color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp),
+            )
 
             SectionTitle("Данные")
             ClickRow("Очистить кэш вложений", "%.1f МБ".format(cacheSize / 1_048_576.0), onClick = {
