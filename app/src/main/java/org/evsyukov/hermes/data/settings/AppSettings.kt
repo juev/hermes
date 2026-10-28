@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -35,7 +36,7 @@ data class Settings(
 )
 
 class AppSettings(private val context: Context, scope: CoroutineScope) {
-    val current: StateFlow<Settings> = context.settingsStore.data.map { prefs ->
+    private val stored: Flow<Settings> = context.settingsStore.data.map { prefs ->
         Settings(
             theme = prefs[THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
             enterSends = prefs[ENTER_SENDS] ?: false,
@@ -47,7 +48,17 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
             keepConnected = prefs[KEEP_CONNECTED] ?: false,
             push = prefs[PUSH] ?: true,
         )
-    }.stateIn(scope, SharingStarted.Eagerly, Settings())
+    }
+
+    val current: StateFlow<Settings> = stored.stateIn(scope, SharingStarted.Eagerly, Settings())
+
+    /**
+     * The permanent-connection switch as it is on disk; null until it is read. Unlike [current] it
+     * does not start from the defaults, so a process the system started for the service does not
+     * take them for the user's choice. The service, its stickiness and the sockets kept open all
+     * follow this one value, so none of them acts on a value another collector has not caught up with.
+     */
+    val keepConnected: StateFlow<Boolean?> = stored.map { it.keepConnected }.stateIn(scope, SharingStarted.Eagerly, null)
 
     suspend fun update(change: (Settings) -> Settings) {
         context.settingsStore.edit { prefs ->

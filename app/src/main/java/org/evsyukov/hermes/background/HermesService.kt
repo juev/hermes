@@ -31,13 +31,27 @@ class HermesService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        val keep = container.settings.keepConnected.value
+        if (intent == null && keep == false) {
+            // Restarted by the system after the user turned the permanent connection off: no turn of
+            // this new process runs.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         container.connection.value?.socket?.start()
-        return if (container.settings.current.value.keepConnected) START_STICKY else START_NOT_STICKY
+        return if (sticky(keep)) START_STICKY else START_NOT_STICKY
     }
 
     companion object {
         private const val TAG = "HermesService"
         private const val EXTRA_TEXT = "text"
+
+        /**
+         * Whether the system restarts the service after it killed the process: unless the switch is
+         * read as off. Before it is read, e.g. in a process started for a turn, the service stays
+         * sticky, and the switch stops it once it says the connection is not permanent.
+         */
+        internal fun sticky(keepConnected: Boolean?): Boolean = keepConnected != false
 
         /**
          * Android lets an app start a foreground service only while it is in front (or for a few

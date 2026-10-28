@@ -16,9 +16,10 @@ class HermesApplication : Application() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
-                    // The app is in front: what happened so far is seen, and the socket comes back at once.
+                    // The app is in front: what happened so far is seen, and a dead socket comes back at
+                    // once; a working one stays, with its calls in flight.
                     container.connection.value?.let { c ->
-                        c.socket.kick()
+                        c.socket.checkAlive()
                         container.scope.launch { container.activity.markSeen(c.session) }
                     }
                 }

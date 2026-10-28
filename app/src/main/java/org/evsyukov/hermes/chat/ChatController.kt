@@ -17,6 +17,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.background.TurnHold
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.RpcException
@@ -71,8 +72,11 @@ class ChatController(
     private val onSessionCreated: (String) -> Unit = {},
     /** Tells the background watcher which live session belongs to which chat. */
     private val onLive: (liveId: String, storedId: String, title: String) -> Unit = { _, _, _ -> },
-    /** Called right before a turn starts, while the app is surely in front. */
-    private val onTurnStart: () -> Unit = {},
+    /**
+     * Called right before a turn starts, while the app is surely in front; the hold it returns learns
+     * the session of the turn and is released when the submission fails.
+     */
+    private val onTurnStart: () -> TurnHold = { TurnHold.NONE },
 ) {
     private val _state = MutableStateFlow(ChatState(storedId = storedId))
     val state: StateFlow<ChatState> = _state.asStateFlow()
@@ -176,10 +180,11 @@ class ChatController(
         if (text.isBlank() && attachments.isEmpty()) return
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
         _state.update { it.copy(items = it.items + ChatItem.User("local${keys.incrementAndGet()}", text, shown), running = true, error = null) }
-        onTurnStart()
+        val hold = onTurnStart()
         scope.launch {
             try {
                 withLive { live ->
+                    hold.live(live)
                     val refs = attachments.mapNotNull { attach(live, it) }
                     // The words first: the server titles the chat by the start of its first message.
                     val prompt = buildString {
@@ -187,12 +192,14 @@ class ChatController(
                         if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                     }
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                    hold.submitted()
                 }
             } catch (e: Exception) {
+                hold.release()
                 Log.w(TAG, "Send failed", e)
                 _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_send_failed)) }
             }
-        }
+        }.invokeOnCompletion { cause -> if (cause != null) hold.release() }
     }
 
     /** Pictures go to the vision queue of the next turn; other files land in the workspace and are named in the prompt. */
@@ -244,6 +251,7 @@ class ChatController(
     private fun rewriteLast(replacement: String?) {
         val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
         val text = replacement ?: lastUser.text
+        var hold: TurnHold? = null
         scope.launch {
             try {
                 val live = ensureLive()
@@ -252,12 +260,14 @@ class ChatController(
                 val index = _state.value.items.indexOfLast { it is ChatItem.User }
                 val kept = if (index >= 0) _state.value.items.subList(0, index) else _state.value.items
                 _state.update { it.copy(items = kept + lastUser.copy(key = "local${keys.incrementAndGet()}", text = text), running = true, error = null) }
-                onTurnStart()
+                hold = onTurnStart().also { it.live(live) }
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+                hold?.submitted()
             } catch (e: Exception) {
+                hold?.release()
                 _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_failed)) }
             }
-        }
+        }.invokeOnCompletion { cause -> if (cause != null) hold?.release() }
     }
 
     fun rename(title: String) {
