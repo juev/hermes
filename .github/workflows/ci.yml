@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Debug and release builds with the tailnet node, unit tests. The release is built unsigned: it is
+  # there to catch what R8 breaks.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./scripts/build-tailnet.sh
+      - run: ./gradlew assembleDebug testDebugUnitTest assembleRelease
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports
+          path: app/build/reports/
+
+  # The hermes-push plugin of the server, offline.
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - working-directory: server/hermes-push
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet cryptography http_ece
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests
