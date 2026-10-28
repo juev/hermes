@@ -18,8 +18,11 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   raw YAML), `.env` secrets, cron jobs, skills, toolsets, MCP servers and channels, and shows logs
   and usage. Steps that break or delete something ask first.
 - A turn keeps running after the app is left: a foreground service holds the socket, and the
-  answer arrives as a notification. Approvals can be answered from the notification. A periodic
-  check, or an optional permanent connection, reports new activity from cron and other channels.
+  answer arrives as a notification. Approvals can be answered from the notification.
+- Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
+  ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
+  encrypted. Without them a periodic check, or an optional permanent connection, reports news.
+- English interface with a Russian translation; Android 13+ lets the app use its own language.
 
 ## Reaching the server
 
@@ -33,6 +36,14 @@ Each server has its own route:
 
 The built-in node takes a Tailscale or Headscale control URL and an optional pre-auth key;
 without a key it shows a login link.
+
+A server can also be set up from a link, which fills the form without typing keys on the phone:
+
+```
+org.evsyukov.hermes://add-server?url=hermes.example.org&route=tailscale&control=https://hs.example.org&key=<pre-auth key>
+```
+
+`route` is `direct`, `tailscale`, `socks5` or `http`; a proxy takes `host`, `port`, `user`, `password`.
 
 ## Sign-in
 
@@ -59,8 +70,8 @@ A release is signed from `HERMES_KEYSTORE`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_
 
 ## Known limits
 
-- Push needs a permanent connection or waits for the periodic check (15 minutes at least);
-  the dashboard has no push of its own.
+- Without the hermes-push plugin, news needs a permanent connection or waits for the periodic
+  check (15 minutes at least); the dashboard has no push of its own.
 - On a plain `hermes dashboard` the REST session routes refuse sessions that live in the dashboard
   process, so the app renames, archives and deletes them over the socket. Pinning has no socket
   method and may fail for such chats.
