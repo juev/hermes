@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Debug and release builds with the tailnet node, unit tests. The release is built unsigned: it is
+  # Debug and release builds with the tailnet node, unit tests, lint. The release is built unsigned: it is
   # there to catch what R8 breaks.
   build:
     runs-on: ubuntu-latest
@@ -29,7 +29,7 @@ jobs:
           cache-dependency-path: tailnet/go.sum
       - uses: gradle/actions/setup-gradle@v6
       - run: ./scripts/build-tailnet.sh
-      - run: ./gradlew assembleDebug testDebugUnitTest assembleRelease
+      - run: ./gradlew assembleDebug testDebugUnitTest lintDebug assembleRelease
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
