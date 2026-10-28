@@ -54,7 +54,8 @@ class ChatPage(val chats: List<ChatSummary>, val total: Int)
 
 /** The chat routes of the dashboard that work over plain HTTP; the live chat goes through [GatewaySocket]. */
 class ChatApi(private val http: HermesHttp) {
-    suspend fun list(offset: Int = 0, limit: Int = 50, archived: Boolean = false): ChatPage {
+    /** A page of chats, newest activity first; [sources] keeps only those sources, [excludeSources] drops them. */
+    suspend fun list(offset: Int = 0, limit: Int = 50, archived: Boolean = false, sources: String? = null, excludeSources: String? = null): ChatPage {
         val root = http.getJson(
             "api/sessions",
             mapOf(
@@ -63,6 +64,8 @@ class ChatApi(private val http: HermesHttp) {
                 "order" to "recent",
                 "archived" to if (archived) "only" else "exclude",
                 "min_messages" to 1,
+                "sources" to sources,
+                "exclude_sources" to excludeSources,
             ),
         ).jsonObject
         val chats = (root["sessions"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::summary) }.orEmpty()

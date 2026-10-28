@@ -260,7 +260,7 @@ class ChatController(
         val id = _state.value.storedId ?: return
         scope.launch {
             try {
-                session.chat.mutate(id, title = title)
+                ChatMutations(session.chat, socket) { stored -> liveId.takeIf { stored == id } }.rename(id, title)
                 _state.update { it.copy(title = title) }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message) }

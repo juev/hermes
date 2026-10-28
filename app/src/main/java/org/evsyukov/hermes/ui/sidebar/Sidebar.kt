@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Unarchive
@@ -64,6 +65,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.server.ServerProfile
+import org.evsyukov.hermes.ui.ListMode
 import org.evsyukov.hermes.ui.SidebarState
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
@@ -78,7 +80,7 @@ class SidebarActions(
     val onDelete: (String) -> Unit,
     val onLoadMore: () -> Unit,
     val onRefresh: () -> Unit,
-    val onToggleArchived: () -> Unit,
+    val onShowList: (ListMode) -> Unit,
     val onAdmin: () -> Unit,
     val onSettings: () -> Unit,
     val onSwitchServer: (String) -> Unit,
@@ -117,12 +119,18 @@ fun Sidebar(
         LazyColumn(Modifier.weight(1f), state = listState) {
             item { NavRow(Icons.Outlined.EditNote, "Новый чат", onClick = actions.onNewChat) }
             item { NavRow(Icons.Outlined.Dns, "Управление сервером", onClick = actions.onAdmin) }
-            item {
-                NavRow(
-                    if (state.showArchived) Icons.AutoMirrored.Outlined.ArrowBack else Icons.Outlined.Archive,
-                    if (state.showArchived) "Назад к чатам" else "Архив",
-                    onClick = actions.onToggleArchived,
-                )
+            if (state.mode == ListMode.CHATS) {
+                item { NavRow(Icons.Outlined.Schedule, "Задачи cron", onClick = { actions.onShowList(ListMode.CRON) }) }
+                item { NavRow(Icons.Outlined.Archive, "Архив", onClick = { actions.onShowList(ListMode.ARCHIVE) }) }
+            } else {
+                item { NavRow(Icons.AutoMirrored.Outlined.ArrowBack, "Назад к чатам", onClick = { actions.onShowList(ListMode.CHATS) }) }
+                item {
+                    Text(
+                        if (state.mode == ListMode.CRON) "Прогоны задач по расписанию" else "Архив",
+                        color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 16.dp, top = 12.dp),
+                    )
+                }
             }
             state.error?.let { error ->
                 item {
@@ -136,7 +144,11 @@ fun Sidebar(
             if (!state.loading && state.chats.isEmpty() && state.error == null) {
                 item {
                     Text(
-                        if (state.showArchived) "В архиве пусто" else "Чатов пока нет",
+                        when (state.mode) {
+                            ListMode.CHATS -> "Чатов пока нет"
+                            ListMode.ARCHIVE -> "В архиве пусто"
+                            ListMode.CRON -> "Прогонов пока нет"
+                        },
                         color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
                     )
                 }

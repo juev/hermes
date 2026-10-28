@@ -2,6 +2,7 @@ package org.evsyukov.hermes.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +85,15 @@ private fun MainScreen(vm: MainViewModel) {
     val scope = rememberCoroutineScope()
     val socketState = connection?.socket?.state?.collectAsState()
     val top = vm.stack.lastOrNull()
+
+    val notice by vm.notice.collectAsState()
+    val context = LocalContext.current
+    LaunchedEffect(notice) {
+        notice?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            vm.noticeShown()
+        }
+    }
 
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
     BackHandler(enabled = !drawer.isOpen && top != null) { vm.pop() }
@@ -151,7 +162,7 @@ private fun MainScreen(vm: MainViewModel) {
         onDelete = vm::deleteChat,
         onLoadMore = vm::loadMoreChats,
         onRefresh = vm::refreshChats,
-        onToggleArchived = vm::toggleArchived,
+        onShowList = vm::showList,
         onAdmin = { vm.push(Screen.Admin()); closeDrawer() },
         onSettings = { vm.push(Screen.Settings); closeDrawer() },
         onSwitchServer = { id -> scope.launch { container.servers.activate(id) }; closeDrawer() },

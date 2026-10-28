@@ -68,6 +68,9 @@ class TurnWatcher(
         if (title.isNotBlank()) titles[storedId] = title
     }
 
+    /** The live id under which the app has [storedId] open, if it has. */
+    fun liveOf(storedId: String): String? = chats.entries.firstOrNull { it.value == storedId }?.key
+
     /** The app is about to start a turn; the service starts now, while the app may still start it. */
     fun turnStarting() = HermesService.start(context, "Hermes отвечает…")
 

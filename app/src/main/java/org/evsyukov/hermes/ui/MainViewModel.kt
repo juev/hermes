@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.chat.ChatController
+import org.evsyukov.hermes.chat.ChatMutations
 import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
@@ -41,12 +42,19 @@ sealed interface Screen {
     data class Viewer(val file: ViewerFile) : Screen
 }
 
+/** What the sidebar lists: conversations, the archive, or the runs of scheduled jobs. */
+enum class ListMode(val archived: Boolean, val sources: String?, val excludeSources: String?) {
+    CHATS(false, null, "cron"),
+    ARCHIVE(true, null, null),
+    CRON(false, "cron", null),
+}
+
 data class SidebarState(
     val chats: List<ChatSummary> = emptyList(),
     val total: Int = 0,
     val loading: Boolean = false,
     val error: String? = null,
-    val showArchived: Boolean = false,
+    val mode: ListMode = ListMode.CHATS,
 )
 
 data class SearchState(val query: String = "", val hits: List<SearchHit> = emptyList(), val searching: Boolean = false, val error: String? = null)
@@ -159,7 +167,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         loadJob = viewModelScope.launch {
             _sidebar.update { it.copy(loading = true, error = null) }
             try {
-                val page = connection.session.chat.list(limit = PAGE, archived = _sidebar.value.showArchived)
+                val mode = _sidebar.value.mode
+                val page = connection.session.chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 _sidebar.update { it.copy(chats = page.chats, total = page.total, loading = false) }
             } catch (e: Exception) {
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
@@ -175,7 +184,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             _sidebar.update { it.copy(loading = true) }
             try {
-                val page = connection.session.chat.list(offset = state.chats.size, limit = PAGE, archived = state.showArchived)
+                val mode = state.mode
+                val page = connection.session.chat.list(offset = state.chats.size, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 _sidebar.update { s -> s.copy(chats = (s.chats + page.chats).distinctBy { it.id }, total = page.total, loading = false) }
             } catch (e: Exception) {
                 _sidebar.update { it.copy(loading = false, error = e.message) }
@@ -183,8 +193,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun toggleArchived() {
-        _sidebar.update { it.copy(showArchived = !it.showArchived, chats = emptyList()) }
+    fun showList(mode: ListMode) {
+        if (_sidebar.value.mode == mode) return
+        _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0) }
         refreshChats()
     }
 
@@ -224,25 +235,35 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         )
     }
 
-    fun renameChat(id: String, title: String) = mutate(id) { it.chat.mutate(id, title = title) }
+    fun renameChat(id: String, title: String) = mutate(id) { it.rename(id, title) }
 
-    fun pinChat(id: String, pinned: Boolean) = mutate(id) { it.chat.mutate(id, pinned = pinned) }
+    fun pinChat(id: String, pinned: Boolean) = mutate(id) { it.pin(id, pinned) }
 
-    fun archiveChat(id: String, archived: Boolean) = mutate(id) { it.chat.mutate(id, archived = archived) }
+    fun archiveChat(id: String, archived: Boolean) = mutate(id) { it.archive(id, archived) }
 
     fun deleteChat(id: String) = mutate(id) {
-        it.chat.delete(id)
+        it.delete(id)
         if (_chat.value?.state?.value?.storedId == id) newChat()
     }
 
-    private fun mutate(id: String, action: suspend (org.evsyukov.hermes.data.server.ServerSession) -> Unit) {
+    private val _notice = MutableStateFlow<String?>(null)
+
+    /** A one-line message for the user, such as a refused delete; the screen shows it once. */
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun noticeShown() {
+        _notice.value = null
+    }
+
+    private fun mutate(id: String, action: suspend (ChatMutations) -> Unit) {
         val connection = container.connection.value ?: return
         viewModelScope.launch {
             try {
-                action(connection.session)
+                action(ChatMutations(connection.session.chat, connection.socket, container.turns::liveOf))
                 if (_chat.value?.state?.value?.storedId == id) _chat.value?.reload()
             } catch (e: Exception) {
-                _sidebar.update { it.copy(error = e.message) }
+                Log.w(TAG, "Change of chat $id failed", e)
+                _notice.value = e.message ?: "Не получилось"
             }
             refreshChats()
         }
