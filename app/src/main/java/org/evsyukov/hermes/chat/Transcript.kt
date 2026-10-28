@@ -64,15 +64,17 @@ private val IMAGE_PLACEHOLDERS = setOf("[screenshot]", "[image]")
 fun splitUserText(text: String): Pair<String, List<Attachment>> {
     val cut = CONTEXT_SECTIONS.mapNotNull { marker -> text.indexOf(marker).takeIf { it >= 0 } }.minOrNull()
     val written = if (cut == null) text else text.substring(0, cut)
+    // Pictures sent to the model are named by `@image:` lines the server appends after the context.
+    val appended = if (cut == null) emptyList() else text.substring(cut).lines().filter { it.trim().startsWith("@image:") }
     val attachments = mutableListOf<Attachment>()
-    val kept = written.lines().filter { line -> line.trim() !in IMAGE_PLACEHOLDERS }.filter { line ->
+    val kept = (written.lines() + appended).filter { line -> line.trim() !in IMAGE_PLACEHOLDERS }.filter { line ->
         val match = ATTACHMENT_LINE.matchEntire(line.trim()) ?: return@filter true
         val path = match.groupValues[2].trim()
         val name = path.substringAfterLast('/')
         attachments += Attachment(path, name, match.groupValues[1] == "image" || name.substringAfterLast('.').lowercase() in IMAGE_EXT)
         false
     }
-    return kept.joinToString("\n").trim() to attachments
+    return kept.joinToString("\n").trim() to attachments.distinctBy { it.path }
 }
 
 /** Paths the agent delivered with `MEDIA:` directives, in order and without repeats. */

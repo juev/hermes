@@ -107,6 +107,17 @@ class TranscriptTest {
     }
 
     @Test
+    fun `pictures named after the attached context are kept`() {
+        val stored = "Что на фото?\n@file:attachments/notes.md\n\n--- Attached Context ---\n\n📄 @file:attachments/notes.md\n```markdown\n# x\n```\n@image:/opt/data/images/upload_1.png\n[screenshot]"
+        val (text, attachments) = splitUserText(stored)
+        assertThat(text).isEqualTo("Что на фото?")
+        assertThat(attachments).containsExactly(
+            Attachment("attachments/notes.md", "notes.md", image = false),
+            Attachment("/opt/data/images/upload_1.png", "upload_1.png", image = true),
+        ).inOrder()
+    }
+
+    @Test
     fun `media directives are found and removed from the text`() {
         val text = "Готово.\nMEDIA:/opt/data/out/chart.png\nСм. также `MEDIA:/tmp/report.pdf`."
         assertThat(mediaPaths(text)).containsExactly("/opt/data/out/chart.png", "/tmp/report.pdf").inOrder()
