@@ -73,6 +73,7 @@ import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.chat.ToolRun
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.ui.common.MarkdownText
+import org.evsyukov.hermes.ui.common.keepLineBreaks
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 /** What a message can ask the screen to do. */
@@ -175,7 +176,7 @@ fun AssistantMessage(item: ChatItem.Assistant, last: Boolean, showReasoning: Boo
                     is Part.Tool -> ToolRow(part.run)
                     is Part.Text -> {
                         val text = stripMedia(part.text)
-                        if (text.isNotBlank()) SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
+                        if (text.isNotBlank()) SelectionContainer { MarkdownText(keepLineBreaks(text), Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
                     }
                 }
                 is Block.Tools -> ToolGroup(block.runs)

@@ -40,6 +40,15 @@ class TranscriptTest {
     }
 
     @Test
+    fun `reasoning that arrives after the answer goes before it`() {
+        val items = play(
+            event("message.delta", """{"text":"Ответ"}"""),
+            event("reasoning.available", """{"text":"Думал"}"""),
+        )
+        assertThat((items.single() as ChatItem.Assistant).parts).containsExactly(Part.Reasoning("Думал"), Part.Text("Ответ")).inOrder()
+    }
+
+    @Test
     fun `the final text replaces a stream that differs from it`() {
         val items = play(
             event("message.delta", """{"text":"черно"}"""),

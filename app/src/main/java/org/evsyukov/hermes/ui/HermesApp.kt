@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,6 +100,10 @@ private fun MainScreen(vm: MainViewModel) {
             vm.noticeShown()
         }
     }
+
+    // Opening the drawer puts the keyboard away, so the list is not half hidden behind it.
+    val focus = LocalFocusManager.current
+    LaunchedEffect(drawer.targetValue) { if (drawer.targetValue == DrawerValue.Open) focus.clearFocus() }
 
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
     BackHandler(enabled = !drawer.isOpen && top != null) { vm.pop() }

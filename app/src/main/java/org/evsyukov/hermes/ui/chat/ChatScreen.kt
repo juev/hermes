@@ -62,6 +62,7 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -113,6 +114,10 @@ fun ChatScreen(
     var renaming by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ChatItem.User?>(null) }
     var localError by remember { mutableStateOf<String?>(null) }
+
+    // A chat opens to read it, as in ChatGPT: the keyboard waits for a tap on the field.
+    val focus = LocalFocusManager.current
+    LaunchedEffect(controller) { focus.clearFocus() }
 
     val tts = remember { mutableStateOf<TextToSpeech?>(null) }
     DisposableEffect(Unit) { onDispose { tts.value?.shutdown() } }

@@ -148,7 +148,7 @@ fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): Lis
         }
         "reasoning.available" -> {
             val text = payload.string("text") ?: return items
-            updateOpen(openAnswer(items, keyOf)) { parts -> parts.filterNot { it is Part.Reasoning } + Part.Reasoning(text) }
+            updateOpen(openAnswer(items, keyOf)) { parts -> placeReasoning(parts, text) }
         }
         "tool.start" -> {
             val run = ToolRun(
@@ -232,6 +232,17 @@ private fun updateOpen(items: List<ChatItem>, change: (List<Part>) -> List<Part>
 private fun appendPart(parts: List<Part>, text: String, grow: (String) -> Part): List<Part> {
     val last = parts.lastOrNull()
     return if (last is Part.Text) parts.dropLast(1) + grow(last.text) else parts + Part.Text(text)
+}
+
+/**
+ * A whole reasoning block that arrives late, after the answer streamed, goes where it belongs:
+ * in place of an earlier one, or before the first piece of text.
+ */
+private fun placeReasoning(parts: List<Part>, text: String): List<Part> {
+    val existing = parts.indexOfFirst { it is Part.Reasoning }
+    if (existing >= 0) return parts.toMutableList().also { it[existing] = Part.Reasoning(text) }
+    val firstText = parts.indexOfFirst { it is Part.Text }
+    return if (firstText < 0) parts + Part.Reasoning(text) else parts.toMutableList().also { it.add(firstText, Part.Reasoning(text)) }
 }
 
 private fun appendReasoning(parts: List<Part>, text: String): List<Part> {
