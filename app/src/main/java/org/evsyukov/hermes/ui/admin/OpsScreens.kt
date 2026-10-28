@@ -45,7 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,7 +85,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
     var open by remember { mutableStateOf<JsonObject?>(null) }
     var creating by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
-    val context = LocalContext.current
+    val resources = LocalResources.current
 
     AdminScaffold(
         stringResource(R.string.admin_cron), onBack, jobs.loading, jobs.reload, snackbar,
@@ -142,13 +142,13 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
             confirmButton = {
                 Row {
                     TextButton(onClick = {
-                        confirm = context.getString(R.string.admin_cron_run_confirm, job.string("name") ?: id) to {
-                            scope.attempt(snackbar, context.getString(R.string.admin_cron_started)) { api.cronCommand(id, "trigger"); jobs.reload() }
+                        confirm = resources.getString(R.string.admin_cron_run_confirm, job.string("name") ?: id) to {
+                            scope.attempt(snackbar, resources.getString(R.string.admin_cron_started)) { api.cronCommand(id, "trigger"); jobs.reload() }
                         }
                     }) { Text(stringResource(R.string.admin_start)) }
                     TextButton(onClick = {
-                        confirm = context.getString(R.string.admin_cron_delete_confirm, job.string("name") ?: id) to {
-                            scope.attempt(snackbar, context.getString(R.string.admin_cron_deleted)) { api.deleteCron(id); open = null; jobs.reload() }
+                        confirm = resources.getString(R.string.admin_cron_delete_confirm, job.string("name") ?: id) to {
+                            scope.attempt(snackbar, resources.getString(R.string.admin_cron_deleted)) { api.deleteCron(id); open = null; jobs.reload() }
                         }
                     }) { Text(stringResource(R.string.common_delete), color = colors.danger) }
                 }
@@ -182,7 +182,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(enabled = schedule.isNotBlank() && prompt.isNotBlank(), onClick = {
                     creating = false
-                    scope.attempt(snackbar, context.getString(R.string.admin_cron_created)) { api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver); jobs.reload() }
+                    scope.attempt(snackbar, resources.getString(R.string.admin_cron_created)) { api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver); jobs.reload() }
                 }) { Text(stringResource(R.string.admin_cron_create)) }
             },
             dismissButton = { TextButton(onClick = { creating = false }) { Text(stringResource(R.string.common_cancel)) } },
@@ -202,7 +202,7 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
     val mcp = rememberLoadable { api.mcpServers() }
     var skillText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var query by remember { mutableStateOf("") }
-    val context = LocalContext.current
+    val resources = LocalResources.current
 
     AdminScaffold(stringResource(R.string.admin_tools), onBack, skills.loading || toolsets.loading || mcp.loading, { skills.reload(); toolsets.reload(); mcp.reload() }, snackbar) {
         PrimaryTabRow(tab, containerColor = colors.background) {
@@ -259,9 +259,9 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
                                 val count = (result["tools"] as? JsonArray)?.size ?: 0
                                 snackbar.showSnackbar(
                                     if (result.bool("ok") == true) {
-                                        context.resources.getQuantityString(R.plurals.admin_mcp_works, count, name, count)
+                                        resources.getQuantityString(R.plurals.admin_mcp_works, count, name, count)
                                     } else {
-                                        "$name: ${result.string("error") ?: context.getString(R.string.admin_mcp_no_answer)}"
+                                        "$name: ${result.string("error") ?: resources.getString(R.string.admin_mcp_no_answer)}"
                                     },
                                 )
                             }

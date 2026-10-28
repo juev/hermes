@@ -40,7 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -68,14 +68,14 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
     val info = rememberLoadable { api.modelInfo() }
     val options = rememberLoadable { api.modelOptions() }
     var confirm by remember { mutableStateOf<Triple<String, String, String>?>(null) }
-    val context = LocalContext.current
+    val resources = LocalResources.current
 
     fun pick(provider: String, model: String, confirmed: Boolean = false) = scope.attempt(snackbar) {
         val result = api.setModel(provider, model, confirmed)
         if (result.bool("confirm_required") == true) {
-            confirm = Triple(provider, model, result.string("confirm_message") ?: context.getString(R.string.admin_model_expensive))
+            confirm = Triple(provider, model, result.string("confirm_message") ?: resources.getString(R.string.admin_model_expensive))
         } else {
-            snackbar.showSnackbar(result.string("notice") ?: context.getString(R.string.admin_model_new_chats, model))
+            snackbar.showSnackbar(result.string("notice") ?: resources.getString(R.string.admin_model_new_chats, model))
             info.reload()
             options.reload()
         }
@@ -127,7 +127,7 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
     var category by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ConfigField?>(null) }
     var raw by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    val resources = LocalResources.current
 
     AdminScaffold(
         stringResource(R.string.admin_config), onBack, schema.loading || config.loading, { schema.reload(); config.reload() }, snackbar,
@@ -168,7 +168,7 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
         val current = config.value?.let { AdminApi.valueAt(it, field.path) } ?: JsonNull
         FieldEditor(field, current, onDismiss = { editing = null }) { value ->
             editing = null
-            scope.attempt(snackbar, context.getString(R.string.admin_config_saved, field.path)) {
+            scope.attempt(snackbar, resources.getString(R.string.admin_config_saved, field.path)) {
                 api.setConfig(field.path, value)
                 config.reload()
             }
@@ -298,7 +298,7 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
     var deleting by remember { mutableStateOf<String?>(null) }
     var revealing by remember { mutableStateOf<String?>(null) }
     var revealed by remember { mutableStateOf<Pair<String, String>?>(null) }
-    val context = LocalContext.current
+    val resources = LocalResources.current
 
     AdminScaffold(stringResource(R.string.admin_secrets), onBack, env.loading, env.reload, snackbar) {
         Column(Modifier.fillMaxSize()) {
@@ -346,7 +346,7 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(enabled = name.isNotBlank() && value.isNotEmpty(), onClick = {
                     editing = null
-                    scope.attempt(snackbar, context.getString(R.string.admin_secrets_saved, name)) { api.setEnv(name, value); env.reload() }
+                    scope.attempt(snackbar, resources.getString(R.string.admin_secrets_saved, name)) { api.setEnv(name, value); env.reload() }
                 }) { Text(stringResource(R.string.common_save)) }
             },
             dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
@@ -354,7 +354,7 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
     }
     deleting?.let { key ->
         ConfirmDialog(stringResource(R.string.admin_secrets_delete_title, key), stringResource(R.string.admin_secrets_delete_text), stringResource(R.string.common_delete), {
-            scope.attempt(snackbar, context.getString(R.string.admin_secrets_deleted, key)) { api.deleteEnv(key); env.reload() }
+            scope.attempt(snackbar, resources.getString(R.string.admin_secrets_deleted, key)) { api.deleteEnv(key); env.reload() }
         }) { deleting = null }
     }
     revealing?.let { key ->

@@ -106,8 +106,8 @@ class LoopbackReceiver : AutoCloseable {
         fun parseQuery(query: String): Map<String, String> = query.split('&')
             .filter { it.isNotEmpty() }
             .associate { pair ->
-                val key = URLDecoder.decode(pair.substringBefore('='), Charsets.UTF_8)
-                val value = URLDecoder.decode(pair.substringAfter('=', ""), Charsets.UTF_8)
+                val key = URLDecoder.decode(pair.substringBefore('='), "UTF-8")
+                val value = URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
                 key to value
             }
 

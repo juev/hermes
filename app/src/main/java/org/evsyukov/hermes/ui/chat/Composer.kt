@@ -57,6 +57,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -93,6 +94,7 @@ fun Composer(
 ) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var cameraFile by remember { mutableStateOf<File?>(null) }
@@ -102,7 +104,7 @@ fun Composer(
     fun add(uris: List<Uri>) {
         scope.launch {
             val picked = withContext(Dispatchers.IO) { uris.mapNotNull { read(context, it) } }
-            if (picked.size < uris.size) onError(context.getString(R.string.composer_file_too_big))
+            if (picked.size < uris.size) onError(resources.getString(R.string.composer_file_too_big))
             onAttachments(attachments + picked)
         }
     }
@@ -114,7 +116,7 @@ fun Composer(
         if (ok && file != null) onAttachments(attachments + LocalAttachment("photo_${System.currentTimeMillis()}.jpg", "image/jpeg", file.readBytes()))
     }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) recorder = Recording.start(context) else onError(context.getString(R.string.composer_no_mic))
+        if (granted) recorder = Recording.start(context) else onError(resources.getString(R.string.composer_no_mic))
     }
 
     fun stopRecording() {
@@ -127,7 +129,7 @@ fun Composer(
                 val words = transcribe(audio, "audio/mp4")
                 if (words.isNotBlank()) onText(if (text.isBlank()) words else "$text $words")
             } catch (e: Exception) {
-                onError(context.getString(R.string.composer_not_recognized, e.message))
+                onError(resources.getString(R.string.composer_not_recognized, e.message))
             }
             transcribing = false
         }

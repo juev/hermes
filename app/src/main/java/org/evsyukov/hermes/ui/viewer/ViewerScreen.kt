@@ -51,6 +51,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import org.evsyukov.hermes.R
 import java.io.File
+import java.io.InputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -133,15 +134,25 @@ private fun TextFile(file: File, content: @Composable (String) -> Unit) {
     val truncated = stringResource(R.string.viewer_truncated)
     val text by produceState<String?>(null, file) {
         value = withContext(Dispatchers.IO) {
-            file.inputStream().use { input ->
-                val bytes = input.readNBytes(TEXT_LIMIT + 1)
-                val body = String(bytes, 0, minOf(bytes.size, TEXT_LIMIT), Charsets.UTF_8)
-                if (bytes.size > TEXT_LIMIT) "$body\n\n$truncated" else body
-            }
+            file.inputStream().use { readText(it, TEXT_LIMIT, truncated) }
         }
     }
     val loaded = text
     if (loaded == null) CircularProgressIndicator() else content(loaded)
+}
+
+/** Reads at most [limit] bytes of UTF-8 text, followed by [truncated] when the stream is longer. */
+internal fun readText(input: InputStream, limit: Int, truncated: String): String {
+    // InputStream.readNBytes is API 33.
+    val bytes = ByteArray(limit + 1)
+    var size = 0
+    while (size < bytes.size) {
+        val read = input.read(bytes, size, bytes.size - size)
+        if (read < 0) break
+        size += read
+    }
+    val body = String(bytes, 0, minOf(size, limit), Charsets.UTF_8)
+    return if (size > limit) "$body\n\n$truncated" else body
 }
 
 /** Code is highlighted through a fenced block while it is small enough for the highlighter. */

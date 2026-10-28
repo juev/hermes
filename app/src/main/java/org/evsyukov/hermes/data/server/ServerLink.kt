@@ -21,7 +21,7 @@ fun parseServerLink(link: String): ServerProfile? {
     }
     if (uri.scheme != SCHEME || uri.host != HOST) return null
     val params = uri.rawQuery.orEmpty().split('&').filter { it.contains('=') }.associate { pair ->
-        URLDecoder.decode(pair.substringBefore('='), Charsets.UTF_8) to URLDecoder.decode(pair.substringAfter('='), Charsets.UTF_8)
+        URLDecoder.decode(pair.substringBefore('='), "UTF-8") to URLDecoder.decode(pair.substringAfter('='), "UTF-8")
     }
     val url = normalizeBaseUrl(params["url"].orEmpty()) ?: return null
     val type = when (params["route"]?.lowercase()) {
