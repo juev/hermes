@@ -1,0 +1,406 @@
+package org.evsyukov.hermes.chat
+
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.evsyukov.hermes.data.remote.GatewayEvent
+import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.RpcException
+import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.bool
+import org.evsyukov.hermes.data.remote.string
+import org.evsyukov.hermes.data.server.ServerSession
+import java.util.Base64
+import java.util.concurrent.atomic.AtomicLong
+
+/** A file picked on the phone and not sent yet. */
+class LocalAttachment(val name: String, val mime: String?, val bytes: ByteArray) {
+    val image: Boolean get() = mime?.startsWith("image/") == true
+}
+
+/** A question of the agent that waits for the user: approve a command, answer, give a secret. */
+sealed interface Prompt {
+    val request: ServerRequest
+
+    data class Approval(override val request: ServerRequest, val command: String, val description: String, val choices: List<String>) : Prompt
+    data class Clarify(override val request: ServerRequest, val questions: List<Question>) : Prompt
+    data class Secret(override val request: ServerRequest, val title: String, val sudo: Boolean) : Prompt
+
+    data class Question(val id: String, val text: String, val choices: List<String>)
+}
+
+data class ChatState(
+    val storedId: String? = null,
+    val title: String = "",
+    val items: List<ChatItem> = emptyList(),
+    val loading: Boolean = false,
+    val running: Boolean = false,
+    val prompt: Prompt? = null,
+    val error: String? = null,
+    val model: String? = null,
+    val status: String? = null,
+    /** An expensive model waits for a yes: provider, model and the server's warning. */
+    val modelConfirm: Triple<String, String, String>? = null,
+)
+
+/**
+ * One open chat. A new chat lives only in the app until its first message; the server session is
+ * created then. An existing chat shows its stored history at once and joins the live session in
+ * the background, so a turn that runs elsewhere keeps streaming here.
+ */
+class ChatController(
+    private val session: ServerSession,
+    private val socket: GatewaySocket,
+    private val scope: CoroutineScope,
+    storedId: String?,
+    private val onSessionCreated: (String) -> Unit = {},
+    /** Tells the background watcher which live session belongs to which chat. */
+    private val onLive: (liveId: String, storedId: String, title: String) -> Unit = { _, _, _ -> },
+    /** Called right before a turn starts, while the app is surely in front. */
+    private val onTurnStart: () -> Unit = {},
+) {
+    private val _state = MutableStateFlow(ChatState(storedId = storedId))
+    val state: StateFlow<ChatState> = _state.asStateFlow()
+
+    @Volatile
+    private var liveId: String? = null
+
+    /** The model picked before the first message; the session is created with it. */
+    private var draftModel: Pair<String, String>? = null
+    private val keys = AtomicLong()
+    private val jobs = mutableListOf<Job>()
+
+    init {
+        jobs += scope.launch { socket.events.collect(::onEvent) }
+        jobs += scope.launch { socket.requests.collect(::onRequest) }
+        // After a reconnect the old live id may be gone: join the session again.
+        jobs += scope.launch {
+            socket.ready.drop(1).collect {
+                if (liveId != null) {
+                    liveId = null
+                    reload()
+                }
+            }
+        }
+        if (storedId != null) reload()
+    }
+
+    fun close() {
+        jobs.forEach { it.cancel() }
+    }
+
+    /** Reads the stored history, then joins the live session to pick up a turn in progress. */
+    fun reload() {
+        val id = _state.value.storedId ?: return
+        _state.update { it.copy(loading = true, error = null) }
+        scope.launch {
+            try {
+                val summary = session.chat.get(id)
+                val history = transcriptOf(session.chat.messages(id))
+                _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, loading = false) }
+                if (summary?.active == true) ensureLive()
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false, error = e.message) }
+            }
+        }
+    }
+
+    private suspend fun ensureLive(): String {
+        liveId?.let { return it }
+        val stored = _state.value.storedId
+        val result = if (stored == null) {
+            socket.call(
+                "session.create",
+                buildJsonObject {
+                    put("source", "android")
+                    put("close_on_disconnect", false)
+                    draftModel?.let { (provider, model) ->
+                        put("provider", provider)
+                        put("model", model)
+                    }
+                },
+            ) as JsonObject
+        } else {
+            socket.call(
+                "session.resume",
+                buildJsonObject {
+                    put("session_id", stored)
+                    put("close_on_disconnect", false)
+                    put("omit_messages", true)
+                    put("inline_images", false)
+                },
+                timeoutMillis = 120_000,
+            ) as JsonObject
+        }
+        val live = result.string("session_id") ?: error("No session_id in the answer")
+        liveId = live
+        val storedId = result.string("stored_session_id") ?: stored
+        val info = result["info"] as? JsonObject
+        val running = result.bool("running") ?: info?.bool("running") ?: false
+        _state.update { it.copy(storedId = storedId ?: it.storedId, running = running, model = info?.string("model") ?: it.model) }
+        if (stored == null && storedId != null) onSessionCreated(storedId)
+        if (storedId != null) onLive(live, storedId, _state.value.title)
+        (result["open_requests"] as? JsonArray)?.forEach { request ->
+            val obj = request as? JsonObject ?: return@forEach
+            val id = obj.string("id") ?: return@forEach
+            onRequest(ServerRequest(id, obj.string("method").orEmpty(), obj["params"] as? JsonObject ?: JsonObject(emptyMap())))
+        }
+        return live
+    }
+
+    /** Runs [block] on the live session; a session the server dropped is joined again once. */
+    private suspend fun <T> withLive(block: suspend (String) -> T): T = try {
+        block(ensureLive())
+    } catch (e: RpcException) {
+        if (!e.sessionGone()) throw e
+        liveId = null
+        block(ensureLive())
+    }
+
+    fun send(text: String, attachments: List<LocalAttachment>) {
+        if (text.isBlank() && attachments.isEmpty()) return
+        val shown = attachments.map { Attachment(it.name, it.name, it.image) }
+        _state.update { it.copy(items = it.items + ChatItem.User("local${keys.incrementAndGet()}", text, shown), running = true, error = null) }
+        onTurnStart()
+        scope.launch {
+            try {
+                withLive { live ->
+                    val refs = attachments.mapNotNull { attach(live, it) }
+                    val prompt = buildString {
+                        if (refs.isNotEmpty()) append(refs.joinToString("\n")).append("\n\n")
+                        append(text.ifBlank { if (attachments.all { it.image }) "Что на этом изображении?" else "" })
+                    }
+                    socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Send failed", e)
+                _state.update { it.copy(running = false, error = e.message ?: "Сообщение не отправлено") }
+            }
+        }
+    }
+
+    /** Pictures go to the vision queue of the next turn; other files land in the workspace and are named in the prompt. */
+    private suspend fun attach(live: String, file: LocalAttachment): String? {
+        val base64 = Base64.getEncoder().encodeToString(file.bytes)
+        return if (file.image) {
+            socket.call(
+                "image.attach_bytes",
+                buildJsonObject {
+                    put("session_id", live)
+                    put("content_base64", base64)
+                    put("filename", file.name)
+                },
+                timeoutMillis = 120_000,
+            )
+            null
+        } else {
+            val result = socket.call(
+                "file.attach",
+                buildJsonObject {
+                    put("session_id", live)
+                    put("data_url", "data:${file.mime ?: "application/octet-stream"};base64,$base64")
+                    put("name", file.name)
+                },
+                timeoutMillis = 120_000,
+            ) as? JsonObject
+            result?.string("ref_text")
+        }
+    }
+
+    fun stop() {
+        val live = liveId ?: return
+        scope.launch {
+            try {
+                socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+            _state.update { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
+        }
+    }
+
+    /** Asks for the last answer again: the server drops the last turn and the same text goes again. */
+    fun regenerate() = rewriteLast(null)
+
+    /** Replaces the last user message with [text] and answers it anew. */
+    fun editLast(text: String) = rewriteLast(text)
+
+    private fun rewriteLast(replacement: String?) {
+        val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
+        val text = replacement ?: lastUser.text
+        scope.launch {
+            try {
+                val live = ensureLive()
+                if (_state.value.running) socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
+                socket.call("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
+                val index = _state.value.items.indexOfLast { it is ChatItem.User }
+                val kept = if (index >= 0) _state.value.items.subList(0, index) else _state.value.items
+                _state.update { it.copy(items = kept + lastUser.copy(key = "local${keys.incrementAndGet()}", text = text), running = true, error = null) }
+                onTurnStart()
+                socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+            } catch (e: Exception) {
+                _state.update { it.copy(running = false, error = e.message ?: "Не получилось") }
+            }
+        }
+    }
+
+    fun rename(title: String) {
+        val id = _state.value.storedId ?: return
+        scope.launch {
+            try {
+                session.chat.mutate(id, title = title)
+                _state.update { it.copy(title = title) }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun dismissError() = _state.update { it.copy(error = null) }
+
+    /** Switches the model of this chat; a running turn finishes on the old one. */
+    fun chooseModel(provider: String, model: String, confirmed: Boolean = false) {
+        _state.update { it.copy(modelConfirm = null) }
+        if (liveId == null && _state.value.storedId == null) {
+            draftModel = provider to model
+            _state.update { it.copy(model = model) }
+            return
+        }
+        scope.launch {
+            try {
+                val result = withLive { live ->
+                    socket.call(
+                        "config.set",
+                        buildJsonObject {
+                            put("session_id", live)
+                            put("key", "model")
+                            put("value", "$model --provider $provider")
+                            if (confirmed) put("confirm_expensive_model", true)
+                        },
+                    ) as? JsonObject
+                }
+                if (result?.bool("confirm_required") == true) {
+                    _state.update { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: "Модель дорогая. Переключить?")) }
+                } else {
+                    _state.update { it.copy(model = model, error = result?.string("warning")?.takeIf { w -> w.isNotBlank() }) }
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun dismissModelConfirm() = _state.update { it.copy(modelConfirm = null) }
+
+    fun answerApproval(choice: String) = answer { buildJsonObject { put("choice", choice) } }
+
+    fun answerClarify(answers: Map<String, String?>) = answer {
+        buildJsonObject {
+            put("answers", JsonObject(answers.mapValues { (_, v) -> if (v == null) kotlinx.serialization.json.JsonNull else JsonPrimitive(v) }))
+            put("outcome", "submitted")
+        }
+    }
+
+    fun answerSecret(value: String?) {
+        val prompt = _state.value.prompt ?: return
+        if (value == null) {
+            socket.respond(prompt.request.id, null, error = "cancelled")
+            _state.update { it.copy(prompt = null) }
+        } else {
+            answer { buildJsonObject { put("value", value) } }
+        }
+    }
+
+    fun cancelPrompt() {
+        val prompt = _state.value.prompt ?: return
+        when (prompt) {
+            is Prompt.Approval -> answerApproval("deny")
+            is Prompt.Clarify -> answer { buildJsonObject { put("outcome", "cancelled") } }
+            is Prompt.Secret -> answerSecret(null)
+        }
+    }
+
+    private fun answer(result: () -> JsonElement) {
+        val prompt = _state.value.prompt ?: return
+        socket.respond(prompt.request.id, result())
+        _state.update { it.copy(prompt = null) }
+    }
+
+    private fun onEvent(event: GatewayEvent) {
+        val live = liveId
+        when (event.type) {
+            "session.title" -> if (event.payload.string("session_id") == _state.value.storedId || event.sessionId == live) {
+                _state.update { it.copy(title = event.payload.string("title").orEmpty()) }
+            }
+        }
+        if (live == null || event.sessionId != live) return
+        when (event.type) {
+            "message.start" -> _state.update { it.copy(running = true, status = null) }
+            "message.complete" -> _state.update { it.copy(running = false, status = null) }
+            "session.info" -> _state.update { state ->
+                val running = event.payload.bool("running")
+                state.copy(running = running ?: state.running, model = event.payload.string("model") ?: state.model)
+            }
+            "status.update" -> _state.update { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }
+            "thinking.delta" -> _state.update { it.copy(status = "Думает…") }
+            "error" -> _state.update { it.copy(error = event.payload.string("message"), running = false) }
+            "request.cancel" -> _state.update { state ->
+                if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
+            }
+        }
+        _state.update { it.copy(items = reduce(it.items, event) { "a${keys.incrementAndGet()}" }) }
+    }
+
+    private fun onRequest(request: ServerRequest) {
+        val live = liveId
+        val sessionId = request.params.string("session_id")
+        if (live == null || sessionId != live) return
+        val params = request.params
+        val prompt = when (request.method) {
+            "approval" -> Prompt.Approval(
+                request,
+                command = params.string("command").orEmpty(),
+                description = params.string("description") ?: params.string("tool_name").orEmpty(),
+                choices = (params["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: listOf("once", "deny"),
+            )
+            "clarify" -> Prompt.Clarify(
+                request,
+                (params["questions"] as? JsonArray)?.mapNotNull { q ->
+                    val obj = q as? JsonObject ?: return@mapNotNull null
+                    Prompt.Question(
+                        id = obj.string("qid").orEmpty(),
+                        text = obj.string("question").orEmpty(),
+                        choices = (obj["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty(),
+                    )
+                }.orEmpty(),
+            )
+            "sudo" -> Prompt.Secret(request, "Пароль sudo для: ${params.string("command").orEmpty()}", sudo = true)
+            "secret" -> Prompt.Secret(request, params.string("prompt") ?: "Значение ${params.string("env_var").orEmpty()}", sudo = false)
+            else -> {
+                // Desktop-only questions (window, terminal, theme): saying no at once keeps the agent from waiting.
+                socket.respond(request.id, null, error = "Method not supported by the Android client")
+                null
+            }
+        }
+        if (prompt != null) _state.update { it.copy(prompt = prompt) }
+    }
+
+    private companion object {
+        const val TAG = "HermesChat"
+    }
+}
+
+/** True when an RPC error says the live session is gone and a resume by the stored id will help. */
+fun RpcException.sessionGone(): Boolean = code == 4001

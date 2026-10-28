@@ -1,13 +1,12 @@
 [versions]
 agp = "9.4.1"
 kotlin = "2.4.21"
-ksp = "2.3.12"
 composeBom = "2026.09.00"
 material3 = "1.5.0-beta01"
 activity = "1.13.0"
 lifecycle = "2.11.0"
-room = "2.8.5"
 datastore = "1.2.1"
+work = "2.12.0"
 navigation3 = "1.2.0"
 serialization = "1.11.0"
 coroutines = "1.11.0"
@@ -37,9 +36,7 @@ compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
 compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
-room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "navigation3" }
 navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
@@ -65,5 +62,3 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit-ktx", version.ref 
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-room = { id = "androidx.room", version.ref = "room" }

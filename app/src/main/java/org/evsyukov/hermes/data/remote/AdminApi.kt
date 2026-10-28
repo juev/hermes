@@ -20,6 +20,11 @@ data class ConfigField(
 
 data class ConfigSchema(val fields: List<ConfigField>, val categoryOrder: List<String>)
 
+/** A provider of `/api/model/options` with the models it offers. */
+data class ModelProvider(val slug: String, val name: String, val models: List<String>, val current: Boolean, val warning: String?)
+
+data class ModelChoices(val providers: List<ModelProvider>, val model: String?, val provider: String?)
+
 data class LogQuery(val file: String = "agent", val lines: Int = 200, val level: String = "ALL", val component: String? = null, val search: String? = null)
 
 /** A background command the dashboard started (`hermes gateway restart` and the like). */
@@ -84,8 +89,19 @@ class AdminApi(private val http: HermesHttp) {
 
     suspend fun modelInfo(): JsonObject = http.getJson("api/model/info").jsonObject
 
-    suspend fun modelOptions(refresh: Boolean = false): JsonObject =
-        http.getJson("api/model/options", mapOf("refresh" to refresh.takeIf { it })).jsonObject
+    suspend fun modelOptions(refresh: Boolean = false): ModelChoices {
+        val root = http.getJson("api/model/options", mapOf("refresh" to refresh.takeIf { it })).jsonObject
+        val providers = arrayOf(root, "providers").map { p ->
+            ModelProvider(
+                slug = p.string("slug").orEmpty(),
+                name = p.string("name") ?: p.string("slug").orEmpty(),
+                models = (p["models"] as? JsonArray)?.mapNotNull { it.str() }.orEmpty(),
+                current = p.bool("is_current") ?: false,
+                warning = p.string("warning"),
+            )
+        }.filter { it.models.isNotEmpty() }
+        return ModelChoices(providers, root.string("model"), root.string("provider"))
+    }
 
     /** Switches the main model of new chats; an expensive one first answers with `confirm_required`. */
     suspend fun setModel(provider: String, model: String, confirmExpensive: Boolean = false): JsonObject =

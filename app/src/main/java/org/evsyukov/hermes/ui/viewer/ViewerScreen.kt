@@ -20,9 +20,9 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -48,13 +48,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 import org.evsyukov.hermes.ui.common.MarkdownText
 import org.evsyukov.hermes.ui.theme.ChatTheme
-import java.io.File
 
 /** A file to show: the remote one is downloaded by [load] into the cache before it opens. */
 data class ViewerFile(val name: String, val mime: String?, val load: suspend () -> File)
@@ -190,7 +190,7 @@ private fun MediaPlayerView(file: File) {
 private fun OtherFile(target: ViewerFile, file: File) {
     val context = LocalContext.current
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Icon(Icons.Outlined.InsertDriveFile, contentDescription = null, tint = ChatTheme.colors.secondaryText)
+        Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, contentDescription = null, tint = ChatTheme.colors.secondaryText)
         Text(target.name, color = ChatTheme.colors.text)
         Text("${file.length() / 1024} КБ · ${target.mime ?: "тип неизвестен"}", color = ChatTheme.colors.secondaryText)
         Text("Этот формат приложение не показывает само.", color = ChatTheme.colors.faintText)

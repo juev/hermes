@@ -5,10 +5,13 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -30,8 +33,14 @@ data class ServerState(
 class ServerStore(private val context: Context, private val cipher: TokenCipher, scope: CoroutineScope) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    private val _loaded = MutableStateFlow(false)
+
+    /** False until the state was read from disk once; the first screen waits for it. */
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
     val state: StateFlow<ServerState> = context.serverStore.data
         .map { prefs -> prefs[KEY]?.let(::open) ?: ServerState() }
+        .onEach { _loaded.value = true }
         .stateIn(scope, SharingStarted.Eagerly, ServerState())
 
     /** The state as it is on disk, for callers that run before [state] has loaded. */

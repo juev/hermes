@@ -86,6 +86,15 @@ class ChatApi(private val http: HermesHttp) {
         return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
     }
 
+    /** The text of the newest answer of the chat, for a notification. */
+    suspend fun lastReply(id: String): String? {
+        val root = http.getJson("api/sessions/$id/messages", mapOf("limit" to 6, "order" to "latest", "inline_images" to false)).jsonObject
+        return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }
+            ?.filter { it.role == "assistant" && it.text.isNotBlank() && !it.hidden }
+            ?.maxByOrNull { it.timestamp }
+            ?.text
+    }
+
     /** Renames, pins or archives; the server takes such a change only with the revision it was made on. */
     suspend fun mutate(id: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null) {
         val fence = fence(id)
@@ -125,6 +134,13 @@ class ChatApi(private val http: HermesHttp) {
             .build()
         val answer = http.json { url(http.endpoint("api/files/upload-stream").build()).post(body) }.jsonObject
         return UploadedFile(path = answer.string("path") ?: target, name = name, mime = mime)
+    }
+
+    /** Speech to text by the provider configured on the server; silence gives an empty string. */
+    suspend fun transcribe(audio: ByteArray, mime: String): String {
+        val dataUrl = "data:$mime;base64," + java.util.Base64.getEncoder().encodeToString(audio)
+        val answer = http.postJson("api/audio/transcribe", buildJsonObject { put("data_url", dataUrl); put("mime_type", mime) }).jsonObject
+        return answer.string("transcript").orEmpty()
     }
 
     /** A URL that downloads a file the agent wrote or got; the token rides in the query string. */
