@@ -87,8 +87,9 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
             )
             Toggle(stringResource(R.string.settings_activity), stringResource(R.string.settings_activity_hint), settings.notifyActivity) { v -> change { it.copy(notifyActivity = v) } }
             if (settings.notifyActivity) {
-                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.settings_check_every), color = colors.secondaryText, fontSize = 14.sp)
+                // The label sits above the chips: beside them the row does not fit a phone in Russian.
+                Text(stringResource(R.string.settings_check_every), color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(15, 30, 60).forEach { m -> FilterChip(settings.checkMinutes == m, { change { it.copy(checkMinutes = m) } }, label = { Text(stringResource(R.string.settings_minutes, m)) }) }
                 }
                 Toggle(

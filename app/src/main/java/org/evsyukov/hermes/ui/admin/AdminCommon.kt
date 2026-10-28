@@ -226,7 +226,7 @@ fun ClickRow(text: String, sub: String? = null, onClick: () -> Unit, trailing: @
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(text, color = ChatTheme.colors.text, fontSize = 16.sp)
-            if (!sub.isNullOrBlank()) Text(sub, color = ChatTheme.colors.faintText, fontSize = 13.sp, maxLines = 2)
+            if (!sub.isNullOrBlank()) Text(sub, color = ChatTheme.colors.faintText, fontSize = 13.sp, maxLines = 4)
         }
         trailing()
     }
