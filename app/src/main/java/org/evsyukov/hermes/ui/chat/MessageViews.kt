@@ -168,14 +168,17 @@ fun AssistantMessage(item: ChatItem.Assistant, last: Boolean, showReasoning: Boo
         if (item.parts.isEmpty() && item.streaming) {
             TypingDot(status)
         }
-        item.parts.forEachIndexed { index, part ->
-            when (part) {
-                is Part.Reasoning -> ReasoningBlock(part.text, streaming = item.streaming && index == item.parts.lastIndex, open = showReasoning)
-                is Part.Tool -> ToolRow(part.run)
-                is Part.Text -> {
-                    val text = stripMedia(part.text)
-                    if (text.isNotBlank()) SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
+        groupTools(item.parts).forEachIndexed { index, block ->
+            when (block) {
+                is Block.Single -> when (val part = block.part) {
+                    is Part.Reasoning -> ReasoningBlock(part.text, streaming = item.streaming && index == item.parts.lastIndex, open = showReasoning)
+                    is Part.Tool -> ToolRow(part.run)
+                    is Part.Text -> {
+                        val text = stripMedia(part.text)
+                        if (text.isNotBlank()) SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
+                    }
                 }
+                is Block.Tools -> ToolGroup(block.runs)
             }
         }
         if (item.streaming && item.parts.isNotEmpty() && item.parts.last() !is Part.Text) TypingDot(status)
@@ -243,6 +246,52 @@ private fun ReasoningBlock(text: String, streaming: Boolean, open: Boolean) {
                 color = colors.secondaryText, fontSize = 14.sp, lineHeight = 20.sp,
                 modifier = Modifier.padding(start = 22.dp, top = 4.dp),
             )
+        }
+    }
+}
+
+/** A run of three and more tools in a row folds into one line, as ChatGPT shows its steps. */
+private sealed interface Block {
+    data class Single(val part: Part) : Block
+    data class Tools(val runs: List<ToolRun>) : Block
+}
+
+private fun groupTools(parts: List<Part>): List<Block> {
+    val blocks = mutableListOf<Block>()
+    var run = mutableListOf<ToolRun>()
+    fun flush() {
+        if (run.size >= 3) blocks += Block.Tools(run) else run.forEach { blocks += Block.Single(Part.Tool(it)) }
+        run = mutableListOf()
+    }
+    for (part in parts) {
+        if (part is Part.Tool) run += part.run else {
+            flush()
+            blocks += Block.Single(part)
+        }
+    }
+    flush()
+    return blocks
+}
+
+@Composable
+private fun ToolGroup(runs: List<ToolRun>) {
+    val colors = ChatTheme.colors
+    var expanded by remember { mutableStateOf(false) }
+    val running = runs.any { !it.done }
+    Column(Modifier.padding(vertical = 2.dp)) {
+        Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded = !expanded }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = colors.secondaryText)
+            else Icon(Icons.Outlined.Build, null, tint = colors.faintText, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(8.dp))
+            val names = runs.map { toolTitle(it.copy(context = "")) }.distinct().take(3).joinToString(", ")
+            Text(
+                "Инструменты: ${runs.size} · $names",
+                color = colors.secondaryText, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+            )
+            Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
+        }
+        AnimatedVisibility(expanded) {
+            Column(Modifier.padding(start = 12.dp)) { runs.forEach { ToolRow(it) } }
         }
     }
 }

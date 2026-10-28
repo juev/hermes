@@ -75,6 +75,19 @@ fun mediaPaths(text: String): List<String> = MEDIA_INLINE.findAll(text)
 /** The answer text with the `MEDIA:` lines removed; the files show as cards under it. */
 fun stripMedia(text: String): String = text.replace(MEDIA_LINE, "").trim()
 
+private val CONTEXT_KEYS = listOf("command", "query", "url", "path", "file_path", "pattern", "name", "action", "goal", "task", "question")
+
+/** A short hint of what a tool call did, from its JSON arguments: the command, the query, the URL. */
+fun argumentContext(arguments: String): String {
+    val obj = try {
+        org.evsyukov.hermes.data.remote.HermesJson.parseToJsonElement(arguments) as? JsonObject
+    } catch (e: Exception) {
+        null
+    } ?: return ""
+    val value = CONTEXT_KEYS.firstNotNullOfOrNull { key -> (obj[key] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() } }.orEmpty()
+    return value.lineSequence().first().take(80)
+}
+
 /** Builds the transcript from the stored history: tool results join the call that asked for them. */
 fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
     val items = mutableListOf<ChatItem>()
@@ -95,7 +108,7 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
                 val parts = (current?.parts ?: emptyList()).toMutableList()
                 m.reasoning?.takeIf { it.isNotBlank() }?.let { parts += Part.Reasoning(it) }
                 if (m.text.isNotBlank()) parts += Part.Text(m.text)
-                m.toolCalls.forEach { call -> parts += Part.Tool(ToolRun(call.id, call.name, "", call.arguments, done = true)) }
+                m.toolCalls.forEach { call -> parts += Part.Tool(ToolRun(call.id, call.name, argumentContext(call.arguments), call.arguments, done = true)) }
                 current = ChatItem.Assistant(current?.key ?: "a${m.rowId}", parts, streaming = false)
             }
             "tool" -> {

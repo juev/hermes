@@ -26,7 +26,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -117,14 +117,14 @@ fun ChatScreen(
     val tts = remember { mutableStateOf<TextToSpeech?>(null) }
     DisposableEffect(Unit) { onDispose { tts.value?.shutdown() } }
 
-    val listState = rememberLazyListState()
-    val atBottom by remember { derivedStateOf { !listState.canScrollForward } }
-    // New content scrolls into view while the reader is at the end; a reader who scrolled up stays put.
-    LaunchedEffect(state.items.size, state.items.lastOrNull()) {
-        if (atBottom && state.items.isNotEmpty()) listState.scrollToItem(state.items.lastIndex, Int.MAX_VALUE / 2)
-    }
-    LaunchedEffect(controller) {
-        if (state.items.isNotEmpty()) listState.scrollToItem(state.items.lastIndex, Int.MAX_VALUE / 2)
+    // The list is laid out from the bottom: a chat opens at its end, and a growing answer or the
+    // keyboard keeps the last message in view without scrolling by hand.
+    val listState = remember(controller) { LazyListState() }
+    val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
+    val reversed = remember(state.items) { state.items.asReversed() }
+    // A new message joins the reader who is at the end; one who scrolled up stays put.
+    LaunchedEffect(state.items.size) {
+        if (atBottom || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
     }
 
     val threshold = with(LocalDensity.current) { 96.dp.toPx() }
@@ -206,13 +206,14 @@ fun ChatScreen(
             } else {
                 LazyColumn(
                     state = listState,
+                    reverseLayout = true,
                     modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) },
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
-                    itemsIndexed(state.items, key = { _, item -> item.key }) { index, item ->
+                    itemsIndexed(reversed, key = { _, item -> item.key }) { index, item ->
                         when (item) {
-                            is ChatItem.User -> UserBubble(item, last = state.items.indexOfLast { it is ChatItem.User } == index, actions = actions)
-                            is ChatItem.Assistant -> AssistantMessage(item, last = index == state.items.lastIndex, showReasoning = settings.showReasoning, status = state.status, actions = actions)
+                            is ChatItem.User -> UserBubble(item, last = reversed.indexOfFirst { it is ChatItem.User } == index, actions = actions)
+                            is ChatItem.Assistant -> AssistantMessage(item, last = index == 0, showReasoning = settings.showReasoning, status = state.status, actions = actions)
                         }
                     }
                 }
@@ -243,7 +244,7 @@ fun ChatScreen(
             ) {
                 Box(
                     Modifier.size(36.dp).clip(CircleShape).background(colors.background).border(1.dp, colors.composerBorder, CircleShape)
-                        .clickable { scope.launch { listState.animateScrollToItem(state.items.lastIndex, Int.MAX_VALUE / 2) } },
+                        .clickable { scope.launch { listState.animateScrollToItem(0) } },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.Outlined.ArrowDownward, "Вниз", tint = colors.text, modifier = Modifier.size(20.dp)) }
             }
