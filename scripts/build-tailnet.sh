@@ -27,3 +27,12 @@ PATH="$gobin:$PATH" gomobile bind \
     -o "$root/app/libs/tailnet.aar" \
     .
 ls -lh "$root/app/libs/tailnet.aar"
+
+# The licenses of the modules just linked, for the Licenses screen. The tool runs on this machine
+# and lists the packages for the phone, the node and the gomobile glue.
+tools=$(mktemp -d)
+trap 'rm -rf "$tools"' EXIT
+go build -o "$tools/licenses" ./licenses
+mkdir -p "$root/app/libs/licenses"
+GOOS=android GOARCH=arm64 CGO_ENABLED=1 "$tools/licenses" "$root/app/libs/licenses/tailnet.json" . golang.org/x/mobile/bind/seq
+ls -lh "$root/app/libs/licenses/tailnet.json"

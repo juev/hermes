@@ -144,6 +144,14 @@
     <string name="settings_sign_out_hint">Токены этого сервера удалятся с телефона</string>
     <string name="settings_about">О приложении</string>
     <string name="settings_version">Hermes для Android %1$s</string>
+    <string name="settings_source">Исходный код</string>
+    <string name="settings_licenses">Лицензии</string>
+    <string name="settings_licenses_hint">Лицензии приложения и библиотек, из которых оно собрано</string>
+    <string name="licenses_title">Лицензии</string>
+    <string name="licenses_this_app">Приложение</string>
+    <string name="licenses_app">Hermes для Android</string>
+    <string name="licenses_libraries">Библиотеки (%1$d)</string>
+    <string name="licenses_tailnet">Узел Tailscale, модули Go (%1$d)</string>
     <string name="settings_tailscale_log">Журнал Tailscale</string>
     <string name="settings_empty">Пусто</string>
     <string name="common_close">Закрыть</string>

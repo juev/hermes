@@ -70,6 +70,9 @@ Signed APKs for arm64 phones with Android 12 or later are on the
 ```
 
 Without `tailnet.aar` the app builds and the built-in Tailscale reports itself unavailable.
+Next to the node the script writes the licenses of its Go modules, and AboutLibraries collects
+those of the Maven libraries; both appear under Settings → Licenses. A library under any license
+but Apache-2.0 fails the build until its copyright notice is added in `app/aboutlibraries/licenses`.
 A release is signed from `HERMES_KEYSTORE`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_KEY_ALIAS` and
 `HERMES_KEY_PASSWORD`. A tag `v1.2.3` makes CI build the signed APK and publish it as a release;
 a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release.

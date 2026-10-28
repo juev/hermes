@@ -49,6 +49,7 @@ import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.ui.admin.AdminScreen
 import org.evsyukov.hermes.ui.chat.ChatScreen
 import org.evsyukov.hermes.ui.search.SearchScreen
+import org.evsyukov.hermes.ui.settings.LicensesScreen
 import org.evsyukov.hermes.ui.settings.SettingsScreen
 import org.evsyukov.hermes.ui.setup.ServerEditScreen
 import org.evsyukov.hermes.ui.sidebar.Sidebar
@@ -123,13 +124,17 @@ private fun MainScreen(vm: MainViewModel) {
             return
         }
         is Screen.Settings -> {
-            SettingsScreen(container, onBack = { vm.pop() }, onSignOut = {
+            SettingsScreen(container, onBack = { vm.pop() }, onLicenses = { vm.push(Screen.Licenses) }, onSignOut = {
                 scope.launch {
                     connection?.session?.signOut()
                     vm.pop()
                     vm.checkAccess()
                 }
             })
+            return
+        }
+        is Screen.Licenses -> {
+            LicensesScreen(onBack = { vm.pop() })
             return
         }
         is Screen.ServerEdit -> {

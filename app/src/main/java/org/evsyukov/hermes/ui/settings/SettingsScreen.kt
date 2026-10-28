@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -51,11 +52,12 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () -> Unit) {
+fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -> Unit, onSignOut: () -> Unit) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
+    val browser = LocalUriHandler.current
     val settings by container.settings.current.collectAsState()
     val tailnet by container.tailnet.status.collectAsState()
     var cacheSize by remember { mutableLongStateOf(container.attachments.size()) }
@@ -177,6 +179,9 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
 
             SectionTitle(stringResource(R.string.settings_about))
             Text(stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
+            // No app may be able to open the address; the screen stays as it is then.
+            ClickRow(stringResource(R.string.settings_source), SOURCE_URL, onClick = { runCatching { browser.openUri(SOURCE_URL) } })
+            ClickRow(stringResource(R.string.settings_licenses), stringResource(R.string.settings_licenses_hint), onClick = onLicenses)
             Spacer(Modifier.size(32.dp))
         }
     }
@@ -201,3 +206,5 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
 private fun Toggle(title: String, sub: String?, value: Boolean, onChange: (Boolean) -> Unit) {
     ClickRow(title, sub, onClick = { onChange(!value) }) { Switch(value, onChange) }
 }
+
+private const val SOURCE_URL = "https://github.com/juev/hermes"

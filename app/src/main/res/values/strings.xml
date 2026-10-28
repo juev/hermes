@@ -144,6 +144,14 @@
     <string name="settings_sign_out_hint">This server\'s tokens will be removed from the phone</string>
     <string name="settings_about">About</string>
     <string name="settings_version">Hermes for Android %1$s</string>
+    <string name="settings_source">Source code</string>
+    <string name="settings_licenses">Licenses</string>
+    <string name="settings_licenses_hint">The licenses of the app and of the libraries it is built from</string>
+    <string name="licenses_title">Licenses</string>
+    <string name="licenses_this_app">This app</string>
+    <string name="licenses_app">Hermes for Android</string>
+    <string name="licenses_libraries">Libraries (%1$d)</string>
+    <string name="licenses_tailnet">Tailscale node, Go modules (%1$d)</string>
     <string name="settings_tailscale_log">Tailscale log</string>
     <string name="settings_empty">Empty</string>
     <string name="common_close">Close</string>
