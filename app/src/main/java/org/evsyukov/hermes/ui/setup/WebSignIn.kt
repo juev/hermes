@@ -21,12 +21,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.server.LocalForwardProxy
 import org.evsyukov.hermes.data.server.ProxySettings
 import java.util.concurrent.Executors
@@ -59,8 +61,8 @@ fun WebSignIn(url: String, route: ProxySettings, onCancel: () -> Unit) {
     }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(
-            title = { Text("Вход", fontSize = 17.sp) },
-            navigationIcon = { IconButton(onClick = onCancel) { Icon(Icons.Outlined.Close, "Отмена") } },
+            title = { Text(stringResource(R.string.setup_web_title), fontSize = 17.sp) },
+            navigationIcon = { IconButton(onClick = onCancel) { Icon(Icons.Outlined.Close, stringResource(R.string.common_cancel)) } },
         )
         if (ready) {
             AndroidView(

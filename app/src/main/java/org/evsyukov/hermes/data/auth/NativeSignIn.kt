@@ -43,6 +43,9 @@ sealed interface CallbackResult {
     data class Error(val error: String, val description: String?) : CallbackResult
 }
 
+/** The words of the page the browser shows after the sign-in, supplied by the caller in the user's language. */
+data class CallbackPageText(val signedIn: String, val failed: String, val back: String)
+
 /**
  * The dashboard accepts a native redirect only on the loopback interface (`native_pkce`), so the app
  * listens on 127.0.0.1 while the sign-in runs in a Custom Tab, the way RFC 8252 describes.
@@ -54,20 +57,20 @@ class LoopbackReceiver : AutoCloseable {
 
     /**
      * Waits for the one request to `/callback` and answers it with a page that sends the browser back
-     * to the app through [returnUrl]. Other requests (a favicon) are answered with 404 and skipped.
+     * to the app through [returnUrl], worded by [page]. Other requests (a favicon) are answered with 404 and skipped.
      */
-    suspend fun await(returnUrl: String, timeoutMillis: Long = 5 * 60_000): CallbackResult = withContext(Dispatchers.IO) {
+    suspend fun await(returnUrl: String, page: CallbackPageText, timeoutMillis: Long = 5 * 60_000): CallbackResult = withContext(Dispatchers.IO) {
         // accept() ignores coroutine cancellation; closing the socket ends it when the sign-in is abandoned.
         coroutineContext[Job]?.invokeOnCompletion { socket.close() }
         withTimeout(timeoutMillis) {
             var result: CallbackResult? = null
-            while (result == null) result = acceptOne(returnUrl)
+            while (result == null) result = acceptOne(returnUrl, page)
             result
         }
     }
 
     /** Serves one request; null when it was not the callback. */
-    private fun acceptOne(returnUrl: String): CallbackResult? {
+    private fun acceptOne(returnUrl: String, page: CallbackPageText): CallbackResult? {
         val client = try {
             socket.accept()
         } catch (e: SocketException) {
@@ -83,7 +86,7 @@ class LoopbackReceiver : AutoCloseable {
             }
             val params = parseQuery(target.substringAfter('?', ""))
             val error = params["error"]
-            val body = callbackPage(returnUrl, error == null).toByteArray(Charsets.UTF_8)
+            val body = callbackPage(returnUrl, page, error == null).toByteArray(Charsets.UTF_8)
             out.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
             out.write(body)
             out.flush()
@@ -108,8 +111,8 @@ class LoopbackReceiver : AutoCloseable {
                 key to value
             }
 
-        private fun callbackPage(returnUrl: String, ok: Boolean): String {
-            val title = if (ok) "Вход выполнен" else "Вход не удался"
+        private fun callbackPage(returnUrl: String, page: CallbackPageText, ok: Boolean): String {
+            val title = if (ok) page.signedIn else page.failed
             return """
                 <!doctype html><html><head><meta charset="utf-8">
                 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -117,7 +120,7 @@ class LoopbackReceiver : AutoCloseable {
                 <style>body{font-family:sans-serif;background:#212121;color:#ececec;display:flex;flex-direction:column;
                 align-items:center;justify-content:center;height:90vh;margin:0}a{margin-top:24px;padding:14px 28px;
                 border-radius:24px;background:#fff;color:#0d0d0d;text-decoration:none;font-weight:600}</style>
-                </head><body><h2>$title</h2><a href="$returnUrl">Вернуться в Hermes</a>
+                </head><body><h2>$title</h2><a href="$returnUrl">${page.back}</a>
                 <script>setTimeout(function(){location.href="$returnUrl"},150)</script></body></html>
             """.trimIndent()
         }

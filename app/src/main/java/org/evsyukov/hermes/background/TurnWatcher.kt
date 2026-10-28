@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.Connection
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.ServerRequest
@@ -72,7 +73,7 @@ class TurnWatcher(
     fun liveOf(storedId: String): String? = chats.entries.firstOrNull { it.value == storedId }?.key
 
     /** The app is about to start a turn; the service starts now, while the app may still start it. */
-    fun turnStarting() = HermesService.start(context, "Hermes отвечает…")
+    fun turnStarting() = HermesService.start(context, context.getString(R.string.notify_replying))
 
     private fun onEvent(event: GatewayEvent) {
         val live = event.sessionId ?: return
@@ -92,7 +93,7 @@ class TurnWatcher(
                 _running.update { it - live }
                 val failed = event.payload.string("status") == "error"
                 if (!inForeground || visibleChat != stored) {
-                    val shown = if (failed) event.payload.string("error") ?: "ошибка модели" else stripMedia(text).take(400)
+                    val shown = if (failed) event.payload.string("error") ?: context.getString(R.string.notify_model_error) else stripMedia(text).take(400)
                     if (shown.isNotBlank()) notifications.answer(stored, titles[stored] ?: "Hermes", shown, failed)
                 }
                 settle()
@@ -108,11 +109,17 @@ class TurnWatcher(
             "approval" -> notifications.request(
                 stored,
                 request.id,
-                "Разрешить команду?",
+                context.getString(R.string.notify_approval_title),
                 request.params.string("command") ?: request.params.string("description").orEmpty(),
                 (request.params["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: listOf("once", "deny"),
             )
-            "clarify", "sudo", "secret" -> notifications.request(stored, request.id, "Агент ждёт ответа", "Откройте чат, чтобы ответить", emptyList())
+            "clarify", "sudo", "secret" -> notifications.request(
+                stored,
+                request.id,
+                context.getString(R.string.notify_waiting_title),
+                context.getString(R.string.notify_waiting_text),
+                emptyList(),
+            )
         }
     }
 

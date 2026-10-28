@@ -40,6 +40,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -50,6 +52,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.AdminApi
 import org.evsyukov.hermes.data.remote.ConfigField
 import org.evsyukov.hermes.data.remote.HermesJson
@@ -65,37 +68,38 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
     val info = rememberLoadable { api.modelInfo() }
     val options = rememberLoadable { api.modelOptions() }
     var confirm by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    val context = LocalContext.current
 
     fun pick(provider: String, model: String, confirmed: Boolean = false) = scope.attempt(snackbar) {
         val result = api.setModel(provider, model, confirmed)
         if (result.bool("confirm_required") == true) {
-            confirm = Triple(provider, model, result.string("confirm_message") ?: "Модель дорогая.")
+            confirm = Triple(provider, model, result.string("confirm_message") ?: context.getString(R.string.admin_model_expensive))
         } else {
-            snackbar.showSnackbar(result.string("notice") ?: "Новые чаты пойдут на $model")
+            snackbar.showSnackbar(result.string("notice") ?: context.getString(R.string.admin_model_new_chats, model))
             info.reload()
             options.reload()
         }
     }
 
-    AdminScaffold("Модель", onBack, info.loading || options.loading, { info.reload(); options.reload() }, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_model), onBack, info.loading || options.loading, { info.reload(); options.reload() }, snackbar) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 info.value?.let { m ->
                     Card {
-                        KeyValue("Сейчас", m.string("model").orEmpty())
-                        KeyValue("Провайдер", m.string("provider").orEmpty())
-                        m.string("effective_context_length")?.let { KeyValue("Контекст", it) }
+                        KeyValue(stringResource(R.string.admin_model_now), m.string("model").orEmpty())
+                        KeyValue(stringResource(R.string.admin_model_provider), m.string("provider").orEmpty())
+                        m.string("effective_context_length")?.let { KeyValue(stringResource(R.string.admin_model_context), it) }
                     }
                 }
                 Text(
-                    "Выбор меняет config.yaml и действует на новые чаты. Модель одного чата меняется в самом чате, нажатием на заголовок.",
+                    stringResource(R.string.admin_model_info),
                     color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(16.dp),
                 )
                 ErrorText(info.error ?: options.error)
             }
             options.value?.providers?.forEach { provider ->
                 item(key = "p:${provider.slug}") {
-                    SectionTitle(provider.name + if (provider.current) " · текущий" else "")
+                    SectionTitle(provider.name + if (provider.current) stringResource(R.string.admin_model_current) else "")
                     provider.warning?.let { Text(it, color = colors.warning, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
                 }
                 items(provider.models, key = { "${provider.slug}/$it" }) { model ->
@@ -108,7 +112,7 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
         }
     }
     confirm?.let { (provider, model, message) ->
-        ConfirmDialog("Дорогая модель", message, "Переключить", { pick(provider, model, confirmed = true) }) { confirm = null }
+        ConfirmDialog(stringResource(R.string.admin_model_expensive_title), message, stringResource(R.string.chat_switch), { pick(provider, model, confirmed = true) }) { confirm = null }
     }
 }
 
@@ -123,10 +127,11 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
     var category by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ConfigField?>(null) }
     var raw by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     AdminScaffold(
-        "Настройки", onBack, schema.loading || config.loading, { schema.reload(); config.reload() }, snackbar,
-        actions = { IconButton(onClick = { raw = true }) { Icon(Icons.Outlined.Code, "config.yaml целиком") } },
+        stringResource(R.string.admin_config), onBack, schema.loading || config.loading, { schema.reload(); config.reload() }, snackbar,
+        actions = { IconButton(onClick = { raw = true }) { Icon(Icons.Outlined.Code, stringResource(R.string.admin_config_raw)) } },
     ) {
         val fields = schema.value?.fields.orEmpty()
         val categories = remember(schema.value) {
@@ -135,11 +140,11 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
         }
         Column(Modifier.fillMaxSize()) {
             OutlinedTextField(
-                query, { query = it }, placeholder = { Text("Поиск по ключам и описаниям") }, singleLine = true,
+                query, { query = it }, placeholder = { Text(stringResource(R.string.admin_config_search)) }, singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             )
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(category == null, { category = null }, label = { Text("Все") })
+                FilterChip(category == null, { category = null }, label = { Text(stringResource(R.string.common_all)) })
                 categories.forEach { c -> FilterChip(category == c, { category = c }, label = { Text(c) }) }
             }
             ErrorText(schema.error ?: config.error)
@@ -163,7 +168,7 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
         val current = config.value?.let { AdminApi.valueAt(it, field.path) } ?: JsonNull
         FieldEditor(field, current, onDismiss = { editing = null }) { value ->
             editing = null
-            scope.attempt(snackbar, "Сохранено: ${field.path}") {
+            scope.attempt(snackbar, context.getString(R.string.admin_config_saved, field.path)) {
                 api.setConfig(field.path, value)
                 config.reload()
             }
@@ -193,6 +198,7 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
     }
     var flag by remember { mutableStateOf((current as? JsonPrimitive)?.content == "true") }
     var error by remember { mutableStateOf<String?>(null) }
+    val unparsed = stringResource(R.string.admin_config_unparsed)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(field.path, fontSize = 16.sp) },
@@ -201,7 +207,7 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
                 if (field.description != field.path) Text(field.description, color = colors.secondaryText, fontSize = 14.sp)
                 when {
                     field.type == "boolean" -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (flag) "Включено" else "Выключено", modifier = Modifier.weight(1f))
+                        Text(stringResource(if (flag) R.string.admin_config_on else R.string.admin_config_off), modifier = Modifier.weight(1f))
                         Switch(flag, { flag = it })
                     }
                     field.options.isNotEmpty() -> {
@@ -224,7 +230,7 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
                         modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
                     )
                 }
-                if (structured) Text("Значение в JSON", color = colors.faintText, fontSize = 12.sp)
+                if (structured) Text(stringResource(R.string.admin_config_json), color = colors.faintText, fontSize = 12.sp)
                 error?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
             }
         },
@@ -236,10 +242,10 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
                     structured -> runCatching { HermesJson.parseToJsonElement(text) }.getOrNull()
                     else -> JsonPrimitive(text)
                 }
-                if (value == null) error = "Значение не разобрано" else onSave(value)
-            }) { Text("Сохранить") }
+                if (value == null) error = unparsed else onSave(value)
+            }) { Text(stringResource(R.string.common_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -256,7 +262,7 @@ private fun RawConfigDialog(api: AdminApi, onDismiss: () -> Unit, onSaved: () ->
         title = { Text("config.yaml") },
         text = {
             Column {
-                Text("Файл заменяется целиком: удалённые строки исчезнут с сервера.", color = colors.warning, fontSize = 13.sp)
+                Text(stringResource(R.string.admin_config_raw_warning), color = colors.warning, fontSize = 13.sp)
                 Spacer(Modifier.size(8.dp))
                 OutlinedTextField(
                     text, { text = it },
@@ -266,11 +272,11 @@ private fun RawConfigDialog(api: AdminApi, onDismiss: () -> Unit, onSaved: () ->
                 (error ?: loaded.error)?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
             }
         },
-        confirmButton = { TextButton(enabled = loaded.value != null && text != loaded.value, onClick = { confirm = true }) { Text("Сохранить") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+        confirmButton = { TextButton(enabled = loaded.value != null && text != loaded.value, onClick = { confirm = true }) { Text(stringResource(R.string.common_save)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) } },
     )
     if (confirm) {
-        ConfirmDialog("Заменить config.yaml?", "Сервер перепишет файл этим текстом.", "Заменить", {
+        ConfirmDialog(stringResource(R.string.admin_config_replace_title), stringResource(R.string.admin_config_replace_text), stringResource(R.string.admin_config_replace), {
             scope.launchCatching({ error = it }) {
                 api.saveRawConfig(text)
                 onSaved()
@@ -292,14 +298,15 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
     var deleting by remember { mutableStateOf<String?>(null) }
     var revealing by remember { mutableStateOf<String?>(null) }
     var revealed by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val context = LocalContext.current
 
-    AdminScaffold("Секреты", onBack, env.loading, env.reload, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_secrets), onBack, env.loading, env.reload, snackbar) {
         Column(Modifier.fillMaxSize()) {
-            OutlinedTextField(query, { query = it }, placeholder = { Text("Поиск") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
+            OutlinedTextField(query, { query = it }, placeholder = { Text(stringResource(R.string.common_search)) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
             Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(onlySet, { onlySet = true }, label = { Text("Заданные") })
-                FilterChip(!onlySet, { onlySet = false }, label = { Text("Все") })
-                FilterChip(false, { editing = "" }, label = { Text("+ Добавить") })
+                FilterChip(onlySet, { onlySet = true }, label = { Text(stringResource(R.string.admin_secrets_set)) })
+                FilterChip(!onlySet, { onlySet = false }, label = { Text(stringResource(R.string.common_all)) })
+                FilterChip(false, { editing = "" }, label = { Text(stringResource(R.string.admin_secrets_add)) })
             }
             ErrorText(env.error)
             val vars = env.value.orEmpty().entries
@@ -312,10 +319,10 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
                     ClickRow(key, v?.string("description") ?: v?.string("category"), onClick = { editing = key }) {
                         if (set) {
                             Text(v.string("redacted_value")?.removePrefix("«redacted:")?.removeSuffix("»") ?: "•••", color = colors.faintText, fontSize = 12.sp)
-                            IconButton(onClick = { revealing = key }) { Icon(Icons.Outlined.Visibility, "Показать", tint = colors.secondaryText) }
-                            IconButton(onClick = { deleting = key }) { Icon(Icons.Outlined.Delete, "Удалить", tint = colors.danger) }
+                            IconButton(onClick = { revealing = key }) { Icon(Icons.Outlined.Visibility, stringResource(R.string.admin_secrets_show), tint = colors.secondaryText) }
+                            IconButton(onClick = { deleting = key }) { Icon(Icons.Outlined.Delete, stringResource(R.string.common_delete), tint = colors.danger) }
                         } else {
-                            Text("не задан", color = colors.faintText, fontSize = 12.sp)
+                            Text(stringResource(R.string.admin_secrets_not_set), color = colors.faintText, fontSize = 12.sp)
                         }
                     }
                     HorizontalDivider(color = colors.divider)
@@ -328,30 +335,30 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
         var value by remember(key) { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { editing = null },
-            title = { Text(if (key.isEmpty()) "Новая переменная" else key) },
+            title = { Text(if (key.isEmpty()) stringResource(R.string.admin_secrets_new) else key) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (key.isEmpty()) OutlinedTextField(name, { name = it.uppercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = { Text("Имя") }, singleLine = true)
-                    OutlinedTextField(value, { value = it }, label = { Text("Новое значение") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
-                    Text("Значение уходит в .env сервера; прежнее заменится.", color = colors.faintText, fontSize = 12.sp)
+                    if (key.isEmpty()) OutlinedTextField(name, { name = it.uppercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = { Text(stringResource(R.string.admin_secrets_name)) }, singleLine = true)
+                    OutlinedTextField(value, { value = it }, label = { Text(stringResource(R.string.admin_secrets_value)) }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    Text(stringResource(R.string.admin_secrets_hint_env), color = colors.faintText, fontSize = 12.sp)
                 }
             },
             confirmButton = {
                 TextButton(enabled = name.isNotBlank() && value.isNotEmpty(), onClick = {
                     editing = null
-                    scope.attempt(snackbar, "$name сохранён") { api.setEnv(name, value); env.reload() }
-                }) { Text("Сохранить") }
+                    scope.attempt(snackbar, context.getString(R.string.admin_secrets_saved, name)) { api.setEnv(name, value); env.reload() }
+                }) { Text(stringResource(R.string.common_save)) }
             },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text("Отмена") } },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     deleting?.let { key ->
-        ConfirmDialog("Удалить $key?", "Ключ уйдёт из .env, связанные записи пула ключей тоже.", "Удалить", {
-            scope.attempt(snackbar, "$key удалён") { api.deleteEnv(key); env.reload() }
+        ConfirmDialog(stringResource(R.string.admin_secrets_delete_title, key), stringResource(R.string.admin_secrets_delete_text), stringResource(R.string.common_delete), {
+            scope.attempt(snackbar, context.getString(R.string.admin_secrets_deleted, key)) { api.deleteEnv(key); env.reload() }
         }) { deleting = null }
     }
     revealing?.let { key ->
-        ConfirmDialog("Показать $key?", "Значение придёт на телефон открытым текстом. Сервер разрешает 5 показов за 30 секунд.", "Показать", {
+        ConfirmDialog(stringResource(R.string.admin_secrets_reveal_title, key), stringResource(R.string.admin_secrets_reveal_text), stringResource(R.string.admin_secrets_show), {
             scope.attempt(snackbar) { revealed = key to api.revealEnv(key) }
         }) { revealing = null }
     }
@@ -360,7 +367,7 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
             onDismissRequest = { revealed = null },
             title = { Text(key) },
             text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(value, fontFamily = FontFamily.Monospace) } },
-            confirmButton = { TextButton(onClick = { revealed = null }) { Text("Скрыть") } },
+            confirmButton = { TextButton(onClick = { revealed = null }) { Text(stringResource(R.string.common_hide)) } },
         )
     }
 }
@@ -369,7 +376,7 @@ private fun kotlinx.coroutines.CoroutineScope.launchCatching(onError: (String) -
     try {
         block()
     } catch (e: Exception) {
-        onError(e.message ?: "Ошибка")
+        onError(e.message ?: e.javaClass.simpleName)
     }
 }
 

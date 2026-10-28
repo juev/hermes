@@ -25,6 +25,8 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.R
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -44,7 +46,7 @@ enum class SocketState { DISCONNECTED, CONNECTING, READY }
  * It connects on demand, pings while open and reconnects with a growing pause after a drop; the
  * owner resumes its sessions on [ready].
  */
-class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineScope) {
+class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineScope, private val strings: AppStrings) {
     private val _state = MutableStateFlow(SocketState.DISCONNECTED)
     val state: StateFlow<SocketState> = _state.asStateFlow()
 
@@ -88,7 +90,7 @@ class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineSc
         heartbeat?.cancel()
         socket?.close(1000, "bye")
         socket = null
-        failPending(IOException("Соединение закрыто"))
+        failPending(IOException(strings.get(R.string.error_connection_closed)))
         _state.value = SocketState.DISCONNECTED
     }
 
@@ -116,7 +118,7 @@ class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineSc
             }
             heartbeat?.cancel()
             _state.value = SocketState.DISCONNECTED
-            failPending(IOException("Соединение с сервером прервалось"))
+            failPending(IOException(strings.get(R.string.error_connection_lost)))
             if (!wanted) break
             delay(pause)
             pause = (pause * 2).coerceAtMost(30_000L)
@@ -153,7 +155,7 @@ class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineSc
         val sent = socket?.send(HermesJson.encodeToString(JsonElement.serializer(), frame)) ?: false
         if (!sent) {
             pending.remove(id)
-            throw IOException("Нет соединения с сервером")
+            throw IOException(strings.get(R.string.error_no_connection))
         }
         return try {
             withTimeout(timeoutMillis) { deferred.await() }
@@ -216,7 +218,7 @@ class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineSc
                 val error = frame["error"] as? JsonObject
                 if (error != null) {
                     deferred.completeExceptionally(
-                        RpcException(error.long("code")?.toInt() ?: -1, error.string("message") ?: "Ошибка сервера", error["data"]),
+                        RpcException(error.long("code")?.toInt() ?: -1, error.string("message") ?: strings.get(R.string.error_server), error["data"]),
                     )
                 } else {
                     deferred.complete(frame["result"] ?: JsonNull)
@@ -270,12 +272,12 @@ class GatewaySocket(private val http: HermesHttp, private val scope: CoroutineSc
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (code == 4401) Log.w(TAG, "Gateway refused the sign-in")
             closed.complete(Unit)
-            if (!readyGate.isCompleted) readyGate.completeExceptionally(IOException("Сервер закрыл соединение: $code $reason"))
+            if (!readyGate.isCompleted) readyGate.completeExceptionally(IOException(strings.get(R.string.error_server_closed, code, reason)))
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             closed.complete(Unit)
-            if (!readyGate.isCompleted) readyGate.completeExceptionally(IOException(t.message ?: "Сбой соединения", t))
+            if (!readyGate.isCompleted) readyGate.completeExceptionally(IOException(t.message ?: strings.get(R.string.error_connection_failed), t))
         }
     }
 

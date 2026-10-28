@@ -33,9 +33,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.serialization.json.JsonObject
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.AdminApi
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.double
@@ -43,16 +47,16 @@ import org.evsyukov.hermes.data.remote.long
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
-enum class AdminSection(val title: String, val hint: String, val icon: ImageVector) {
-    OVERVIEW("Состояние", "Gateway, платформы, ресурсы, обновления", Icons.Outlined.MonitorHeart),
-    MODEL("Модель", "Основная модель новых чатов", Icons.Outlined.Psychology),
-    CONFIG("Настройки", "config.yaml по схеме и целиком", Icons.Outlined.Tune),
-    SECRETS("Секреты", "Ключи и переменные .env", Icons.Outlined.Key),
-    CRON("Расписание", "Задачи cron: запуск, пауза, история", Icons.Outlined.Schedule),
-    TOOLS("Навыки и инструменты", "Skills, toolsets, MCP-серверы", Icons.Outlined.Extension),
-    PLATFORMS("Каналы", "Telegram, Matrix и другие платформы", Icons.Outlined.Forum),
-    LOGS("Журналы", "agent, errors, gateway, mcp", Icons.AutoMirrored.Outlined.Article),
-    USAGE("Расход", "Токены и стоимость по дням и моделям", Icons.AutoMirrored.Outlined.ShowChart),
+enum class AdminSection(@StringRes val title: Int, @StringRes val hint: Int, val icon: ImageVector) {
+    OVERVIEW(R.string.admin_overview, R.string.admin_overview_hint, Icons.Outlined.MonitorHeart),
+    MODEL(R.string.admin_model, R.string.admin_model_hint, Icons.Outlined.Psychology),
+    CONFIG(R.string.admin_config, R.string.admin_config_hint, Icons.Outlined.Tune),
+    SECRETS(R.string.admin_secrets, R.string.admin_secrets_hint, Icons.Outlined.Key),
+    CRON(R.string.admin_cron, R.string.admin_cron_hint, Icons.Outlined.Schedule),
+    TOOLS(R.string.admin_tools, R.string.admin_tools_hint, Icons.Outlined.Extension),
+    PLATFORMS(R.string.admin_platforms, R.string.admin_platforms_hint, Icons.Outlined.Forum),
+    LOGS(R.string.admin_logs, R.string.admin_logs_hint, Icons.AutoMirrored.Outlined.Article),
+    USAGE(R.string.admin_usage, R.string.admin_usage_hint, Icons.AutoMirrored.Outlined.ShowChart),
 }
 
 @Composable
@@ -74,12 +78,12 @@ fun AdminScreen(api: AdminApi, section: AdminSection?, onOpen: (AdminSection) ->
 @Composable
 private fun AdminHub(api: AdminApi, onOpen: (AdminSection) -> Unit, onBack: () -> Unit) {
     val status = rememberLoadable { api.status() }
-    AdminScaffold("Управление сервером", onBack, status.loading, status.reload) {
+    AdminScaffold(stringResource(R.string.sidebar_server), onBack, status.loading, status.reload) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             status.value?.let { StatusSummary(it) }
             ErrorText(status.error)
             AdminSection.entries.forEach { section ->
-                ClickRow(section.title, section.hint, onClick = { onOpen(section) }) {}
+                ClickRow(stringResource(section.title), stringResource(section.hint), onClick = { onOpen(section) }) {}
             }
         }
     }
@@ -95,7 +99,7 @@ private fun StatusSummary(status: JsonObject) {
             Text("Hermes ${status.string("version").orEmpty()}", color = colors.text, fontSize = 17.sp)
         }
         Text(
-            "Gateway: ${status.string("gateway_state") ?: "?"} · активных сессий: ${status.long("active_sessions") ?: 0}",
+            stringResource(R.string.admin_summary, status.string("gateway_state") ?: "?", status.long("active_sessions") ?: 0),
             color = colors.secondaryText, fontSize = 14.sp,
         )
     }
@@ -111,24 +115,27 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     var action by remember { mutableStateOf<String?>(null) }
     var update by remember { mutableStateOf<JsonObject?>(null) }
+    val restartConfirm = stringResource(R.string.admin_restart_confirm)
+    val stopConfirm = stringResource(R.string.admin_stop_confirm)
+    val updateConfirm = stringResource(R.string.admin_update_confirm)
 
-    AdminScaffold("Состояние", onBack, status.loading || stats.loading, { status.reload(); stats.reload() }, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_overview), onBack, status.loading || stats.loading, { status.reload(); stats.reload() }, snackbar) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ErrorText(status.error)
             status.value?.let { s ->
                 SectionTitle("Hermes")
                 Card {
-                    KeyValue("Версия", "${s.string("version").orEmpty()} (${s.string("release_date").orEmpty()})")
+                    KeyValue(stringResource(R.string.admin_overview_version), "${s.string("version").orEmpty()} (${s.string("release_date").orEmpty()})")
                     KeyValue("Gateway", s.string("gateway_state") ?: "?", if (s.bool("gateway_running") == true) colors.success else colors.danger)
-                    KeyValue("Активные агенты", (s.long("active_agents") ?: 0).toString())
-                    KeyValue("Активные сессии", (s.long("active_sessions") ?: 0).toString())
-                    KeyValue("Профили", (s["profiles"] as? kotlinx.serialization.json.JsonArray)?.joinToString { it.toString().trim('"') }.orEmpty())
+                    KeyValue(stringResource(R.string.admin_overview_agents), (s.long("active_agents") ?: 0).toString())
+                    KeyValue(stringResource(R.string.admin_overview_sessions), (s.long("active_sessions") ?: 0).toString())
+                    KeyValue(stringResource(R.string.admin_overview_profiles), (s["profiles"] as? kotlinx.serialization.json.JsonArray)?.joinToString { it.toString().trim('"') }.orEmpty())
                     (s["memory"] as? JsonObject)?.let { m ->
-                        KeyValue("Память gateway", "${m.long("gateway_rss_mb") ?: 0} МБ · свободно ${m.long("system_available_mb") ?: 0} МБ")
+                        KeyValue(stringResource(R.string.admin_overview_memory), stringResource(R.string.admin_overview_memory_value, m.long("gateway_rss_mb") ?: 0, m.long("system_available_mb") ?: 0))
                     }
-                    (s["disk"] as? JsonObject)?.let { d -> KeyValue("Диск", "занято ${d.double("used_percent") ?: 0.0}% · свободно ${(d.long("free_mb") ?: 0) / 1024} ГБ") }
+                    (s["disk"] as? JsonObject)?.let { d -> KeyValue(stringResource(R.string.admin_overview_disk), stringResource(R.string.admin_overview_disk_value, d.double("used_percent") ?: 0.0, (d.long("free_mb") ?: 0) / 1024)) }
                 }
-                SectionTitle("Платформы")
+                SectionTitle(stringResource(R.string.admin_overview_platforms))
                 Card {
                     (s["gateway_platforms"] as? JsonObject)?.forEach { (name, value) ->
                         val p = value as? JsonObject ?: return@forEach
@@ -141,7 +148,7 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
                         p.string("error_message")?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
                     }
                 }
-                SectionTitle("Компоненты")
+                SectionTitle(stringResource(R.string.admin_overview_components))
                 Card {
                     (s["components"] as? JsonObject)?.forEach { (name, value) ->
                         val c = value as? JsonObject ?: return@forEach
@@ -155,55 +162,56 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
                 }
             }
             stats.value?.let { st ->
-                SectionTitle("Система")
+                SectionTitle(stringResource(R.string.admin_overview_system))
                 Card {
-                    KeyValue("Хост", "${st.string("hostname").orEmpty()} · ${st.string("system").orEmpty()} ${st.string("arch").orEmpty()}")
-                    KeyValue("CPU", "${st.double("cpu_percent") ?: 0.0}% из ${st.long("cpu_count") ?: 0} ядер")
-                    (st["load_avg"] as? kotlinx.serialization.json.JsonArray)?.let { KeyValue("Нагрузка", it.joinToString(" ") { v -> v.toString().take(5) }) }
-                    st.long("uptime_seconds")?.let { KeyValue("Работает", "${it / 86400} д ${it % 86400 / 3600} ч") }
+                    KeyValue(stringResource(R.string.admin_overview_host), "${st.string("hostname").orEmpty()} · ${st.string("system").orEmpty()} ${st.string("arch").orEmpty()}")
+                    val cores = st.long("cpu_count") ?: 0
+                    KeyValue("CPU", pluralStringResource(R.plurals.admin_overview_cpu_value, cores.toInt(), st.double("cpu_percent") ?: 0.0, cores))
+                    (st["load_avg"] as? kotlinx.serialization.json.JsonArray)?.let { KeyValue(stringResource(R.string.admin_overview_load), it.joinToString(" ") { v -> v.toString().take(5) }) }
+                    st.long("uptime_seconds")?.let { KeyValue(stringResource(R.string.admin_overview_uptime), stringResource(R.string.admin_overview_uptime_value, it / 86400, it % 86400 / 3600)) }
                 }
             }
 
             SectionTitle("Gateway")
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
-                    confirm = "Перезапуск прервёт идущие ответы во всех каналах. Перезапустить gateway?" to {
+                    confirm = restartConfirm to {
                         scope.attempt(snackbar) { action = api.gateway("restart").string("name") ?: "gateway-restart" }
                     }
-                }) { Text("Перезапустить") }
-                OutlinedButton(onClick = { scope.attempt(snackbar) { action = api.gateway("start").string("name") ?: "gateway-start" } }) { Text("Запустить") }
+                }) { Text(stringResource(R.string.admin_restart)) }
+                OutlinedButton(onClick = { scope.attempt(snackbar) { action = api.gateway("start").string("name") ?: "gateway-start" } }) { Text(stringResource(R.string.admin_start)) }
                 OutlinedButton(onClick = {
-                    confirm = "Остановить gateway? Telegram, Matrix и cron перестанут работать до запуска." to {
+                    confirm = stopConfirm to {
                         scope.attempt(snackbar) { action = api.gateway("stop", interrupt = true).string("name") ?: "gateway-stop" }
                     }
-                }) { Text("Остановить", color = colors.danger) }
+                }) { Text(stringResource(R.string.admin_stop), color = colors.danger) }
             }
 
-            SectionTitle("Обновление")
+            SectionTitle(stringResource(R.string.admin_update_title))
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { scope.attempt(snackbar) { update = api.updateCheck(force = true) } }) { Text("Проверить обновления") }
+                OutlinedButton(onClick = { scope.attempt(snackbar) { update = api.updateCheck(force = true) } }) { Text(stringResource(R.string.admin_update_check)) }
                 update?.let { u ->
                     Text(
-                        u.string("message") ?: if (u.bool("update_available") == true) "Есть обновление" else "Обновлений нет",
+                        u.string("message") ?: stringResource(if (u.bool("update_available") == true) R.string.admin_update_available else R.string.admin_update_none),
                         color = colors.secondaryText, fontSize = 14.sp,
                     )
                     if (u.bool("update_available") == true && u.bool("can_apply") == true) {
                         Button(
                             onClick = {
-                                confirm = "Hermes обновится и перезапустится. Продолжить?" to {
+                                confirm = updateConfirm to {
                                     scope.attempt(snackbar) { action = api.update().string("name") ?: "hermes-update" }
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast),
-                        ) { Text("Обновить") }
+                        ) { Text(stringResource(R.string.admin_update_apply)) }
                     } else if (u.bool("update_available") == true) {
-                        Text("Обновить отсюда нельзя: ${u.string("update_command") ?: "установка управляется снаружи"}", color = colors.faintText, fontSize = 13.sp)
+                        Text(stringResource(R.string.admin_update_manual, u.string("update_command") ?: stringResource(R.string.admin_update_external)), color = colors.faintText, fontSize = 13.sp)
                     }
                 }
             }
             Spacer(Modifier.size(32.dp))
         }
     }
-    confirm?.let { (text, run) -> ConfirmDialog("Подтвердите", text, "Да", run) { confirm = null } }
+    confirm?.let { (text, run) -> ConfirmDialog(stringResource(R.string.common_confirm_title), text, stringResource(R.string.common_yes), run) { confirm = null } }
     action?.let { name -> ActionLog(api, name) { action = null; status.reload() } }
 }

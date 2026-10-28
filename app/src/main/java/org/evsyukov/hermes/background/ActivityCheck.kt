@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.evsyukov.hermes.HermesApplication
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.server.ServerSession
@@ -55,7 +56,11 @@ class ActivityCheck(private val context: Context) {
             } catch (e: Exception) {
                 null
             }
-            notifications.activity(chat.id, chat.label, stripMedia(reply ?: chat.preview).take(400).ifBlank { "Новое сообщение" })
+            notifications.activity(
+                chat.id,
+                chat.label.ifBlank { context.getString(R.string.common_new_chat) },
+                stripMedia(reply ?: chat.preview).take(400).ifBlank { context.getString(R.string.notify_new_message) },
+            )
         }
         val newest = chats.maxOfOrNull { it.lastActive } ?: mark ?: System.currentTimeMillis() / 1000.0
         context.seenStore.edit { it[key(session)] = maxOf(newest, mark ?: 0.0) }

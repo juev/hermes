@@ -45,10 +45,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.evsyukov.hermes.R
 import java.text.DateFormat
 import java.time.OffsetDateTime
 import java.util.Date
@@ -82,21 +85,22 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
     var open by remember { mutableStateOf<JsonObject?>(null) }
     var creating by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    val context = LocalContext.current
 
     AdminScaffold(
-        "Расписание", onBack, jobs.loading, jobs.reload, snackbar,
-        actions = { IconButton(onClick = { creating = true }) { Icon(Icons.Outlined.Add, "Новая задача") } },
+        stringResource(R.string.admin_cron), onBack, jobs.loading, jobs.reload, snackbar,
+        actions = { IconButton(onClick = { creating = true }) { Icon(Icons.Outlined.Add, stringResource(R.string.admin_cron_new)) } },
     ) {
         ErrorText(jobs.error)
-        if (jobs.value?.isEmpty() == true) Text("Задач нет", color = colors.faintText, modifier = Modifier.padding(16.dp))
+        if (jobs.value?.isEmpty() == true) Text(stringResource(R.string.admin_cron_none), color = colors.faintText, modifier = Modifier.padding(16.dp))
         LazyColumn(Modifier.fillMaxSize()) {
             items(jobs.value.orEmpty(), key = { it.string("id").orEmpty() }) { job ->
                 val id = job.string("id").orEmpty()
                 val paused = job.string("state") == "paused" || job.bool("enabled") == false
                 ClickRow(
                     job.string("name") ?: id,
-                    "${job.string("schedule_display").orEmpty()} · следующий ${time(job.string("next_run_at"))}" +
-                        (job.string("last_status")?.let { " · последний: $it" } ?: ""),
+                    stringResource(R.string.admin_cron_next, job.string("schedule_display").orEmpty(), time(job.string("next_run_at"))) +
+                        (job.string("last_status")?.let { stringResource(R.string.admin_cron_last_status, it) } ?: ""),
                     onClick = { open = job },
                 ) {
                     Switch(!paused, { on ->
@@ -116,16 +120,16 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
             title = { Text(job.string("name") ?: id) },
             text = {
                 Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    KeyValue("Расписание", job.string("schedule_display").orEmpty())
-                    KeyValue("Доставка", job.string("deliver").orEmpty())
-                    KeyValue("Последний запуск", time(job.string("last_run_at")))
+                    KeyValue(stringResource(R.string.admin_cron), job.string("schedule_display").orEmpty())
+                    KeyValue(stringResource(R.string.admin_cron_deliver), job.string("deliver").orEmpty())
+                    KeyValue(stringResource(R.string.admin_cron_last_run), time(job.string("last_run_at")))
                     job.string("last_error")?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
                     job.string("prompt")?.takeIf { it.isNotBlank() }?.let {
-                        Text("Задание", color = colors.faintText, fontSize = 12.sp)
+                        Text(stringResource(R.string.admin_cron_task), color = colors.faintText, fontSize = 12.sp)
                         Text(it, color = colors.text, fontSize = 14.sp)
                     }
-                    job.string("script")?.takeIf { it.isNotBlank() }?.let { KeyValue("Скрипт", it) }
-                    Text("Запуски", color = colors.faintText, fontSize = 12.sp)
+                    job.string("script")?.takeIf { it.isNotBlank() }?.let { KeyValue(stringResource(R.string.admin_cron_script), it) }
+                    Text(stringResource(R.string.admin_cron_runs), color = colors.faintText, fontSize = 12.sp)
                     runs.value?.forEach { run ->
                         Text(
                             "${time(run.string("started_at"))} · ${run.string("preview") ?: run.string("id").orEmpty()}",
@@ -138,18 +142,18 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
             confirmButton = {
                 Row {
                     TextButton(onClick = {
-                        confirm = "Запустить «${job.string("name") ?: id}» сейчас? Задача потратит токены и может отправить сообщение." to {
-                            scope.attempt(snackbar, "Запущено") { api.cronCommand(id, "trigger"); jobs.reload() }
+                        confirm = context.getString(R.string.admin_cron_run_confirm, job.string("name") ?: id) to {
+                            scope.attempt(snackbar, context.getString(R.string.admin_cron_started)) { api.cronCommand(id, "trigger"); jobs.reload() }
                         }
-                    }) { Text("Запустить") }
+                    }) { Text(stringResource(R.string.admin_start)) }
                     TextButton(onClick = {
-                        confirm = "Удалить задачу «${job.string("name") ?: id}»?" to {
-                            scope.attempt(snackbar, "Удалено") { api.deleteCron(id); open = null; jobs.reload() }
+                        confirm = context.getString(R.string.admin_cron_delete_confirm, job.string("name") ?: id) to {
+                            scope.attempt(snackbar, context.getString(R.string.admin_cron_deleted)) { api.deleteCron(id); open = null; jobs.reload() }
                         }
-                    }) { Text("Удалить", color = colors.danger) }
+                    }) { Text(stringResource(R.string.common_delete), color = colors.danger) }
                 }
             },
-            dismissButton = { TextButton(onClick = { open = null }) { Text("Закрыть") } },
+            dismissButton = { TextButton(onClick = { open = null }) { Text(stringResource(R.string.common_close)) } },
         )
     }
     if (creating) {
@@ -160,14 +164,14 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
         val targets = rememberLoadable { api.cronTargets() }
         AlertDialog(
             onDismissRequest = { creating = false },
-            title = { Text("Новая задача") },
+            title = { Text(stringResource(R.string.admin_cron_new)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(name, { name = it }, label = { Text("Название") }, singleLine = true)
-                    OutlinedTextField(schedule, { schedule = it }, label = { Text("Расписание") }, placeholder = { Text("0 9 * * *, every 2h, 30m") }, singleLine = true)
-                    OutlinedTextField(prompt, { prompt = it }, label = { Text("Что сделать") }, minLines = 3)
+                    OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.admin_cron_name)) }, singleLine = true)
+                    OutlinedTextField(schedule, { schedule = it }, label = { Text(stringResource(R.string.admin_cron)) }, placeholder = { Text("0 9 * * *, every 2h, 30m") }, singleLine = true)
+                    OutlinedTextField(prompt, { prompt = it }, label = { Text(stringResource(R.string.admin_cron_prompt)) }, minLines = 3)
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilterChip(deliver == "local", { deliver = "local" }, label = { Text("Только сохранить") })
+                        FilterChip(deliver == "local", { deliver = "local" }, label = { Text(stringResource(R.string.admin_cron_local)) })
                         targets.value?.forEach { t ->
                             val target = t.string("id").orEmpty()
                             FilterChip(deliver == target, { deliver = target }, label = { Text(t.string("name") ?: target) })
@@ -178,13 +182,13 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(enabled = schedule.isNotBlank() && prompt.isNotBlank(), onClick = {
                     creating = false
-                    scope.attempt(snackbar, "Задача создана") { api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver); jobs.reload() }
-                }) { Text("Создать") }
+                    scope.attempt(snackbar, context.getString(R.string.admin_cron_created)) { api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver); jobs.reload() }
+                }) { Text(stringResource(R.string.admin_cron_create)) }
             },
-            dismissButton = { TextButton(onClick = { creating = false }) { Text("Отмена") } },
+            dismissButton = { TextButton(onClick = { creating = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
-    confirm?.let { (text, run) -> ConfirmDialog("Подтвердите", text, "Да", run) { confirm = null } }
+    confirm?.let { (text, run) -> ConfirmDialog(stringResource(R.string.common_confirm_title), text, stringResource(R.string.common_yes), run) { confirm = null } }
 }
 
 @Composable
@@ -198,13 +202,14 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
     val mcp = rememberLoadable { api.mcpServers() }
     var skillText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var query by remember { mutableStateOf("") }
+    val context = LocalContext.current
 
-    AdminScaffold("Навыки и инструменты", onBack, skills.loading || toolsets.loading || mcp.loading, { skills.reload(); toolsets.reload(); mcp.reload() }, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_tools), onBack, skills.loading || toolsets.loading || mcp.loading, { skills.reload(); toolsets.reload(); mcp.reload() }, snackbar) {
         PrimaryTabRow(tab, containerColor = colors.background) {
-            listOf("Навыки", "Инструменты", "MCP").forEachIndexed { i, label -> Tab(tab == i, { tab = i }, text = { Text(label) }) }
+            listOf(stringResource(R.string.admin_tab_skills), stringResource(R.string.admin_tab_tools), "MCP").forEachIndexed { i, label -> Tab(tab == i, { tab = i }, text = { Text(label) }) }
         }
         if (tab == 0) {
-            OutlinedTextField(query, { query = it }, placeholder = { Text("Поиск") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(12.dp))
+            OutlinedTextField(query, { query = it }, placeholder = { Text(stringResource(R.string.common_search)) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(12.dp))
         }
         when (tab) {
             0 -> {
@@ -228,7 +233,12 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
                     items(toolsets.value.orEmpty(), key = { it.string("name").orEmpty() }) { set ->
                         val name = set.string("name").orEmpty()
                         val tools = (set["tools"] as? JsonArray)?.size ?: 0
-                        val sub = listOfNotNull(set.string("description"), "$tools инстр.", if (set.bool("available") == false) "недоступен" else null, if (set.bool("configured") == false) "не настроен" else null)
+                        val sub = listOfNotNull(
+                            set.string("description"),
+                            stringResource(R.string.admin_tools_count, tools),
+                            if (set.bool("available") == false) stringResource(R.string.admin_tools_unavailable) else null,
+                            if (set.bool("configured") == false) stringResource(R.string.admin_tools_not_configured) else null,
+                        )
                         ClickRow(set.string("label") ?: name, sub.joinToString(" · "), onClick = {}) {
                             Switch(set.bool("enabled") == true, { on -> scope.attempt(snackbar) { api.toggleToolset(name, on); toolsets.reload() } })
                         }
@@ -238,16 +248,22 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
             }
             else -> {
                 ErrorText(mcp.error)
-                Text("Изменения MCP вступают в силу со следующей сессии или после перезапуска gateway.", color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+                Text(stringResource(R.string.admin_mcp_hint), color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(mcp.value.orEmpty(), key = { it.string("name").orEmpty() }) { server ->
                         val name = server.string("name").orEmpty()
                         val tools = (server["tools"] as? JsonArray)?.size
-                        ClickRow(name, listOfNotNull(server.string("transport"), server.string("url") ?: server.string("command"), tools?.let { "$it инстр." }).joinToString(" · "), onClick = {
+                        ClickRow(name, listOfNotNull(server.string("transport"), server.string("url") ?: server.string("command"), tools?.let { stringResource(R.string.admin_tools_count, it) }).joinToString(" · "), onClick = {
                             scope.attempt(snackbar) {
                                 val result = api.testMcp(name)
                                 val count = (result["tools"] as? JsonArray)?.size ?: 0
-                                snackbar.showSnackbar(if (result.bool("ok") == true) "$name: работает, $count инструментов" else "$name: ${result.string("error") ?: "не отвечает"}")
+                                snackbar.showSnackbar(
+                                    if (result.bool("ok") == true) {
+                                        context.resources.getQuantityString(R.plurals.admin_mcp_works, count, name, count)
+                                    } else {
+                                        "$name: ${result.string("error") ?: context.getString(R.string.admin_mcp_no_answer)}"
+                                    },
+                                )
                             }
                         }) {
                             Switch(server.bool("enabled") != false, { on -> scope.attempt(snackbar) { api.toggleMcp(name, on); mcp.reload() } })
@@ -263,7 +279,7 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
             onDismissRequest = { skillText = null },
             title = { Text(name) },
             text = { Box(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) { MarkdownText(text) } },
-            confirmButton = { TextButton(onClick = { skillText = null }) { Text("Закрыть") } },
+            confirmButton = { TextButton(onClick = { skillText = null }) { Text(stringResource(R.string.common_close)) } },
         )
     }
 }
@@ -274,7 +290,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
     val platforms = rememberLoadable { api.platforms() }
-    AdminScaffold("Каналы", onBack, platforms.loading, platforms.reload, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_platforms), onBack, platforms.loading, platforms.reload, snackbar) {
         ErrorText(platforms.error)
         LazyColumn(Modifier.fillMaxSize()) {
             val list = platforms.value.orEmpty().sortedByDescending { it.bool("enabled") == true }
@@ -287,7 +303,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
                     Column(Modifier.weight(1f)) {
                         Text(p.string("name") ?: id, color = colors.text)
                         Text(
-                            listOfNotNull(state, p.string("home_channel")?.let { "дом: $it" }).joinToString(" · "),
+                            listOfNotNull(state, p.string("home_channel")?.let { stringResource(R.string.admin_platforms_home, it) }).joinToString(" · "),
                             color = colors.faintText, fontSize = 13.sp,
                         )
                         p.string("error_message")?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
@@ -298,7 +314,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
                                 val r = api.testPlatform(id)
                                 snackbar.showSnackbar("${p.string("name") ?: id}: ${r.string("message") ?: r.string("state") ?: "?"}")
                             }
-                        }) { Text("Проверить") }
+                        }) { Text(stringResource(R.string.admin_platforms_test)) }
                     }
                 }
                 HorizontalDivider(color = colors.divider)
@@ -335,15 +351,15 @@ fun LogsScreen(api: AdminApi, onBack: () -> Unit) {
             delay(4_000)
         }
     }
-    AdminScaffold("Журналы", onBack, onRefresh = { tick++ }) {
+    AdminScaffold(stringResource(R.string.admin_logs), onBack, onRefresh = { tick++ }) {
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             LOG_FILES.forEach { f -> FilterChip(file == f, { file = f }, label = { Text(f) }) }
         }
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             LOG_LEVELS.forEach { l -> FilterChip(level == l, { level = l }, label = { Text(l) }) }
-            FilterChip(follow, { follow = !follow }, label = { Text("Следить") })
+            FilterChip(follow, { follow = !follow }, label = { Text(stringResource(R.string.admin_logs_follow)) })
         }
-        OutlinedTextField(search, { search = it }, placeholder = { Text("Фильтр по тексту") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
+        OutlinedTextField(search, { search = it }, placeholder = { Text(stringResource(R.string.admin_logs_filter)) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
         ErrorText(error)
         SelectionContainer {
             LazyColumn(Modifier.fillMaxSize().padding(8.dp).clip(RoundedCornerShape(10.dp)).background(colors.codeBackground), state = list) {
@@ -369,9 +385,14 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     var days by remember { mutableIntStateOf(30) }
     val usage = rememberLoadable(days) { api.usage(days) }
-    AdminScaffold("Расход", onBack, usage.loading, usage.reload) {
+    AdminScaffold(stringResource(R.string.admin_usage), onBack, usage.loading, usage.reload) {
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(1 to "День", 7 to "Неделя", 30 to "Месяц", 90 to "3 месяца").forEach { (d, label) -> FilterChip(days == d, { days = d }, label = { Text(label) }) }
+            listOf(
+                1 to stringResource(R.string.admin_usage_day),
+                7 to stringResource(R.string.admin_usage_week),
+                30 to stringResource(R.string.admin_usage_month),
+                90 to stringResource(R.string.admin_usage_quarter),
+            ).forEach { (d, label) -> FilterChip(days == d, { days = d }, label = { Text(label) }) }
         }
         ErrorText(usage.error)
         val data = usage.value ?: return@AdminScaffold
@@ -380,17 +401,17 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
                 Card {
                     val cost = (t.double("total_actual_cost") ?: 0.0).takeIf { it > 0 } ?: t.double("total_estimated_cost") ?: 0.0
                     Text("$${"%.2f".format(cost)}", color = colors.text, fontSize = 30.sp)
-                    KeyValue("Сессии", (t.long("total_sessions") ?: 0).toString())
-                    KeyValue("Вызовы API", (t.long("total_api_calls") ?: 0).toString())
-                    KeyValue("Токены на входе", tokens(t.long("total_input")))
-                    KeyValue("Токены на выходе", tokens(t.long("total_output")))
-                    KeyValue("Из кэша", tokens(t.long("total_cache_read")))
-                    KeyValue("Рассуждения", tokens(t.long("total_reasoning")))
+                    KeyValue(stringResource(R.string.admin_usage_sessions), (t.long("total_sessions") ?: 0).toString())
+                    KeyValue(stringResource(R.string.admin_usage_calls), (t.long("total_api_calls") ?: 0).toString())
+                    KeyValue(stringResource(R.string.admin_usage_input), tokens(t.long("total_input")))
+                    KeyValue(stringResource(R.string.admin_usage_output), tokens(t.long("total_output")))
+                    KeyValue(stringResource(R.string.admin_usage_cache), tokens(t.long("total_cache_read")))
+                    KeyValue(stringResource(R.string.admin_usage_reasoning), tokens(t.long("total_reasoning")))
                 }
             }
             val daily = (data["daily"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
             if (daily.isNotEmpty()) {
-                SectionTitle("По дням, $")
+                SectionTitle(stringResource(R.string.admin_usage_by_day))
                 val max = daily.maxOf { cost(it) }.coerceAtLeast(0.0001)
                 Row(Modifier.fillMaxWidth().height(140.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     daily.forEach { day ->
@@ -407,7 +428,7 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
             }
             val models = (data["by_model"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
             if (models.isNotEmpty()) {
-                SectionTitle("По моделям")
+                SectionTitle(stringResource(R.string.admin_usage_by_model))
                 Card {
                     models.sortedByDescending { cost(it) }.forEach { m ->
                         KeyValue(m.string("model").orEmpty(), "$${"%.2f".format(cost(m))} · ${tokens((m.long("input_tokens") ?: 0) + (m.long("output_tokens") ?: 0))}")

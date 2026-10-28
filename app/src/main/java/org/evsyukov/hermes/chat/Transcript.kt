@@ -196,7 +196,7 @@ fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): Lis
             val status = payload.string("status") ?: "complete"
             val final = payload.string("text")?.takeIf { it.isNotBlank() } ?: payload.string("rendered")?.takeIf { it.isNotBlank() }
             val error = if (status == "error") {
-                (payload["error"] as? JsonPrimitive)?.content ?: (payload["error"] as? JsonObject)?.string("message") ?: payload.string("failure_reason") ?: "Ошибка модели"
+                (payload["error"] as? JsonPrimitive)?.content ?: (payload["error"] as? JsonObject)?.string("message") ?: payload.string("failure_reason") ?: ""
             } else {
                 null
             }

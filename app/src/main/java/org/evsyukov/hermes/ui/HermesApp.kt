@@ -34,12 +34,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.server.ProxySettings
 import org.evsyukov.hermes.ui.setup.WebSignIn
 import org.evsyukov.hermes.data.remote.SocketState
@@ -244,11 +246,10 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
         return
     }
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Вход в $serverName", color = colors.text, fontSize = 24.sp)
+        Text(stringResource(R.string.setup_signin_title, serverName), color = colors.text, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(
-            if (route == null) "Откроется страница входа сервера. После входа браузер вернёт вас в приложение."
-            else "Сервер доступен только через выбранный маршрут, поэтому страница входа откроется внутри приложения.",
+            stringResource(if (route == null) R.string.setup_signin_browser_hint else R.string.setup_signin_inapp_hint),
             color = colors.secondaryText, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
@@ -256,16 +257,16 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
             enabled = job == null,
             colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast),
             onClick = { start(inApp = route != null) },
-        ) { if (job != null) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text("Войти") }
+        ) { if (job != null) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.setup_signin)) }
         TextButton(enabled = job == null, onClick = { start(inApp = route == null) }) {
-            Text(if (route == null) "Войти внутри приложения" else "Войти через браузер")
+            Text(stringResource(if (route == null) R.string.setup_signin_inapp else R.string.setup_signin_browser))
         }
-        if (job != null) TextButton(onClick = { job?.cancel() }) { Text("Отменить") }
+        if (job != null) TextButton(onClick = { job?.cancel() }) { Text(stringResource(R.string.setup_signin_cancel)) }
         error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = colors.danger, textAlign = TextAlign.Center)
         }
-        TextButton(onClick = onEditServer) { Text("Настройки сервера") }
+        TextButton(onClick = onEditServer) { Text(stringResource(R.string.setup_server_settings)) }
     }
 }
 
@@ -274,23 +275,23 @@ private fun OfflineScreen(error: String?, tailnetHint: Boolean, onRetry: () -> U
     val colors = ChatTheme.colors
     val context = LocalContext.current
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Сервер недоступен", color = colors.text, fontSize = 24.sp)
+        Text(stringResource(R.string.setup_offline_title), color = colors.text, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(error.orEmpty(), color = colors.secondaryText, textAlign = TextAlign.Center)
         if (tailnetHint) {
             Spacer(Modifier.height(12.dp))
             Text(
-                "Если сервер в частной сети, включите Tailscale на телефоне или выберите встроенный Tailscale в настройках сервера.",
+                stringResource(R.string.setup_offline_hint),
                 color = colors.faintText, textAlign = TextAlign.Center, fontSize = 14.sp,
             )
             TextButton(onClick = {
                 val intent = context.packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
                     ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.tailscale.ipn"))
                 context.startActivity(intent)
-            }) { Text("Открыть Tailscale") }
+            }) { Text(stringResource(R.string.setup_open_tailscale)) }
         }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast)) { Text("Повторить") }
-        OutlinedButton(onClick = onEditServer) { Text("Настройки сервера") }
+        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast)) { Text(stringResource(R.string.setup_retry)) }
+        OutlinedButton(onClick = onEditServer) { Text(stringResource(R.string.setup_server_settings)) }
     }
 }

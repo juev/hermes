@@ -60,11 +60,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import org.evsyukov.hermes.R
 import java.io.File
 import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
@@ -118,11 +120,11 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 )
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Копировать") }, leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) }, onClick = { menu = false; actions.copy(item.text) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.common_copy)) }, leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) }, onClick = { menu = false; actions.copy(item.text) })
                     if (last) {
-                        DropdownMenuItem(text = { Text("Изменить") }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = { menu = false; actions.edit(item) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.chat_edit)) }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = { menu = false; actions.edit(item) })
                     }
-                    DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Outlined.Share, null) }, onClick = { menu = false; actions.share(item.text) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.common_share)) }, leadingIcon = { Icon(Icons.Outlined.Share, null) }, onClick = { menu = false; actions.share(item.text) })
                 }
             }
         }
@@ -196,11 +198,11 @@ fun AssistantMessage(item: ChatItem.Assistant, last: Boolean, showReasoning: Boo
             ) {
                 Icon(Icons.Outlined.ErrorOutline, null, tint = colors.danger)
                 Spacer(Modifier.width(8.dp))
-                Text(error, color = colors.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                if (last) IconButton(onClick = actions.regenerate) { Icon(Icons.Outlined.Refresh, "Повторить", tint = colors.text) }
+                Text(error.ifBlank { stringResource(R.string.error_model) }, color = colors.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                if (last) IconButton(onClick = actions.regenerate) { Icon(Icons.Outlined.Refresh, stringResource(R.string.chat_retry), tint = colors.text) }
             }
         }
-        if (item.interrupted) Text("Остановлено", color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        if (item.interrupted) Text(stringResource(R.string.chat_stopped), color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
         if (!item.streaming && item.text.isNotBlank()) ActionBar(item, last, actions)
     }
 }
@@ -216,13 +218,13 @@ private fun ActionBar(item: ChatItem.Assistant, last: Boolean, actions: MessageA
         }
     }
     Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        SmallAction(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, "Копировать", tint) {
+        SmallAction(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, stringResource(R.string.common_copy), tint) {
             actions.copy(stripMedia(item.text))
             copied = true
         }
-        SmallAction(Icons.AutoMirrored.Outlined.VolumeUp, "Прочитать вслух", tint) { actions.speak(stripMedia(item.text)) }
-        SmallAction(Icons.Outlined.Share, "Поделиться", tint) { actions.share(stripMedia(item.text)) }
-        if (last) SmallAction(Icons.Outlined.Refresh, "Ответить заново", tint, actions.regenerate)
+        SmallAction(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.chat_read_aloud), tint) { actions.speak(stripMedia(item.text)) }
+        SmallAction(Icons.Outlined.Share, stringResource(R.string.common_share), tint) { actions.share(stripMedia(item.text)) }
+        if (last) SmallAction(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), tint, actions.regenerate)
     }
 }
 
@@ -239,7 +241,7 @@ private fun ReasoningBlock(text: String, streaming: Boolean, open: Boolean) {
         Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded = !expanded }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Lightbulb, null, tint = colors.faintText, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
-            Text(if (streaming) "Размышляет…" else "Размышления", color = colors.secondaryText, fontSize = 14.sp)
+            Text(stringResource(if (streaming) R.string.chat_reasoning_live else R.string.chat_reasoning), color = colors.secondaryText, fontSize = 14.sp)
             Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
         }
         AnimatedVisibility(expanded) {
@@ -287,7 +289,7 @@ private fun ToolGroup(runs: List<ToolRun>) {
             Spacer(Modifier.width(8.dp))
             val names = runs.map { toolTitle(it.copy(context = "")) }.distinct().take(3).joinToString(", ")
             Text(
-                "Инструменты: ${runs.size} · $names",
+                stringResource(R.string.chat_tools_group, runs.size, names),
                 color = colors.secondaryText, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
             )
             Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
@@ -314,7 +316,7 @@ private fun ToolRow(run: ToolRun) {
             }
             Spacer(Modifier.width(8.dp))
             Text(toolTitle(run), color = colors.secondaryText, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            run.durationSeconds?.let { Text("  ${"%.1f".format(it)} с", color = colors.faintText, fontSize = 12.sp) }
+            run.durationSeconds?.let { Text("  " + stringResource(R.string.chat_seconds, it), color = colors.faintText, fontSize = 12.sp) }
         }
         AnimatedVisibility(expanded) {
             Column(
@@ -324,7 +326,7 @@ private fun ToolRow(run: ToolRun) {
                 val details = listOfNotNull(run.args.takeIf { it.isNotBlank() && it != "{}" }, run.summary?.takeIf { it.isNotBlank() })
                 SelectionContainer {
                     Text(
-                        details.joinToString("\n\n").ifEmpty { "Без подробностей" },
+                        details.joinToString("\n\n").ifEmpty { stringResource(R.string.chat_no_details) },
                         color = colors.secondaryText, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                     )
@@ -335,23 +337,25 @@ private fun ToolRow(run: ToolRun) {
 }
 
 /** A short human title for a tool call: the context the server gave, or the tool name. */
+@Composable
 private fun toolTitle(run: ToolRun): String {
-    val name = when (run.name) {
-        "terminal" -> "Терминал"
-        "web_search" -> "Поиск в сети"
-        "web_extract" -> "Чтение страницы"
-        "read_file" -> "Чтение файла"
-        "write_file" -> "Запись файла"
-        "patch" -> "Правка файла"
-        "search_files" -> "Поиск по файлам"
-        "browser_navigate" -> "Браузер"
-        "memory" -> "Память"
-        "skill_view", "skills_list" -> "Навыки"
-        "todo" -> "Список задач"
-        "delegate_task" -> "Субагент"
-        "vision_analyze" -> "Анализ изображения"
-        else -> run.name
+    val title = when (run.name) {
+        "terminal" -> R.string.chat_tool_terminal
+        "web_search" -> R.string.chat_tool_web_search
+        "web_extract" -> R.string.chat_tool_web_extract
+        "read_file" -> R.string.chat_tool_read_file
+        "write_file" -> R.string.chat_tool_write_file
+        "patch" -> R.string.chat_tool_patch
+        "search_files" -> R.string.chat_tool_search_files
+        "browser_navigate" -> R.string.chat_tool_browser
+        "memory" -> R.string.chat_tool_memory
+        "skill_view", "skills_list" -> R.string.chat_tool_skills
+        "todo" -> R.string.chat_tool_todo
+        "delegate_task" -> R.string.chat_tool_delegate
+        "vision_analyze" -> R.string.chat_tool_vision
+        else -> null
     }
+    val name = if (title != null) stringResource(title) else run.name
     return if (run.context.isNotBlank()) "$name · ${run.context}" else name
 }
 

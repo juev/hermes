@@ -64,12 +64,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.evsyukov.hermes.R
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -83,10 +85,10 @@ import org.evsyukov.hermes.ui.sidebar.RenameDialog
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 private val SUGGESTIONS = listOf(
-    "Проверь нагрузку на серверах",
-    "Что нового в моих задачах cron?",
-    "Найди в сети свежие новости о Tailscale",
-    "Составь план на неделю",
+    R.string.chat_suggestion_load,
+    R.string.chat_suggestion_cron,
+    R.string.chat_suggestion_news,
+    R.string.chat_suggestion_plan,
 )
 
 @Composable
@@ -177,7 +179,7 @@ fun ChatScreen(
     Column(Modifier.fillMaxSize().background(colors.background).statusBarsPadding().imePadding()) {
         // The bar of the ChatGPT app: menu, the model in the middle, a new chat on the right.
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onMenu) { Icon(Icons.AutoMirrored.Outlined.Sort, "Чаты", tint = colors.text) }
+            IconButton(onClick = onMenu) { Icon(Icons.AutoMirrored.Outlined.Sort, stringResource(R.string.chat_chats), tint = colors.text) }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 Row(
                     Modifier.clip(RoundedCornerShape(12.dp)).clickable { models = true }.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -195,11 +197,11 @@ fun ChatScreen(
                     Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
                 }
             }
-            IconButton(onClick = onNewChat) { Icon(Icons.Outlined.EditNote, "Новый чат", tint = colors.text) }
+            IconButton(onClick = onNewChat) { Icon(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), tint = colors.text) }
         }
         if (!connected) {
             Text(
-                "Нет связи с сервером, переподключаюсь…",
+                stringResource(R.string.chat_reconnecting),
                 color = colors.onContrast, fontSize = 13.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().background(colors.warning).padding(4.dp),
             )
@@ -240,7 +242,7 @@ fun ChatScreen(
                         )
                     }
                     Spacer(Modifier.height(6.dp))
-                    Text(if (pull.progress >= 1f) "Отпустите — новый чат" else "Тяните для нового чата", color = colors.secondaryText, fontSize = 13.sp)
+                    Text(stringResource(if (pull.progress >= 1f) R.string.chat_release_for_new else R.string.chat_pull_for_new), color = colors.secondaryText, fontSize = 13.sp)
                 }
             }
             androidx.compose.animation.AnimatedVisibility(
@@ -252,7 +254,7 @@ fun ChatScreen(
                     Modifier.size(36.dp).clip(CircleShape).background(colors.background).border(1.dp, colors.composerBorder, CircleShape)
                         .clickable { scope.launch { listState.animateScrollToItem(0) } },
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Outlined.ArrowDownward, "Вниз", tint = colors.text, modifier = Modifier.size(20.dp)) }
+                ) { Icon(Icons.Outlined.ArrowDownward, stringResource(R.string.chat_scroll_down), tint = colors.text, modifier = Modifier.size(20.dp)) }
             }
         }
 
@@ -294,10 +296,10 @@ fun ChatScreen(
     state.modelConfirm?.let { (provider, model, message) ->
         AlertDialog(
             onDismissRequest = controller::dismissModelConfirm,
-            title = { Text("Переключить на $model?") },
+            title = { Text(stringResource(R.string.chat_switch_title, model)) },
             text = { Text(message) },
-            confirmButton = { TextButton(onClick = { controller.chooseModel(provider, model, confirmed = true) }) { Text("Переключить") } },
-            dismissButton = { TextButton(onClick = controller::dismissModelConfirm) { Text("Отмена") } },
+            confirmButton = { TextButton(onClick = { controller.chooseModel(provider, model, confirmed = true) }) { Text(stringResource(R.string.chat_switch)) } },
+            dismissButton = { TextButton(onClick = controller::dismissModelConfirm) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     if (renaming) RenameDialog(state.title, onDismiss = { renaming = false }) { controller.rename(it); renaming = false }
@@ -305,10 +307,10 @@ fun ChatScreen(
         var text by remember(item) { mutableStateOf(item.text) }
         AlertDialog(
             onDismissRequest = { editing = null },
-            title = { Text("Изменить сообщение") },
+            title = { Text(stringResource(R.string.chat_edit_title)) },
             text = { androidx.compose.material3.OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth()) },
-            confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { editing = null; controller.editLast(text.trim()) }) { Text("Отправить") } },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text("Отмена") } },
+            confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { editing = null; controller.editLast(text.trim()) }) { Text(stringResource(R.string.common_send)) } },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
 }
@@ -317,11 +319,12 @@ fun ChatScreen(
 private fun EmptyChat(serverName: String, onSuggestion: (String) -> Unit) {
     val colors = ChatTheme.colors
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Чем могу помочь?", color = colors.text, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.chat_empty_title), color = colors.text, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(serverName, color = colors.faintText, fontSize = 14.sp)
         Spacer(Modifier.height(28.dp))
-        SUGGESTIONS.forEach { suggestion ->
+        SUGGESTIONS.forEach { id ->
+            val suggestion = stringResource(id)
             Text(
                 suggestion,
                 color = colors.secondaryText, fontSize = 15.sp,

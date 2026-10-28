@@ -42,10 +42,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.evsyukov.hermes.R
 import java.util.UUID
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -100,14 +102,14 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
         containerColor = ChatTheme.colors.background,
         topBar = {
             TopAppBar(
-                title = { Text(if (existing == null) "Новый сервер" else "Сервер", fontSize = 18.sp) },
+                title = { Text(stringResource(if (existing == null) R.string.setup_new_server else R.string.setup_server), fontSize = 18.sp) },
                 navigationIcon = {
-                    if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
+                    if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back)) }
                 },
                 actions = {
                     if (existing != null && container.servers.state.value.servers.size > 1) {
                         IconButton(onClick = { scope.launch { container.servers.remove(existing.id); onBack?.invoke() } }) {
-                            Icon(Icons.Outlined.Delete, "Удалить сервер")
+                            Icon(Icons.Outlined.Delete, stringResource(R.string.setup_delete_server))
                         }
                     }
                 },
@@ -120,80 +122,80 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (onBack == null) {
-                Text("Подключение к Hermes", fontSize = 26.sp, color = ChatTheme.colors.text)
+                Text(stringResource(R.string.setup_title), fontSize = 26.sp, color = ChatTheme.colors.text)
                 Text(
-                    "Адрес веб-панели Hermes (hermes dashboard). Вход идёт через её же провайдера: Pocket ID, OAuth или пароль.",
+                    stringResource(R.string.setup_intro),
                     color = ChatTheme.colors.secondaryText,
                 )
             }
-            OutlinedTextField(name, { name = it }, label = { Text("Название") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.setup_name)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
                 url, { url = it },
-                label = { Text("Адрес") },
+                label = { Text(stringResource(R.string.setup_address)) },
                 placeholder = { Text("https://hermes.example.org") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Text("Как добраться до сервера", color = ChatTheme.colors.secondaryText, fontSize = 14.sp)
+            Text(stringResource(R.string.setup_route), color = ChatTheme.colors.secondaryText, fontSize = 14.sp)
             // Chips wrap: with a large system font four of them do not fit one line.
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(ProxyType.NONE to "Напрямую", ProxyType.TAILSCALE to "Tailscale", ProxyType.SOCKS5 to "SOCKS5", ProxyType.HTTP to "HTTP").forEach { (type, label) ->
+                listOf(ProxyType.NONE to stringResource(R.string.setup_route_direct), ProxyType.TAILSCALE to "Tailscale", ProxyType.SOCKS5 to "SOCKS5", ProxyType.HTTP to "HTTP").forEach { (type, label) ->
                     FilterChip(selected = proxyType == type, onClick = { proxyType = type }, label = { Text(label) })
                 }
             }
             when (proxyType) {
                 ProxyType.NONE -> Text(
-                    "Подходит, если сервер открыт в интернет или телефон уже в частной сети: приложение Tailscale, WireGuard, домашний Wi-Fi.",
+                    stringResource(R.string.setup_route_direct_hint),
                     color = ChatTheme.colors.faintText, fontSize = 13.sp,
                 )
                 ProxyType.HTTP, ProxyType.SOCKS5 -> {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(proxyHost, { proxyHost = it }, label = { Text("Хост прокси") }, singleLine = true, modifier = Modifier.weight(2f))
+                        OutlinedTextField(proxyHost, { proxyHost = it }, label = { Text(stringResource(R.string.setup_proxy_host)) }, singleLine = true, modifier = Modifier.weight(2f))
                         OutlinedTextField(
-                            proxyPort, { proxyPort = it.filter(Char::isDigit) }, label = { Text("Порт") }, singleLine = true,
+                            proxyPort, { proxyPort = it.filter(Char::isDigit) }, label = { Text(stringResource(R.string.setup_port)) }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(proxyUser, { proxyUser = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(proxyUser, { proxyUser = it }, label = { Text(stringResource(R.string.setup_login)) }, singleLine = true, modifier = Modifier.weight(1f))
                         OutlinedTextField(
-                            proxyPassword, { proxyPassword = it }, label = { Text("Пароль") }, singleLine = true,
+                            proxyPassword, { proxyPassword = it }, label = { Text(stringResource(R.string.setup_password)) }, singleLine = true,
                             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.weight(1f),
                         )
                     }
-                    Text("Имя сервера разрешает сам прокси, так что подходят и имена частной сети.", color = ChatTheme.colors.faintText, fontSize = 13.sp)
+                    Text(stringResource(R.string.setup_proxy_hint), color = ChatTheme.colors.faintText, fontSize = 13.sp)
                 }
                 ProxyType.TAILSCALE -> {
                     if (!tailnetStatus.available) {
                         Text(
-                            "Встроенный Tailscale не вошёл в эту сборку (нет app/libs/tailnet.aar). Соберите его scripts/build-tailnet.sh.",
+                            stringResource(R.string.setup_tailscale_missing),
                             color = ChatTheme.colors.danger, fontSize = 13.sp,
                         )
                     }
                     Text(
-                        "Приложение само входит в tailnet и ходит к серверу через свой узел. VPN на телефоне не нужен, другой VPN продолжает работать.",
+                        stringResource(R.string.setup_tailscale_hint),
                         color = ChatTheme.colors.faintText, fontSize = 13.sp,
                     )
                     OutlinedTextField(
-                        controlUrl, { controlUrl = it }, label = { Text("Сервер управления") },
-                        placeholder = { Text("пусто — Tailscale, или https://headscale.example.org") },
+                        controlUrl, { controlUrl = it }, label = { Text(stringResource(R.string.setup_control)) },
+                        placeholder = { Text(stringResource(R.string.setup_control_placeholder)) },
                         singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        authKey, { authKey = it }, label = { Text("Ключ авторизации (необязательно)") },
-                        placeholder = { Text("tskey-… или preauth key Headscale") },
+                        authKey, { authKey = it }, label = { Text(stringResource(R.string.setup_auth_key)) },
+                        placeholder = { Text(stringResource(R.string.setup_auth_key_placeholder)) },
                         singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
                     )
-                    OutlinedTextField(hostname, { hostname = it }, label = { Text("Имя узла") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(hostname, { hostname = it }, label = { Text(stringResource(R.string.setup_node_name)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Text(
-                        "Узел: ${tailnetStatus.state}" + (tailnetStatus.ips.firstOrNull()?.let { " · $it" } ?: "") + (tailnetStatus.error?.let { " · $it" } ?: ""),
+                        stringResource(R.string.setup_node_state, tailnetStatus.state) + (tailnetStatus.ips.firstOrNull()?.let { " · $it" } ?: "") + (tailnetStatus.error?.let { " · $it" } ?: ""),
                         color = ChatTheme.colors.secondaryText, fontSize = 13.sp,
                     )
                     tailnetStatus.authUrl?.takeIf { !tailnetStatus.running }?.let { link ->
                         OutlinedButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }) {
-                            Text("Войти в tailnet")
+                            Text(stringResource(R.string.setup_tailnet_sign_in))
                         }
                     }
                 }
@@ -212,7 +214,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                         }
                     },
                 ) {
-                    if (checking) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Проверить")
+                    if (checking) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.setup_check))
                 }
                 Button(
                     enabled = valid,
@@ -223,7 +225,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                             onSaved()
                         }
                     },
-                ) { Text("Сохранить") }
+                ) { Text(stringResource(R.string.common_save)) }
             }
             result?.let { Text(it, color = ChatTheme.colors.secondaryText) }
             Spacer(Modifier.height(24.dp))
@@ -239,20 +241,20 @@ private suspend fun check(container: AppContainer, profile: ServerProfile): Stri
     } else {
         null
     }
-    val session = ServerSession(profile, clientFor(baseClient(), profile.proxy, tailnetProxy), container.servers)
+    val session = ServerSession(profile, clientFor(baseClient(), profile.proxy, tailnetProxy), container.servers, container.strings)
     val info = session.authInfo()
     buildString {
-        append("Сервер отвечает")
-        info.version?.let { append(", Hermes $it") }
+        append(container.strings.get(R.string.setup_check_ok))
+        info.version?.let { append(container.strings.get(R.string.setup_check_version, it)) }
         append(". ")
         append(
             when {
-                !info.required -> "Вход не требуется."
-                info.nativePkce -> "Вход через ${info.providers.joinToString().ifEmpty { "браузер" }}."
-                else -> "Сервер не поддерживает вход для приложений (native_pkce)."
+                !info.required -> container.strings.get(R.string.setup_check_no_auth)
+                info.nativePkce -> container.strings.get(R.string.setup_check_auth_via, info.providers.joinToString().ifEmpty { container.strings.get(R.string.setup_check_browser) })
+                else -> container.strings.get(R.string.setup_check_unsupported)
             },
         )
     }
 } catch (e: Exception) {
-    "Не отвечает: ${e.message ?: e.javaClass.simpleName}"
+    container.strings.get(R.string.setup_check_failed, e.message ?: e.javaClass.simpleName)
 }

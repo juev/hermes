@@ -25,15 +25,15 @@ class ChatGroupsTest {
             today,
             zone,
         )
-        assertThat(groups.map { it.label })
-            .containsExactly("Сегодня", "Вчера", "Предыдущие 7 дней", "Предыдущие 30 дней", "Март", "2025")
+        assertThat(groups.map { it.key })
+            .containsExactly(GroupKey.Today, GroupKey.Yesterday, GroupKey.Previous7, GroupKey.Previous30, GroupKey.Month(3), GroupKey.Year(2025))
             .inOrder()
     }
 
     @Test
     fun `pinned chats come first whatever their age`() {
         val groups = groupChats(listOf(chat("today", 0), chat("pinned-old", 90, pinned = true)), today, zone)
-        assertThat(groups.first().label).isEqualTo("Закреплённые")
+        assertThat(groups.first().key).isEqualTo(GroupKey.Pinned)
         assertThat(groups.first().chats.map { it.id }).containsExactly("pinned-old")
         assertThat(groups.flatMap { it.chats }.count { it.id == "pinned-old" }).isEqualTo(1)
     }

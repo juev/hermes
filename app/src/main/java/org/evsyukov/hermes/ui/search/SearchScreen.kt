@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.ui.SearchState
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -55,13 +57,13 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String)
     LaunchedEffect(Unit) { focus.requestFocus() }
     Column(Modifier.fillMaxSize().background(colors.background).statusBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = colors.text) }
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back), tint = colors.text) }
             Row(
                 Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(colors.userBubble).padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    if (state.query.isEmpty()) Text("Поиск по чатам", color = colors.faintText, fontSize = 16.sp)
+                    if (state.query.isEmpty()) Text(stringResource(R.string.search_placeholder), color = colors.faintText, fontSize = 16.sp)
                     BasicTextField(
                         state.query, onQuery,
                         singleLine = true,
@@ -71,18 +73,18 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String)
                     )
                 }
                 if (state.query.isNotEmpty()) {
-                    Icon(Icons.Outlined.Close, "Очистить", tint = colors.faintText, modifier = Modifier.clickable { onQuery("") })
+                    Icon(Icons.Outlined.Close, stringResource(R.string.search_clear), tint = colors.faintText, modifier = Modifier.clickable { onQuery("") })
                 }
             }
         }
         if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
         state.error?.let { Text(it, color = colors.danger, modifier = Modifier.padding(16.dp)) }
         if (state.query.isNotBlank() && !state.searching && state.hits.isEmpty() && state.error == null) {
-            Text("Ничего не нашлось", color = colors.faintText, modifier = Modifier.padding(16.dp))
+            Text(stringResource(R.string.search_empty), color = colors.faintText, modifier = Modifier.padding(16.dp))
         }
         if (state.query.isBlank()) {
             Text(
-                "Ищет по тексту всех сообщений и названиям. Работают фразы в кавычках, OR и NOT.",
+                stringResource(R.string.search_help),
                 color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
             )
         }

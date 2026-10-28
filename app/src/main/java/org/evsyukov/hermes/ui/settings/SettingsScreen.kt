@@ -30,12 +30,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.BuildConfig
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.admin.AdminScaffold
 import org.evsyukov.hermes.ui.admin.ClickRow
@@ -57,97 +59,103 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
 
     fun change(update: (Settings) -> Settings) = scope.launch { container.settings.update(update) }
 
-    AdminScaffold("Настройки", onBack) {
+    AdminScaffold(stringResource(R.string.common_settings), onBack) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            SectionTitle("Оформление")
+            SectionTitle(stringResource(R.string.settings_appearance))
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(ThemeMode.SYSTEM to "Как в системе", ThemeMode.LIGHT to "Светлая", ThemeMode.DARK to "Тёмная").forEach { (mode, label) ->
+                listOf(
+                    ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
+                    ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
+                    ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
+                ).forEach { (mode, label) ->
                     FilterChip(settings.theme == mode, { change { it.copy(theme = mode) } }, label = { Text(label) })
                 }
             }
 
-            SectionTitle("Чат")
-            Toggle("Enter отправляет", "Иначе Enter переносит строку", settings.enterSends) { v -> change { it.copy(enterSends = v) } }
-            Toggle("Потянуть вверх — новый чат", "Жест в конце ленты сообщений", settings.pullForNewChat) { v -> change { it.copy(pullForNewChat = v) } }
-            Toggle("Размышления раскрыты", "Показывать рассуждения модели без нажатия", settings.showReasoning) { v -> change { it.copy(showReasoning = v) } }
-            Toggle("Вибрация", null, settings.haptics) { v -> change { it.copy(haptics = v) } }
+            SectionTitle(stringResource(R.string.settings_chat))
+            Toggle(stringResource(R.string.settings_enter_sends), stringResource(R.string.settings_enter_sends_hint), settings.enterSends) { v -> change { it.copy(enterSends = v) } }
+            Toggle(stringResource(R.string.settings_pull), stringResource(R.string.settings_pull_hint), settings.pullForNewChat) { v -> change { it.copy(pullForNewChat = v) } }
+            Toggle(stringResource(R.string.settings_reasoning), stringResource(R.string.settings_reasoning_hint), settings.showReasoning) { v -> change { it.copy(showReasoning = v) } }
+            Toggle(stringResource(R.string.settings_haptics), null, settings.haptics) { v -> change { it.copy(haptics = v) } }
 
-            SectionTitle("Фон и уведомления")
+            SectionTitle(stringResource(R.string.settings_background))
             Text(
-                "Пока агент отвечает, приложение держит соединение и после сворачивания, а по готовности присылает уведомление.",
+                stringResource(R.string.settings_background_hint),
                 color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp),
             )
-            Toggle("Новые события", "Ответы cron, сообщения из Telegram и с других устройств", settings.notifyActivity) { v -> change { it.copy(notifyActivity = v) } }
+            Toggle(stringResource(R.string.settings_activity), stringResource(R.string.settings_activity_hint), settings.notifyActivity) { v -> change { it.copy(notifyActivity = v) } }
             if (settings.notifyActivity) {
                 Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Проверять каждые", color = colors.secondaryText, fontSize = 14.sp)
-                    listOf(15, 30, 60).forEach { m -> FilterChip(settings.checkMinutes == m, { change { it.copy(checkMinutes = m) } }, label = { Text("$m мин") }) }
+                    Text(stringResource(R.string.settings_check_every), color = colors.secondaryText, fontSize = 14.sp)
+                    listOf(15, 30, 60).forEach { m -> FilterChip(settings.checkMinutes == m, { change { it.copy(checkMinutes = m) } }, label = { Text(stringResource(R.string.settings_minutes, m)) }) }
                 }
                 Toggle(
-                    "Постоянное подключение",
-                    "События приходят сразу, но в шторке висит значок и батарея тратится быстрее",
+                    stringResource(R.string.settings_keep),
+                    stringResource(R.string.settings_keep_hint),
                     settings.keepConnected,
                 ) { v -> change { it.copy(keepConnected = v) } }
             }
-            ClickRow("Уведомления в системе", "Каналы, звук, показ на экране блокировки", onClick = {
+            ClickRow(stringResource(R.string.settings_system_notifications), stringResource(R.string.settings_system_notifications_hint), onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName))
             })
-            ClickRow("Без ограничений батареи", "Чтобы система не останавливала фоновую работу", onClick = {
+            ClickRow(stringResource(R.string.settings_battery), stringResource(R.string.settings_battery_hint), onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
             })
 
-            SectionTitle("Встроенный Tailscale")
+            SectionTitle(stringResource(R.string.settings_tailscale))
             if (!tailnet.available) {
-                Text("Не входит в эту сборку.", color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                Text(stringResource(R.string.settings_tailscale_absent), color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
             } else {
                 Column(Modifier.padding(horizontal = 16.dp)) {
-                    Text("Состояние: ${tailnet.state}", color = colors.text)
+                    Text(stringResource(R.string.settings_tailnet_state, tailnet.state), color = colors.text)
                     tailnet.name?.let { Text(it, color = colors.secondaryText, fontSize = 13.sp) }
                     if (tailnet.ips.isNotEmpty()) Text(tailnet.ips.joinToString(), color = colors.secondaryText, fontSize = 13.sp)
                     tailnet.error?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
                 }
-                ClickRow("Журнал узла", null, onClick = { tailnetLogs = container.tailnet.logs() })
-                ClickRow("Выйти из tailnet", "Ключ узла удалится, при следующем запуске нужен новый вход", onClick = { container.tailnet.reset() })
+                ClickRow(stringResource(R.string.settings_node_log), null, onClick = { tailnetLogs = container.tailnet.logs() })
+                ClickRow(stringResource(R.string.settings_tailnet_leave), stringResource(R.string.settings_tailnet_leave_hint), onClick = { container.tailnet.reset() })
             }
 
-            SectionTitle("Сессия")
+            SectionTitle(stringResource(R.string.settings_session))
             val servers by container.servers.state.collectAsState()
             val tokens = servers.active?.let { servers.tokens[it.id] }
             Text(
                 when {
-                    tokens == null -> "Вход не выполнен или сервер его не требует."
-                    tokens.expiresAt == 0L -> "Вход без срока действия."
-                    else -> "Токен действует до " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(tokens.expiresAt * 1000)) +
-                        if (tokens.refreshToken.isNotEmpty()) ", дальше продлится сам." else ", токена обновления нет: потом понадобится новый вход."
+                    tokens == null -> stringResource(R.string.settings_session_none)
+                    tokens.expiresAt == 0L -> stringResource(R.string.settings_session_forever)
+                    else -> stringResource(
+                        if (tokens.refreshToken.isNotEmpty()) R.string.settings_token_renews else R.string.settings_token_expires,
+                        DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(tokens.expiresAt * 1000)),
+                    )
                 },
                 color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp),
             )
 
-            SectionTitle("Данные")
-            ClickRow("Очистить кэш вложений", "%.1f МБ".format(cacheSize / 1_048_576.0), onClick = {
+            SectionTitle(stringResource(R.string.settings_data))
+            ClickRow(stringResource(R.string.settings_clear_cache), stringResource(R.string.settings_megabytes, cacheSize / 1_048_576.0), onClick = {
                 container.attachments.clear()
                 cacheSize = container.attachments.size()
             })
-            ClickRow("Выйти с сервера", "Токены этого сервера удалятся с телефона", onClick = onSignOut)
+            ClickRow(stringResource(R.string.settings_sign_out), stringResource(R.string.settings_sign_out_hint), onClick = onSignOut)
 
-            SectionTitle("О приложении")
-            Text("Hermes для Android ${BuildConfig.VERSION_NAME}", color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
+            SectionTitle(stringResource(R.string.settings_about))
+            Text(stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
             Spacer(Modifier.size(32.dp))
         }
     }
     tailnetLogs?.let { logs ->
         AlertDialog(
             onDismissRequest = { tailnetLogs = null },
-            title = { Text("Журнал Tailscale") },
+            title = { Text(stringResource(R.string.settings_tailscale_log)) },
             text = {
                 SelectionContainer {
                     Text(
-                        logs.ifBlank { "Пусто" }, fontFamily = FontFamily.Monospace, fontSize = 10.sp,
+                        logs.ifBlank { stringResource(R.string.settings_empty) }, fontFamily = FontFamily.Monospace, fontSize = 10.sp,
                         modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
                     )
                 }
             },
-            confirmButton = { TextButton(onClick = { tailnetLogs = null }) { Text("Закрыть") } },
+            confirmButton = { TextButton(onClick = { tailnetLogs = null }) { Text(stringResource(R.string.common_close)) } },
         )
     }
 }

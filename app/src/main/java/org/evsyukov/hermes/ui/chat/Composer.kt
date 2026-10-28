@@ -57,6 +57,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -65,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil3.compose.AsyncImage
+import org.evsyukov.hermes.R
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -100,7 +102,7 @@ fun Composer(
     fun add(uris: List<Uri>) {
         scope.launch {
             val picked = withContext(Dispatchers.IO) { uris.mapNotNull { read(context, it) } }
-            if (picked.size < uris.size) onError("Файлы больше 25 МБ не прикрепляются")
+            if (picked.size < uris.size) onError(context.getString(R.string.composer_file_too_big))
             onAttachments(attachments + picked)
         }
     }
@@ -112,7 +114,7 @@ fun Composer(
         if (ok && file != null) onAttachments(attachments + LocalAttachment("photo_${System.currentTimeMillis()}.jpg", "image/jpeg", file.readBytes()))
     }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) recorder = Recording.start(context) else onError("Без доступа к микрофону диктовка не работает")
+        if (granted) recorder = Recording.start(context) else onError(context.getString(R.string.composer_no_mic))
     }
 
     fun stopRecording() {
@@ -125,7 +127,7 @@ fun Composer(
                 val words = transcribe(audio, "audio/mp4")
                 if (words.isNotBlank()) onText(if (text.isBlank()) words else "$text $words")
             } catch (e: Exception) {
-                onError("Не распознано: ${e.message}")
+                onError(context.getString(R.string.composer_not_recognized, e.message))
             }
             transcribing = false
         }
@@ -148,7 +150,7 @@ fun Composer(
             }
         }
         Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
-            if (text.isEmpty()) Text(if (recorder != null) "Говорите…" else "Спросите Hermes", color = colors.faintText, fontSize = 16.sp)
+            if (text.isEmpty()) Text(stringResource(if (recorder != null) R.string.composer_listening else R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
             BasicTextField(
                 value = text,
                 onValueChange = onText,
@@ -166,14 +168,14 @@ fun Composer(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.Add, "Прикрепить", tint = colors.text) }
+                IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.Add, stringResource(R.string.composer_attach), tint = colors.text) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Фото") }, leadingIcon = { Icon(Icons.Outlined.Image, null) },
+                        text = { Text(stringResource(R.string.composer_photo)) }, leadingIcon = { Icon(Icons.Outlined.Image, null) },
                         onClick = { menu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     )
                     DropdownMenuItem(
-                        text = { Text("Камера") }, leadingIcon = { Icon(Icons.Outlined.PhotoCamera, null) },
+                        text = { Text(stringResource(R.string.composer_camera)) }, leadingIcon = { Icon(Icons.Outlined.PhotoCamera, null) },
                         onClick = {
                             menu = false
                             val dir = File(context.cacheDir, "attachments").apply { mkdirs() }
@@ -183,7 +185,7 @@ fun Composer(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Файл") }, leadingIcon = { Icon(Icons.Outlined.AttachFile, null) },
+                        text = { Text(stringResource(R.string.composer_file)) }, leadingIcon = { Icon(Icons.Outlined.AttachFile, null) },
                         onClick = { menu = false; files.launch(arrayOf("*/*")) },
                     )
                 }
@@ -191,25 +193,25 @@ fun Composer(
             Spacer(Modifier.weight(1f))
             when {
                 transcribing -> CircularProgressIndicator(Modifier.padding(10.dp).size(20.dp), strokeWidth = 2.dp)
-                recorder != null -> RoundButton(colors.danger, colors.onContrast, Icons.Filled.Stop, "Закончить диктовку") { stopRecording() }
+                recorder != null -> RoundButton(colors.danger, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop_dictation)) { stopRecording() }
                 else -> IconButton(onClick = {
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         recorder = Recording.start(context)
                     } else {
                         micPermission.launch(Manifest.permission.RECORD_AUDIO)
                     }
-                }) { Icon(Icons.Outlined.Mic, "Диктовка", tint = colors.text) }
+                }) { Icon(Icons.Outlined.Mic, stringResource(R.string.composer_dictate), tint = colors.text) }
             }
             Spacer(Modifier.width(4.dp))
             val canSend = text.isNotBlank() || attachments.isNotEmpty()
             when {
-                running && !canSend -> RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, "Остановить", onStop)
-                running -> RoundButton(colors.contrast, colors.onContrast, Icons.AutoMirrored.Filled.ArrowForward, "Добавить в очередь", onSend)
+                running && !canSend -> RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop), onStop)
+                running -> RoundButton(colors.contrast, colors.onContrast, Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.composer_queue), onSend)
                 else -> RoundButton(
                     if (canSend) colors.contrast else colors.composerBorder,
                     colors.onContrast,
                     Icons.Filled.ArrowUpward,
-                    "Отправить",
+                    stringResource(R.string.common_send),
                     enabled = canSend,
                     onClick = onSend,
                 )
@@ -257,7 +259,7 @@ private fun PendingAttachment(attachment: LocalAttachment, onOpen: () -> Unit, o
         Box(
             Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(colors.contrast).clickable(onClick = onRemove),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Outlined.Close, "Убрать", tint = colors.onContrast, modifier = Modifier.size(14.dp)) }
+        ) { Icon(Icons.Outlined.Close, stringResource(R.string.composer_remove), tint = colors.onContrast, modifier = Modifier.size(14.dp)) }
     }
 }
 

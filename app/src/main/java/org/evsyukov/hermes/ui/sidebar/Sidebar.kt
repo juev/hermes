@@ -56,11 +56,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.evsyukov.hermes.R
 import java.time.LocalDate
 import java.time.ZoneId
 import org.evsyukov.hermes.data.remote.ChatSummary
@@ -110,23 +113,23 @@ fun Sidebar(
             ) {
                 Icon(Icons.Outlined.Search, null, tint = colors.secondaryText, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Поиск", color = colors.secondaryText, fontSize = 15.sp)
+                Text(stringResource(R.string.sidebar_search), color = colors.secondaryText, fontSize = 15.sp)
             }
-            IconButton(onClick = actions.onNewChat) { Icon(Icons.Outlined.EditNote, "Новый чат", tint = colors.text) }
+            IconButton(onClick = actions.onNewChat) { Icon(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), tint = colors.text) }
         }
         if (state.loading && state.chats.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
 
         LazyColumn(Modifier.weight(1f), state = listState) {
-            item { NavRow(Icons.Outlined.EditNote, "Новый чат", onClick = actions.onNewChat) }
-            item { NavRow(Icons.Outlined.Dns, "Управление сервером", onClick = actions.onAdmin) }
+            item { NavRow(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), onClick = actions.onNewChat) }
+            item { NavRow(Icons.Outlined.Dns, stringResource(R.string.sidebar_server), onClick = actions.onAdmin) }
             if (state.mode == ListMode.CHATS) {
-                item { NavRow(Icons.Outlined.Schedule, "Задачи cron", onClick = { actions.onShowList(ListMode.CRON) }) }
-                item { NavRow(Icons.Outlined.Archive, "Архив", onClick = { actions.onShowList(ListMode.ARCHIVE) }) }
+                item { NavRow(Icons.Outlined.Schedule, stringResource(R.string.sidebar_cron), onClick = { actions.onShowList(ListMode.CRON) }) }
+                item { NavRow(Icons.Outlined.Archive, stringResource(R.string.sidebar_archive), onClick = { actions.onShowList(ListMode.ARCHIVE) }) }
             } else {
-                item { NavRow(Icons.AutoMirrored.Outlined.ArrowBack, "Назад к чатам", onClick = { actions.onShowList(ListMode.CHATS) }) }
+                item { NavRow(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.sidebar_back), onClick = { actions.onShowList(ListMode.CHATS) }) }
                 item {
                     Text(
-                        if (state.mode == ListMode.CRON) "Прогоны задач по расписанию" else "Архив",
+                        if (state.mode == ListMode.CRON) stringResource(R.string.sidebar_cron_title) else stringResource(R.string.sidebar_archive),
                         color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(start = 16.dp, top = 12.dp),
                     )
@@ -135,7 +138,7 @@ fun Sidebar(
             state.error?.let { error ->
                 item {
                     Text(
-                        "Список не загрузился: $error",
+                        stringResource(R.string.sidebar_load_failed, error),
                         color = colors.danger, fontSize = 13.sp,
                         modifier = Modifier.padding(16.dp).clickable(onClick = actions.onRefresh),
                     )
@@ -145,18 +148,18 @@ fun Sidebar(
                 item {
                     Text(
                         when (state.mode) {
-                            ListMode.CHATS -> "Чатов пока нет"
-                            ListMode.ARCHIVE -> "В архиве пусто"
-                            ListMode.CRON -> "Прогонов пока нет"
+                            ListMode.CHATS -> stringResource(R.string.sidebar_empty_chats)
+                            ListMode.ARCHIVE -> stringResource(R.string.sidebar_empty_archive)
+                            ListMode.CRON -> stringResource(R.string.sidebar_empty_cron)
                         },
                         color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
                     )
                 }
             }
             groups.forEach { group ->
-                item(key = "h:${group.label}") {
+                item(key = "h:${group.key}") {
                     Text(
-                        group.label,
+                        group.key.title(),
                         color = colors.faintText, fontSize = 13.sp, fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(start = 16.dp, top = 18.dp, bottom = 6.dp),
                     )
@@ -173,6 +176,20 @@ fun Sidebar(
         HorizontalDivider(color = colors.divider)
         ServerFooter(servers, activeServer, actions)
     }
+}
+
+@Composable
+private fun GroupKey.title(): String = when (this) {
+    GroupKey.Pinned -> stringResource(R.string.sidebar_group_pinned)
+    GroupKey.Today -> stringResource(R.string.sidebar_group_today)
+    GroupKey.Yesterday -> stringResource(R.string.sidebar_group_yesterday)
+    GroupKey.Previous7 -> stringResource(R.string.sidebar_group_previous_7)
+    GroupKey.Previous30 -> stringResource(R.string.sidebar_group_previous_30)
+    is GroupKey.Month -> {
+        val locale = LocalConfiguration.current.locales[0]
+        java.time.Month.of(month).getDisplayName(java.time.format.TextStyle.FULL_STANDALONE, locale).replaceFirstChar { it.titlecase(locale) }
+    }
+    is GroupKey.Year -> year.toString()
 }
 
 @Composable
@@ -195,6 +212,7 @@ private fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarAction
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    val label = chat.label.ifBlank { stringResource(R.string.common_new_chat) }
     Box {
         Row(
             Modifier
@@ -216,39 +234,39 @@ private fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarAction
                 Box(Modifier.size(7.dp).clip(CircleShape).background(colors.success))
                 Spacer(Modifier.width(8.dp))
             }
-            Text(chat.label, color = colors.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(label, color = colors.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (chat.source.isNotEmpty() && chat.source !in LOCAL_SOURCES) {
                 Spacer(Modifier.width(6.dp))
                 Text(chat.source, color = colors.faintText, fontSize = 11.sp)
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(text = { Text("Переименовать") }, leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) }, onClick = { menu = false; renaming = true })
+            DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_rename)) }, leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) }, onClick = { menu = false; renaming = true })
             DropdownMenuItem(
-                text = { Text(if (chat.pinned) "Открепить" else "Закрепить") },
+                text = { Text(stringResource(if (chat.pinned) R.string.sidebar_unpin else R.string.sidebar_pin)) },
                 leadingIcon = { Icon(Icons.Outlined.PushPin, null) },
                 onClick = { menu = false; actions.onPin(chat.id, !chat.pinned) },
             )
             DropdownMenuItem(
-                text = { Text(if (chat.archived) "Вернуть из архива" else "В архив") },
+                text = { Text(stringResource(if (chat.archived) R.string.sidebar_unarchive else R.string.sidebar_move_to_archive)) },
                 leadingIcon = { Icon(if (chat.archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive, null) },
                 onClick = { menu = false; actions.onArchive(chat.id, !chat.archived) },
             )
             DropdownMenuItem(
-                text = { Text("Удалить", color = colors.danger) },
+                text = { Text(stringResource(R.string.common_delete), color = colors.danger) },
                 leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = colors.danger) },
                 onClick = { menu = false; deleting = true },
             )
         }
     }
-    if (renaming) RenameDialog(chat.label, onDismiss = { renaming = false }) { actions.onRename(chat.id, it); renaming = false }
+    if (renaming) RenameDialog(label, onDismiss = { renaming = false }) { actions.onRename(chat.id, it); renaming = false }
     if (deleting) {
         AlertDialog(
             onDismissRequest = { deleting = false },
-            title = { Text("Удалить чат?") },
-            text = { Text("«${chat.label}» удалится с сервера вместе с историей.") },
-            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text("Удалить", color = colors.danger) } },
-            dismissButton = { TextButton(onClick = { deleting = false }) { Text("Отмена") } },
+            title = { Text(stringResource(R.string.sidebar_delete_title)) },
+            text = { Text(stringResource(R.string.sidebar_delete_text, label)) },
+            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text(stringResource(R.string.common_delete), color = colors.danger) } },
+            dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
 }
@@ -258,10 +276,10 @@ fun RenameDialog(current: String, onDismiss: () -> Unit, onConfirm: (String) -> 
     var text by remember { mutableStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Название чата") },
+        title = { Text(stringResource(R.string.sidebar_rename_title)) },
         text = { OutlinedTextField(text, { text = it }, singleLine = true) },
-        confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()) }) { Text("Сохранить") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()) }) { Text(stringResource(R.string.common_save)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -280,7 +298,7 @@ private fun ServerFooter(servers: List<ServerProfile>, active: ServerProfile?, a
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f, fill = false)) {
-                    Text(active?.name ?: "Нет сервера", color = colors.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(active?.name ?: stringResource(R.string.sidebar_no_server), color = colors.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(active?.url?.host.orEmpty(), color = colors.faintText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Icon(Icons.Outlined.UnfoldMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
@@ -293,11 +311,11 @@ private fun ServerFooter(servers: List<ServerProfile>, active: ServerProfile?, a
                     )
                 }
                 HorizontalDivider()
-                active?.let { DropdownMenuItem(text = { Text("Настроить «${it.name}»") }, onClick = { menu = false; actions.onEditServer(it.id) }) }
-                DropdownMenuItem(text = { Text("Добавить сервер") }, onClick = { menu = false; actions.onEditServer(null) })
+                active?.let { DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_configure, it.name)) }, onClick = { menu = false; actions.onEditServer(it.id) }) }
+                DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_add_server)) }, onClick = { menu = false; actions.onEditServer(null) })
             }
         }
-        IconButton(onClick = actions.onSettings) { Icon(Icons.Outlined.Settings, "Настройки", tint = colors.secondaryText) }
+        IconButton(onClick = actions.onSettings) { Icon(Icons.Outlined.Settings, stringResource(R.string.common_settings), tint = colors.secondaryText) }
     }
 }
 

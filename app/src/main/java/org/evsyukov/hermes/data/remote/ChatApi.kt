@@ -27,8 +27,8 @@ data class ChatSummary(
     val archived: Boolean,
     val active: Boolean,
 ) {
-    /** The title the sidebar shows: the server's, else the start of the first message. */
-    val label: String get() = title.ifBlank { preview.ifBlank { "Новый чат" } }
+    /** The title the sidebar shows: the server's, else the start of the first message; blank for an empty chat. */
+    val label: String get() = title.ifBlank { preview }
 }
 
 /** A hit of the full-text search with the matching piece of text. */

@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import org.evsyukov.hermes.HermesApplication
+import org.evsyukov.hermes.R
 
 /**
  * Keeps the process, and with it the chat socket, alive while the app is in the background: during
@@ -21,7 +22,7 @@ class HermesService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val container = (application as HermesApplication).container
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Соединение с сервером открыто"
+        val text = intent?.getStringExtra(EXTRA_TEXT) ?: getString(R.string.notify_connection_open)
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING else 0
         try {
             ServiceCompat.startForeground(this, Notifications.WORKING_ID, container.notifications.working(text), type)

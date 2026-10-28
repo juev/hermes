@@ -15,6 +15,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.RpcException
@@ -64,6 +66,7 @@ class ChatController(
     private val session: ServerSession,
     private val socket: GatewaySocket,
     private val scope: CoroutineScope,
+    private val strings: AppStrings,
     storedId: String?,
     private val onSessionCreated: (String) -> Unit = {},
     /** Tells the background watcher which live session belongs to which chat. */
@@ -180,14 +183,14 @@ class ChatController(
                     val refs = attachments.mapNotNull { attach(live, it) }
                     // The words first: the server titles the chat by the start of its first message.
                     val prompt = buildString {
-                        append(text.ifBlank { if (attachments.all { it.image }) "Что на этом изображении?" else "Посмотри файлы" })
+                        append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
                         if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                     }
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Send failed", e)
-                _state.update { it.copy(running = false, error = e.message ?: "Сообщение не отправлено") }
+                _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_send_failed)) }
             }
         }
     }
@@ -252,7 +255,7 @@ class ChatController(
                 onTurnStart()
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
             } catch (e: Exception) {
-                _state.update { it.copy(running = false, error = e.message ?: "Не получилось") }
+                _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_failed)) }
             }
         }
     }
@@ -293,7 +296,7 @@ class ChatController(
                     ) as? JsonObject
                 }
                 if (result?.bool("confirm_required") == true) {
-                    _state.update { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: "Модель дорогая. Переключить?")) }
+                    _state.update { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: strings.get(R.string.chat_model_expensive))) }
                 } else {
                     _state.update { it.copy(model = model, error = result?.string("warning")?.takeIf { w -> w.isNotBlank() }) }
                 }
@@ -355,7 +358,7 @@ class ChatController(
                 state.copy(running = running ?: state.running, model = event.payload.string("model") ?: state.model)
             }
             "status.update" -> _state.update { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }
-            "thinking.delta" -> _state.update { it.copy(status = "Думает…") }
+            "thinking.delta" -> _state.update { it.copy(status = strings.get(R.string.chat_thinking)) }
             "error" -> _state.update { it.copy(error = event.payload.string("message"), running = false) }
             "request.cancel" -> _state.update { state ->
                 if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
@@ -387,8 +390,8 @@ class ChatController(
                     )
                 }.orEmpty(),
             )
-            "sudo" -> Prompt.Secret(request, "Пароль sudo для: ${params.string("command").orEmpty()}", sudo = true)
-            "secret" -> Prompt.Secret(request, params.string("prompt") ?: "Значение ${params.string("env_var").orEmpty()}", sudo = false)
+            "sudo" -> Prompt.Secret(request, strings.get(R.string.chat_sudo_password, params.string("command").orEmpty()), sudo = true)
+            "secret" -> Prompt.Secret(request, params.string("prompt") ?: strings.get(R.string.chat_secret_value, params.string("env_var").orEmpty()), sudo = false)
             else -> {
                 // Desktop-only questions (window, terminal, theme): saying no at once keeps the agent from waiting.
                 socket.respond(request.id, null, error = "Method not supported by the Android client")

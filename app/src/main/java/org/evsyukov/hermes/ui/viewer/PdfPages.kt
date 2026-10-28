@@ -28,7 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import org.evsyukov.hermes.R
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -89,7 +91,7 @@ fun PdfPages(file: File, modifier: Modifier = Modifier) {
     val doc = document
     when {
         failure != null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("PDF не открылся: $failure", color = ChatTheme.colors.secondaryText)
+            Text(stringResource(R.string.viewer_pdf_failed, failure.orEmpty()), color = ChatTheme.colors.secondaryText)
         }
         doc == null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else -> BoxWithConstraints(modifier.fillMaxSize().background(ChatTheme.colors.codeBackground)) {
@@ -119,7 +121,7 @@ private fun PdfPage(document: PdfDocument, index: Int, width: Int) {
         if (page == null) {
             CircularProgressIndicator()
         } else {
-            Image(page.asImageBitmap(), contentDescription = "Страница ${index + 1}", modifier = Modifier.fillMaxSize())
+            Image(page.asImageBitmap(), contentDescription = stringResource(R.string.viewer_page, index + 1), modifier = Modifier.fillMaxSize())
         }
     }
 }

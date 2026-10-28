@@ -41,6 +41,7 @@ class AppContainer(context: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = baseClient()
 
+    val strings = AppStrings(context.resources)
     val settings = AppSettings(context, scope)
     val servers = ServerStore(context, KeystoreTokenCipher(), scope)
     val tailnet = Tailnet(context, scope)
@@ -58,8 +59,8 @@ class AppContainer(context: Context) {
             previous?.socket?.stop()
             if (profile?.url == null) return@runningFold null
             val client = clientFor(http, profile.proxy, tailnetProxy)
-            val session = ServerSession(profile, client, servers)
-            Connection(session, GatewaySocket(session.http, scope))
+            val session = ServerSession(profile, client, servers, strings)
+            Connection(session, GatewaySocket(session.http, scope, strings))
         }
         .stateIn(scope, SharingStarted.Eagerly, null)
 
@@ -75,7 +76,7 @@ class AppContainer(context: Context) {
         }
         scope.launch {
             settings.current.map { it.keepConnected }.distinctUntilChanged().collect { keep ->
-                if (keep) HermesService.start(context, "Подключено к серверу") else turns.settle()
+                if (keep) HermesService.start(context, context.getString(R.string.notify_connected)) else turns.settle()
             }
         }
         // With a permanent connection the gateway's change signal replaces the periodic check.

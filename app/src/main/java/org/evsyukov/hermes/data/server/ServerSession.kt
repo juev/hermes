@@ -6,6 +6,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.R
+import org.evsyukov.hermes.data.auth.CallbackPageText
 import org.evsyukov.hermes.data.auth.CallbackResult
 import org.evsyukov.hermes.data.auth.LoopbackReceiver
 import org.evsyukov.hermes.data.auth.PkceRequest
@@ -31,12 +34,14 @@ class ServerSession(
     val profile: ServerProfile,
     val client: OkHttpClient,
     private val store: ServerStore,
+    private val strings: AppStrings,
 ) {
     val http = HermesHttp(
         base = requireNotNull(profile.url) { "Bad server address ${profile.baseUrl}" },
         client = client,
         tokens = { store.state.value.tokens[profile.id] ?: store.load().tokens[profile.id] },
         saveTokens = { store.setTokens(profile.id, it) },
+        strings = strings,
     )
     val admin = AdminApi(http)
     val chat = ChatApi(http)
@@ -60,14 +65,14 @@ class ServerSession(
      * the dashboard sends the browser back to the loopback address with a one-time code, and the
      * code is traded for tokens within its two minutes.
      */
-    suspend fun signIn(provider: String?, returnUrl: String, openBrowser: (String) -> Unit) {
+    suspend fun signIn(provider: String?, returnUrl: String, page: CallbackPageText, openBrowser: (String) -> Unit) {
         val pkce = PkceRequest()
         LoopbackReceiver().use { receiver ->
             openBrowser(authorizeUrl(http.base, pkce, receiver.redirectUri, provider).toString())
-            when (val result = receiver.await(returnUrl)) {
+            when (val result = receiver.await(returnUrl, page)) {
                 is CallbackResult.Error -> throw IOException(result.description ?: result.error)
                 is CallbackResult.Code -> {
-                    if (result.state != pkce.state) throw IOException("Ответ входа не совпал с запросом (state)")
+                    if (result.state != pkce.state) throw IOException(strings.get(R.string.error_sign_in_state))
                     val body = JsonObject(mapOf("code" to JsonPrimitive(result.code), "code_verifier" to JsonPrimitive(pkce.verifier)))
                     val request = Request.Builder().url(http.endpoint("auth/native/token").build()).post(body.toBody()).build()
                     client.newCall(request).await().use { response ->

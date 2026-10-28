@@ -21,8 +21,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.Connection
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatMutations
+import org.evsyukov.hermes.data.auth.CallbackPageText
 import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
@@ -157,7 +159,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     /** Fills the server form from a link; a malformed link is reported, nothing else happens. */
     fun openServerLink(link: String) {
         val profile = parseServerLink(link)
-        if (profile == null) _notice.value = "Ссылка на сервер не разобрана" else _draftServer.value = profile
+        if (profile == null) _notice.value = container.strings.get(R.string.error_link_unreadable) else _draftServer.value = profile
     }
 
     fun closeDraftServer() {
@@ -174,7 +176,12 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     suspend fun signIn(openBrowser: (String) -> Unit) {
         val connection = container.connection.value ?: return
         val info = connection.session.authInfo()
-        connection.session.signIn(info.providers.singleOrNull(), RETURN_URL, openBrowser)
+        val page = CallbackPageText(
+            signedIn = container.strings.get(R.string.setup_page_signed_in),
+            failed = container.strings.get(R.string.setup_page_failed),
+            back = container.strings.get(R.string.setup_page_back),
+        )
+        connection.session.signIn(info.providers.singleOrNull(), RETURN_URL, page, openBrowser)
         checkAccess()
     }
 
@@ -242,7 +249,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     private fun controller(connection: Connection, id: String?): ChatController {
         container.turns.visibleChat = id
         return ChatController(
-            connection.session, connection.socket, viewModelScope, id,
+            connection.session, connection.socket, viewModelScope, container.strings, id,
             onSessionCreated = { stored ->
                 container.turns.visibleChat = stored
                 refreshChats()
@@ -280,7 +287,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 if (_chat.value?.state?.value?.storedId == id) _chat.value?.reload()
             } catch (e: Exception) {
                 Log.w(TAG, "Change of chat $id failed", e)
-                _notice.value = e.message ?: "Не получилось"
+                _notice.value = e.message ?: container.strings.get(R.string.error_failed)
             }
             refreshChats()
         }

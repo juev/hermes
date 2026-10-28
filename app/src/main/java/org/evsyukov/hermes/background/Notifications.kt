@@ -22,17 +22,17 @@ class Notifications(private val context: Context) {
         val system = context.getSystemService(NotificationManager::class.java)
         system.createNotificationChannels(
             listOf(
-                NotificationChannel(ANSWERS, "Ответы", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Агент закончил отвечать, пока приложение было свёрнуто"
+                NotificationChannel(ANSWERS, context.getString(R.string.notify_channel_answers), NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = context.getString(R.string.notify_channel_answers_desc)
                 },
-                NotificationChannel(REQUESTS, "Запросы агента", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Разрешить команду, ответить на вопрос"
+                NotificationChannel(REQUESTS, context.getString(R.string.notify_channel_requests), NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = context.getString(R.string.notify_channel_requests_desc)
                 },
-                NotificationChannel(ACTIVITY, "Новые события", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                    description = "Ответы cron, сообщения из других каналов и устройств"
+                NotificationChannel(ACTIVITY, context.getString(R.string.notify_channel_activity), NotificationManager.IMPORTANCE_DEFAULT).apply {
+                    description = context.getString(R.string.notify_channel_activity_desc)
                 },
-                NotificationChannel(WORKING, "Работа в фоне", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Соединение с сервером, пока агент отвечает"
+                NotificationChannel(WORKING, context.getString(R.string.notify_channel_working), NotificationManager.IMPORTANCE_LOW).apply {
+                    description = context.getString(R.string.notify_channel_working_desc)
                     setShowBadge(false)
                 },
             ),
@@ -54,7 +54,7 @@ class Notifications(private val context: Context) {
         val notification = NotificationCompat.Builder(context, ANSWERS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Hermes" })
-            .setContentText(if (error) "Ошибка: $text" else text)
+            .setContentText(if (error) context.getString(R.string.notify_error, text) else text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(1500)))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
@@ -75,9 +75,17 @@ class Notifications(private val context: Context) {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(openChat(chatId, requestId.hashCode()))
-        choices.take(2).forEach { choice -> builder.addAction(0, CHOICE_LABELS[choice] ?: choice, answerIntent(requestId, choice)) }
-        if ("deny" !in choices.take(2)) builder.addAction(0, "Отклонить", answerIntent(requestId, "deny"))
+        choices.take(2).forEach { choice -> builder.addAction(0, choiceLabel(choice), answerIntent(requestId, choice)) }
+        if ("deny" !in choices.take(2)) builder.addAction(0, choiceLabel("deny"), answerIntent(requestId, "deny"))
         manager.notify(TAG_REQUEST, requestId.hashCode(), builder.build())
+    }
+
+    private fun choiceLabel(choice: String): String = when (choice) {
+        "once" -> context.getString(R.string.notify_choice_once)
+        "session" -> context.getString(R.string.notify_choice_session)
+        "always" -> context.getString(R.string.notify_choice_always)
+        "deny" -> context.getString(R.string.notify_choice_deny)
+        else -> choice
     }
 
     fun cancelRequest(requestId: String) = manager.cancel(TAG_REQUEST, requestId.hashCode())
@@ -125,6 +133,5 @@ class Notifications(private val context: Context) {
         private const val TAG_CHAT = "chat"
         private const val TAG_REQUEST = "request"
         private const val GROUP_ACTIVITY = "activity"
-        private val CHOICE_LABELS = mapOf("once" to "Разрешить", "session" to "В этом чате", "always" to "Всегда", "deny" to "Отклонить")
     }
 }

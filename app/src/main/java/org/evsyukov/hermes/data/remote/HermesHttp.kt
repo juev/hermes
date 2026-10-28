@@ -15,6 +15,8 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.auth.Tokens
 import java.io.IOException
 
@@ -45,6 +47,7 @@ class HermesHttp(
     val client: OkHttpClient,
     private val tokens: suspend () -> Tokens?,
     private val saveTokens: suspend (Tokens?) -> Unit,
+    private val strings: AppStrings,
     private val now: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     private val refreshLock = Mutex()
@@ -66,7 +69,7 @@ class HermesHttp(
     private suspend fun refresh(current: Tokens): Tokens {
         if (current.refreshToken.isEmpty()) {
             saveTokens(null)
-            throw SignInRequiredException("Сессия истекла, войдите заново")
+            throw SignInRequiredException(strings.get(R.string.error_session_expired))
         }
         val body = JsonObject(mapOf("refresh_token" to JsonPrimitive(current.refreshToken), "provider" to JsonPrimitive(current.provider)))
         val request = Request.Builder().url(endpoint("auth/native/refresh").build()).post(body.toBody()).build()
@@ -79,7 +82,7 @@ class HermesHttp(
                 }
                 response.code == 401 || response.code == 400 -> {
                     saveTokens(null)
-                    throw SignInRequiredException("Сессия истекла, войдите заново")
+                    throw SignInRequiredException(strings.get(R.string.error_session_expired))
                 }
                 // 503: the identity provider is unreachable; the tokens stay for the next try.
                 else -> throw errorOf(response)
@@ -96,7 +99,7 @@ class HermesHttp(
         if (retried.code == 401) {
             retried.close()
             saveTokens(null)
-            throw SignInRequiredException("Сервер не принял вход, войдите заново")
+            throw SignInRequiredException(strings.get(R.string.error_sign_in_rejected))
         }
         return retried
     }

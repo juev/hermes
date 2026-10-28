@@ -42,12 +42,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import org.evsyukov.hermes.R
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -86,13 +88,13 @@ fun ViewerScreen(target: ViewerFile, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text(target.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.common_back)) }
                 },
                 actions = {
                     val ready = file
                     if (ready != null) {
-                        IconButton(onClick = { save.launch(target.name) }) { Icon(Icons.Filled.Download, contentDescription = "Сохранить") }
-                        IconButton(onClick = { share(context, ready, target.mime) }) { Icon(Icons.Filled.Share, contentDescription = "Поделиться") }
+                        IconButton(onClick = { save.launch(target.name) }) { Icon(Icons.Filled.Download, contentDescription = stringResource(R.string.common_save)) }
+                        IconButton(onClick = { share(context, ready, target.mime) }) { Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.common_share)) }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = ChatTheme.colors.background),
@@ -102,7 +104,7 @@ fun ViewerScreen(target: ViewerFile, onBack: () -> Unit) {
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
             val ready = file
             when {
-                failure != null -> Text("Файл не загрузился: $failure", color = ChatTheme.colors.secondaryText, modifier = Modifier.padding(24.dp))
+                failure != null -> Text(stringResource(R.string.viewer_load_failed, failure.orEmpty()), color = ChatTheme.colors.secondaryText, modifier = Modifier.padding(24.dp))
                 ready == null -> CircularProgressIndicator()
                 kind == ViewerKind.IMAGE -> ZoomableAsyncImage(
                     model = ready,
@@ -128,12 +130,13 @@ private const val TEXT_LIMIT = 512 * 1024
 
 @Composable
 private fun TextFile(file: File, content: @Composable (String) -> Unit) {
+    val truncated = stringResource(R.string.viewer_truncated)
     val text by produceState<String?>(null, file) {
         value = withContext(Dispatchers.IO) {
             file.inputStream().use { input ->
                 val bytes = input.readNBytes(TEXT_LIMIT + 1)
                 val body = String(bytes, 0, minOf(bytes.size, TEXT_LIMIT), Charsets.UTF_8)
-                if (bytes.size > TEXT_LIMIT) "$body\n\n… файл обрезан до 512 КБ" else body
+                if (bytes.size > TEXT_LIMIT) "$body\n\n$truncated" else body
             }
         }
     }
@@ -192,9 +195,9 @@ private fun OtherFile(target: ViewerFile, file: File) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, contentDescription = null, tint = ChatTheme.colors.secondaryText)
         Text(target.name, color = ChatTheme.colors.text)
-        Text("${file.length() / 1024} КБ · ${target.mime ?: "тип неизвестен"}", color = ChatTheme.colors.secondaryText)
-        Text("Этот формат приложение не показывает само.", color = ChatTheme.colors.faintText)
-        TextButton(onClick = { share(context, file, target.mime, view = true) }) { Text("Открыть в другом приложении") }
+        Text(stringResource(R.string.viewer_file_info, file.length() / 1024, target.mime ?: stringResource(R.string.viewer_unknown_type)), color = ChatTheme.colors.secondaryText)
+        Text(stringResource(R.string.viewer_unsupported), color = ChatTheme.colors.faintText)
+        TextButton(onClick = { share(context, file, target.mime, view = true) }) { Text(stringResource(R.string.viewer_open_other)) }
     }
 }
 

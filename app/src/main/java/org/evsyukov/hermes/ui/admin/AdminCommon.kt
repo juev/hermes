@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.ActionStatus
 import org.evsyukov.hermes.data.remote.AdminApi
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -99,10 +101,10 @@ fun AdminScaffold(
         topBar = {
             TopAppBar(
                 title = { Text(title, fontSize = 18.sp) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back)) } },
                 actions = {
                     actions()
-                    if (onRefresh != null) IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Обновить") }
+                    if (onRefresh != null) IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, stringResource(R.string.admin_refresh)) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = colors.background),
             )
@@ -159,7 +161,7 @@ fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () ->
         title = { Text(title) },
         text = { Text(text) },
         confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = ChatTheme.colors.danger) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -200,7 +202,7 @@ fun ActionLog(api: AdminApi, name: String, onDone: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = onDone) {
-                Text(if (status?.running == false) "Готово (код ${status?.exitCode ?: 0})" else "Скрыть")
+                Text(if (status?.running == false) stringResource(R.string.admin_done, status?.exitCode ?: 0) else stringResource(R.string.common_hide))
             }
         },
     )
@@ -212,7 +214,7 @@ fun CoroutineScope.attempt(snackbar: SnackbarHostState, done: String? = null, bl
         block()
         if (done != null) snackbar.showSnackbar(done)
     } catch (e: Exception) {
-        snackbar.showSnackbar(e.message ?: "Ошибка")
+        snackbar.showSnackbar(e.message ?: e.javaClass.simpleName)
     }
 }
 
