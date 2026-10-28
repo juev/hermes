@@ -56,6 +56,11 @@ so the app listens on `127.0.0.1` while the sign-in page is open.
   `/.well-known/assetlinks.json` with the app's signing certificate; otherwise use the login code
   of the identity provider, or sign in once through the browser.
 
+## Installing
+
+Signed APKs for arm64 phones with Android 12 or later are on the
+[releases page](https://github.com/juev/hermes/releases).
+
 ## Building
 
 ```bash
@@ -66,7 +71,8 @@ so the app listens on `127.0.0.1` while the sign-in page is open.
 
 Without `tailnet.aar` the app builds and the built-in Tailscale reports itself unavailable.
 A release is signed from `HERMES_KEYSTORE`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_KEY_ALIAS` and
-`HERMES_KEY_PASSWORD`.
+`HERMES_KEY_PASSWORD`. A tag `v1.2.3` makes CI build the signed APK and publish it as a release;
+a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release.
 
 ## Known limits
 
