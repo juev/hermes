@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    // Collects the libraries of the app and their licenses for the Licenses screen.
+    alias(libs.plugins.aboutlibraries)
 }
 
 android {
@@ -56,6 +58,64 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // Robolectric sets up Android's shared memory through the JDK's internal access to file descriptors.
+            it.jvmArgs("--add-exports", "java.base/jdk.internal.access=ALL-UNNAMED")
+        }
+    }
+}
+
+aboutLibraries {
+    collect {
+        configPath = file("aboutlibraries")
+    }
+    // The SPDX text of a license like BSD or MIT carries a placeholder where the copyright of the
+    // library belongs, and the notice is what such a license asks to ship. So a library under any
+    // license but Apache-2.0 fails the build until its notice is in aboutlibraries/licenses: for
+    // BSD-3-Clause that is the notice of Protocol Buffers, the only library under it.
+    license {
+        strictMode = com.mikepenz.aboutlibraries.plugin.StrictMode.FAIL
+        allowedLicenses.addAll("Apache-2.0")
+        allowedLicensesMap = mapOf("BSD-3-Clause" to listOf("com.google.protobuf", "androidx.datastore"))
+    }
+}
+
+// The Licenses screen reads the license of the app and, when the tailnet node is built in, the
+// licenses of its Go modules, which scripts/build-tailnet.sh writes next to the node.
+abstract class LegalAssetsTask : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val license: RegularFileProperty
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val tailnet: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @get:Inject
+    abstract val fs: FileSystemOperations
+
+    @TaskAction
+    fun copy() {
+        fs.sync {
+            from(license) { into("legal") }
+            from(tailnet) { into("legal") }
+            into(outputDir)
+        }
+    }
+}
+
+val legalAssets = tasks.register<LegalAssetsTask>("legalAssets") {
+    license.set(rootProject.layout.projectDirectory.file("LICENSE"))
+    // A tree, so a build without the node simply has no such file.
+    tailnet.from(fileTree("libs/licenses") { include("tailnet.json") })
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(legalAssets, LegalAssetsTask::outputDir)
     }
 }
 
@@ -76,6 +136,7 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.androidx.webkit)
     implementation(libs.unifiedpush.connector)
+    implementation(libs.aboutlibraries.core)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

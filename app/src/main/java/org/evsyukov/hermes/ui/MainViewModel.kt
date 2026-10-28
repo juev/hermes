@@ -42,6 +42,7 @@ sealed interface Screen {
     data object Search : Screen
     data class Admin(val section: AdminSection? = null) : Screen
     data object Settings : Screen
+    data object Licenses : Screen
     data class ServerEdit(val id: String?) : Screen
     data class Viewer(val file: ViewerFile) : Screen
 }
