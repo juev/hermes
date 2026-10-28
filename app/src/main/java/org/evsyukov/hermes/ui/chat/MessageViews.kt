@@ -132,7 +132,8 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
 @Composable
 private fun AttachmentThumb(attachment: Attachment, actions: MessageActions) {
     val colors = ChatTheme.colors
-    if (attachment.image && attachment.path.startsWith("/")) {
+    val onServer = attachment.path.startsWith("/") || attachment.path.contains('/')
+    if (attachment.image && onServer) {
         val file by produceState<File?>(null, attachment.path) { value = actions.loadFile(attachment.path) }
         Box(
             Modifier.size(96.dp).clip(RoundedCornerShape(14.dp)).background(colors.userBubble).clickable { actions.openFile(attachment.path) },
@@ -143,7 +144,7 @@ private fun AttachmentThumb(attachment: Attachment, actions: MessageActions) {
             else Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, null, tint = colors.faintText)
         }
     } else {
-        FileChip(attachment.name) { if (attachment.path.startsWith("/")) actions.openFile(attachment.path) }
+        FileChip(attachment.name) { if (onServer) actions.openFile(attachment.path) }
     }
 }
 

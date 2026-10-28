@@ -101,6 +101,7 @@ fun ChatScreen(
     loadFile: suspend (String) -> File?,
     loadModels: suspend () -> ModelChoices,
     transcribe: suspend (ByteArray, String) -> String,
+    openLocal: (LocalAttachment) -> Unit,
 ) {
     val state by controller.state.collectAsState()
     val colors = ChatTheme.colors
@@ -273,6 +274,7 @@ fun ChatScreen(
                 onStop = controller::stop,
                 transcribe = transcribe,
                 onError = { localError = it },
+                onOpen = openLocal,
             )
         }
     }

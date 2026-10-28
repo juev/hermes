@@ -199,10 +199,11 @@ private fun MainScreen(vm: MainViewModel) {
                 connected = socketState?.value != SocketState.DISCONNECTED || access != Access.OK,
                 onMenu = { scope.launch { drawer.open() } },
                 onNewChat = vm::newChat,
-                openFile = vm::openServerFile,
-                loadFile = vm::serverFile,
+                openFile = { path -> vm.openServerFile(path, controller.state.value.storedId) },
+                loadFile = { path -> vm.serverFile(path, controller.state.value.storedId) },
                 loadModels = { c.session.admin.modelOptions() },
                 transcribe = { audio, mime -> c.session.chat.transcribe(audio, mime) },
+                openLocal = { attachment -> vm.openLocalFile(container.attachments.put(attachment.name, attachment.bytes), attachment.name, attachment.mime) },
             )
         }
     }

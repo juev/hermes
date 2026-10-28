@@ -23,13 +23,19 @@ class AttachmentCache(private val root: File) {
         return File(root, "${hash}_$name")
     }
 
-    /** Downloads [path] from the server unless it is in the cache already. */
-    suspend fun get(session: ServerSession, path: String): File = withContext(Dispatchers.IO) {
-        val target = fileFor(session.profile.id, path)
+    /**
+     * Downloads [path] from the server unless it is in the cache already. A relative path, as
+     * `@file:` references are, resolves in the working directory of [chatId].
+     */
+    suspend fun get(session: ServerSession, path: String, chatId: String? = null): File = withContext(Dispatchers.IO) {
+        val relative = !path.startsWith("/")
+        val target = fileFor(session.profile.id, if (relative) "$chatId/$path" else path)
         if (target.isFile && target.length() > 0) return@withContext target
         val part = File(target.parentFile, target.name + ".part")
         session.http.execute {
-            url(session.http.endpoint("api/fs/download").addQueryParameter("path", path).build())
+            val url = session.http.endpoint("api/fs/download").addQueryParameter("path", path)
+            if (relative && chatId != null) url.addQueryParameter("session_id", chatId)
+            url(url.build())
         }.use { response ->
             if (!response.isSuccessful) throw errorOf(response)
             part.outputStream().use { out -> response.body.byteStream().copyTo(out) }

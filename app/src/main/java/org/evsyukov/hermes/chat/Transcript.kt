@@ -52,10 +52,20 @@ private val MEDIA_LINE = Regex("""(?m)^[\t ]*[`"']?MEDIA:\s*[`"']?([^`"'\n]+?)[`
 private val MEDIA_INLINE = Regex("""[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\s`"]+)""")
 private val IMAGE_EXT = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "svg")
 
-/** Splits the `@image:` and `@file:` lines that the server keeps in a user message off its text. */
+/** Where the server appends what it read from `@file:` references; the user wrote what comes before. */
+private val CONTEXT_SECTIONS = listOf("\n\n--- Context Warnings ---", "\n\n--- Attached Context ---")
+private val IMAGE_PLACEHOLDERS = setOf("[screenshot]", "[image]")
+
+/**
+ * Splits a stored user message into what the user wrote and the files it points at: the server
+ * keeps `@image:` and `@file:` lines in the text and appends the content of the files after a
+ * `--- Attached Context ---` line, which the chat does not show.
+ */
 fun splitUserText(text: String): Pair<String, List<Attachment>> {
+    val cut = CONTEXT_SECTIONS.mapNotNull { marker -> text.indexOf(marker).takeIf { it >= 0 } }.minOrNull()
+    val written = if (cut == null) text else text.substring(0, cut)
     val attachments = mutableListOf<Attachment>()
-    val kept = text.lines().filter { line ->
+    val kept = written.lines().filter { line -> line.trim() !in IMAGE_PLACEHOLDERS }.filter { line ->
         val match = ATTACHMENT_LINE.matchEntire(line.trim()) ?: return@filter true
         val path = match.groupValues[2].trim()
         val name = path.substringAfterLast('/')

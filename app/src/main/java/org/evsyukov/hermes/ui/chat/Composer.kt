@@ -87,6 +87,7 @@ fun Composer(
     onStop: () -> Unit,
     transcribe: suspend (ByteArray, String) -> String,
     onError: (String) -> Unit,
+    onOpen: (LocalAttachment) -> Unit,
 ) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
@@ -142,7 +143,7 @@ fun Composer(
         if (attachments.isNotEmpty()) {
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 attachments.forEach { attachment ->
-                    PendingAttachment(attachment) { onAttachments(attachments - attachment) }
+                    PendingAttachment(attachment, onOpen = { onOpen(attachment) }) { onAttachments(attachments - attachment) }
                 }
             }
         }
@@ -242,13 +243,16 @@ private fun RoundButton(
 }
 
 @Composable
-private fun PendingAttachment(attachment: LocalAttachment, onRemove: () -> Unit) {
+private fun PendingAttachment(attachment: LocalAttachment, onOpen: () -> Unit, onRemove: () -> Unit) {
     val colors = ChatTheme.colors
     Box {
         if (attachment.image) {
-            AsyncImage(attachment.bytes, attachment.name, contentScale = ContentScale.Crop, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)))
+            AsyncImage(
+                attachment.bytes, attachment.name, contentScale = ContentScale.Crop,
+                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onOpen),
+            )
         } else {
-            Box(Modifier.size(width = 150.dp, height = 64.dp)) { FileChip(attachment.name) {} }
+            Box(Modifier.size(width = 150.dp, height = 64.dp)) { FileChip(attachment.name, onOpen) }
         }
         Box(
             Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(colors.contrast).clickable(onClick = onRemove),

@@ -98,6 +98,15 @@ class TranscriptTest {
     }
 
     @Test
+    fun `the context the server attached stays out of the bubble`() {
+        val stored = "Посмотри файлы\n@file:attachments/report.pdf\n@file:attachments/notes.md\n\n--- Attached Context ---\n\n" +
+            "📎 @file:attachments/report.pdf (application/pdf, 864 B) — binary file\n\n📄 @file:attachments/notes.md (27 tokens)\n```markdown\n# Notes\n```\n[screenshot]"
+        val (text, attachments) = splitUserText(stored)
+        assertThat(text).isEqualTo("Посмотри файлы")
+        assertThat(attachments.map { it.path }).containsExactly("attachments/report.pdf", "attachments/notes.md").inOrder()
+    }
+
+    @Test
     fun `media directives are found and removed from the text`() {
         val text = "Готово.\nMEDIA:/opt/data/out/chart.png\nСм. также `MEDIA:/tmp/report.pdf`."
         assertThat(mediaPaths(text)).containsExactly("/opt/data/out/chart.png", "/tmp/report.pdf").inOrder()

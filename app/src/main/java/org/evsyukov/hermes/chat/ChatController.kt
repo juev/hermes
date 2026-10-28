@@ -178,9 +178,10 @@ class ChatController(
             try {
                 withLive { live ->
                     val refs = attachments.mapNotNull { attach(live, it) }
+                    // The words first: the server titles the chat by the start of its first message.
                     val prompt = buildString {
-                        if (refs.isNotEmpty()) append(refs.joinToString("\n")).append("\n\n")
-                        append(text.ifBlank { if (attachments.all { it.image }) "Что на этом изображении?" else "" })
+                        append(text.ifBlank { if (attachments.all { it.image }) "Что на этом изображении?" else "Посмотри файлы" })
+                        if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                     }
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
                 }

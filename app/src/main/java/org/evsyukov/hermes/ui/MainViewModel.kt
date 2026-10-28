@@ -314,19 +314,19 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     }
 
     /** Opens a file of the server in the viewer; it downloads into the cache first. */
-    fun openServerFile(path: String) {
+    fun openServerFile(path: String, chatId: String? = null) {
         val connection = container.connection.value ?: return
-        push(Screen.Viewer(ViewerFile(path.substringAfterLast('/'), null) { container.attachments.get(connection.session, path) }))
+        push(Screen.Viewer(ViewerFile(path.substringAfterLast('/'), null) { container.attachments.get(connection.session, path, chatId) }))
     }
 
     fun openLocalFile(file: File, name: String, mime: String?) {
         push(Screen.Viewer(ViewerFile(name, mime) { file }))
     }
 
-    suspend fun serverFile(path: String): File? {
+    suspend fun serverFile(path: String, chatId: String? = null): File? {
         val connection = container.connection.value ?: return null
         return try {
-            container.attachments.get(connection.session, path)
+            container.attachments.get(connection.session, path, chatId)
         } catch (e: Exception) {
             null
         }
