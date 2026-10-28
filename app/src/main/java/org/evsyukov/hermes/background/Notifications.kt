@@ -39,8 +39,11 @@ class Notifications(private val context: Context) {
         )
     }
 
-    private fun allowed() =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    /** Posts unless the user has not allowed notifications; the check sits here for lint to see it. */
+    private fun post(tag: String, id: Int, notification: Notification) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        manager.notify(tag, id, notification)
+    }
 
     private fun openChat(chatId: String?, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
@@ -50,7 +53,6 @@ class Notifications(private val context: Context) {
     }
 
     fun answer(chatId: String, title: String, text: String, error: Boolean) {
-        if (!allowed()) return
         val notification = NotificationCompat.Builder(context, ANSWERS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Hermes" })
@@ -60,12 +62,11 @@ class Notifications(private val context: Context) {
             .setAutoCancel(true)
             .setContentIntent(openChat(chatId, chatId.hashCode()))
             .build()
-        manager.notify(TAG_CHAT, chatId.hashCode(), notification)
+        post(TAG_CHAT, chatId.hashCode(), notification)
     }
 
     /** An approval waits: the buttons answer it from the shade while the socket is alive. */
     fun request(chatId: String?, requestId: String, title: String, text: String, choices: List<String>) {
-        if (!allowed()) return
         val builder = NotificationCompat.Builder(context, REQUESTS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
@@ -77,7 +78,7 @@ class Notifications(private val context: Context) {
             .setContentIntent(openChat(chatId, requestId.hashCode()))
         choices.take(2).forEach { choice -> builder.addAction(0, choiceLabel(choice), answerIntent(requestId, choice)) }
         if ("deny" !in choices.take(2)) builder.addAction(0, choiceLabel("deny"), answerIntent(requestId, "deny"))
-        manager.notify(TAG_REQUEST, requestId.hashCode(), builder.build())
+        post(TAG_REQUEST, requestId.hashCode(), builder.build())
     }
 
     private fun choiceLabel(choice: String): String = when (choice) {
@@ -98,7 +99,6 @@ class Notifications(private val context: Context) {
     }
 
     fun activity(chatId: String, title: String, text: String) {
-        if (!allowed()) return
         val notification = NotificationCompat.Builder(context, ACTIVITY)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Hermes" })
@@ -109,7 +109,7 @@ class Notifications(private val context: Context) {
             .setAutoCancel(true)
             .setContentIntent(openChat(chatId, chatId.hashCode()))
             .build()
-        manager.notify(TAG_CHAT, chatId.hashCode(), notification)
+        post(TAG_CHAT, chatId.hashCode(), notification)
     }
 
     fun cancelChat(chatId: String) = manager.cancel(TAG_CHAT, chatId.hashCode())

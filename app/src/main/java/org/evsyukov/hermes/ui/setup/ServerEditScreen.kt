@@ -68,7 +68,8 @@ import org.evsyukov.hermes.ui.theme.ChatTheme
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit, draft: ServerProfile? = null) {
-    val existing = container.servers.state.value.servers.firstOrNull { it.id == id }
+    val servers by container.servers.state.collectAsState()
+    val existing = servers.servers.firstOrNull { it.id == id }
     // A server from a link fills the form; the user still checks and saves it.
     val source = draft ?: existing
     var name by remember(source) { mutableStateOf(source?.name ?: "Hermes") }
@@ -107,7 +108,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                     if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back)) }
                 },
                 actions = {
-                    if (existing != null && container.servers.state.value.servers.size > 1) {
+                    if (existing != null && servers.servers.size > 1) {
                         IconButton(onClick = { scope.launch { container.servers.remove(existing.id); onBack?.invoke() } }) {
                             Icon(Icons.Outlined.Delete, stringResource(R.string.setup_delete_server))
                         }

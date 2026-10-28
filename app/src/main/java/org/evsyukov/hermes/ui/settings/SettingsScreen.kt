@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -53,6 +54,7 @@ import java.util.Date
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () -> Unit) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val settings by container.settings.current.collectAsState()
     val tailnet by container.tailnet.status.collectAsState()
@@ -128,7 +130,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onSignOut: () ->
                 ClickRow(stringResource(R.string.push_test), null, onClick = {
                     scope.launch {
                         val text = try {
-                            context.getString(R.string.push_test_sent, container.push.test())
+                            resources.getString(R.string.push_test_sent, container.push.test())
                         } catch (e: Exception) {
                             e.message ?: e.javaClass.simpleName
                         }
