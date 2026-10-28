@@ -28,12 +28,21 @@ private object SocksLogins : Authenticator() {
         if (requestorType == RequestorType.SERVER) logins["$requestingHost:$requestingPort"] else null
 }
 
+internal fun registerSocksLogin(proxy: ProxySettings) = SocksLogins.put(proxy.host, proxy.port, proxy.username, proxy.password)
+
+/**
+ * The proxy traffic of a server really goes through: the built-in tailnet stands for its local
+ * SOCKS5. Null for a tailnet route while the node is down.
+ */
+fun effectiveRoute(proxy: ProxySettings, tailnetProxy: ProxySettings?): ProxySettings? =
+    if (proxy.type == ProxyType.TAILSCALE) tailnetProxy else proxy
+
 /**
  * Builds the HTTP client of one server: the shared [base] pool and timeouts with the server's proxy.
  * [tailnetProxy] is the local SOCKS5 of the built-in tailnet, null while it is not running.
  */
 fun clientFor(base: OkHttpClient, proxy: ProxySettings, tailnetProxy: ProxySettings?): OkHttpClient {
-    val effective = if (proxy.type == ProxyType.TAILSCALE) tailnetProxy ?: return base.newBuilder().proxy(UNREACHABLE).build() else proxy
+    val effective = effectiveRoute(proxy, tailnetProxy) ?: return base.newBuilder().proxy(UNREACHABLE).build()
     return when (effective.type) {
         ProxyType.NONE, ProxyType.TAILSCALE -> base
         ProxyType.HTTP -> base.newBuilder()
@@ -49,7 +58,7 @@ fun clientFor(base: OkHttpClient, proxy: ProxySettings, tailnetProxy: ProxySetti
             }
             .build()
         ProxyType.SOCKS5 -> {
-            if (effective.username.isNotEmpty()) SocksLogins.put(effective.host, effective.port, effective.username, effective.password)
+            if (effective.username.isNotEmpty()) registerSocksLogin(effective)
             // OkHttp hands the target to a SOCKS proxy unresolved, so the proxy resolves tailnet names itself.
             base.newBuilder().proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress(effective.host, effective.port))).build()
         }

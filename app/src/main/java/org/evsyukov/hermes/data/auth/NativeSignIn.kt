@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.data.auth
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
@@ -56,6 +57,8 @@ class LoopbackReceiver : AutoCloseable {
      * to the app through [returnUrl]. Other requests (a favicon) are answered with 404 and skipped.
      */
     suspend fun await(returnUrl: String, timeoutMillis: Long = 5 * 60_000): CallbackResult = withContext(Dispatchers.IO) {
+        // accept() ignores coroutine cancellation; closing the socket ends it when the sign-in is abandoned.
+        coroutineContext[Job]?.invokeOnCompletion { socket.close() }
         withTimeout(timeoutMillis) {
             var result: CallbackResult? = null
             while (result == null) result = acceptOne(returnUrl)

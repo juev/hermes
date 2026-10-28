@@ -34,7 +34,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import org.evsyukov.hermes.data.server.ProxySettings
+import org.evsyukov.hermes.ui.setup.WebSignIn
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.ui.admin.AdminScreen
@@ -188,32 +192,53 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
     val colors = ChatTheme.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
+    val route = remember { vm.signInRoute() }
+    var job by remember { mutableStateOf<Job?>(null) }
+    var webUrl by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    // The system browser goes its own way; a server behind a proxy or the built-in tailnet signs in inside the app.
+    fun start(inApp: Boolean) {
+        error = null
+        job = scope.launch {
+            try {
+                vm.signIn { url ->
+                    if (inApp) webUrl = url else CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e.message ?: e.javaClass.simpleName
+            } finally {
+                webUrl = null
+                job = null
+            }
+        }
+    }
+
+    val url = webUrl
+    if (url != null) {
+        WebSignIn(url, route ?: ProxySettings(), onCancel = { job?.cancel() })
+        return
+    }
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Вход в $serverName", color = colors.text, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Откроется страница входа сервера. После входа браузер вернёт вас в приложение.",
+            if (route == null) "Откроется страница входа сервера. После входа браузер вернёт вас в приложение."
+            else "Сервер доступен только через выбранный маршрут, поэтому страница входа откроется внутри приложения.",
             color = colors.secondaryText, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
         Button(
-            enabled = !busy,
+            enabled = job == null,
             colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast),
-            onClick = {
-                busy = true
-                error = null
-                scope.launch {
-                    try {
-                        vm.signIn { url -> CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url)) }
-                    } catch (e: Exception) {
-                        error = e.message ?: e.javaClass.simpleName
-                    }
-                    busy = false
-                }
-            },
-        ) { if (busy) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text("Войти") }
+            onClick = { start(inApp = route != null) },
+        ) { if (job != null) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text("Войти") }
+        TextButton(enabled = job == null, onClick = { start(inApp = route == null) }) {
+            Text(if (route == null) "Войти внутри приложения" else "Войти через браузер")
+        }
+        if (job != null) TextButton(onClick = { job?.cancel() }) { Text("Отменить") }
         error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = colors.danger, textAlign = TextAlign.Center)

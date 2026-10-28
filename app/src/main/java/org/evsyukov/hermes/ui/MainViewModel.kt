@@ -25,6 +25,9 @@ import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
+import org.evsyukov.hermes.data.server.ProxySettings
+import org.evsyukov.hermes.data.server.ProxyType
+import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
 import org.evsyukov.hermes.ui.viewer.ViewerFile
 import java.io.File
@@ -134,6 +137,13 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 _access.value = Access.OFFLINE
             }
         }
+    }
+
+    /** The route the in-app sign-in page must take; null when the server is reached directly. */
+    fun signInRoute(): ProxySettings? {
+        val profile = container.servers.state.value.active ?: return null
+        if (profile.proxy.type == ProxyType.NONE) return null
+        return effectiveRoute(profile.proxy, container.tailnet.proxy.value)
     }
 
     suspend fun signIn(openBrowser: (String) -> Unit) {
