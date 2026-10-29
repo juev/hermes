@@ -53,10 +53,13 @@ data class ToolCallInfo(val id: String, val name: String, val arguments: String)
 class ChatPage(val chats: List<ChatSummary>, val total: Int)
 
 /** The chat routes of the dashboard that work over plain HTTP; the live chat goes through [GatewaySocket]. */
-class ChatApi(private val http: HermesHttp) {
+class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null) {
+    /** The same reads answered from the phone's cache alone; null without a cache. Not for changes. */
+    val cached: ChatApi? = cachedReads?.let { ChatApi(http, it) }
+
     /** A page of chats, newest activity first; [sources] keeps only those sources, [excludeSources] drops them. */
     suspend fun list(offset: Int = 0, limit: Int = 50, archived: Boolean = false, sources: String? = null, excludeSources: String? = null): ChatPage {
-        val root = http.getJson(
+        val root = reads.kept(
             "api/sessions",
             mapOf(
                 "limit" to limit,
@@ -72,11 +75,11 @@ class ChatApi(private val http: HermesHttp) {
         return ChatPage(chats, root.long("total")?.toInt() ?: chats.size)
     }
 
-    suspend fun get(id: String): ChatSummary? = (http.getJson("api/sessions/$id") as? JsonObject)?.let(::summary)
+    suspend fun get(id: String): ChatSummary? = (reads.kept("api/sessions/$id") as? JsonObject)?.let(::summary)
 
     suspend fun search(query: String, limit: Int = 50): List<SearchHit> {
         if (query.isBlank()) return emptyList()
-        val root = http.getJson("api/sessions/search", mapOf("q" to query, "limit" to limit)).jsonObject
+        val root = reads.fresh("api/sessions/search", mapOf("q" to query, "limit" to limit)).jsonObject
         return (root["results"] as? JsonArray)?.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
             val chat = summary(obj, idKey = "session_id") ?: return@mapNotNull null
@@ -85,13 +88,13 @@ class ChatApi(private val http: HermesHttp) {
     }
 
     suspend fun messages(id: String, limit: Int = 500): List<StoredMessage> {
-        val root = http.getJson("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
+        val root = reads.kept("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
         return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
     }
 
     /** The text of the newest answer of the chat, for a notification. */
     suspend fun lastReply(id: String): String? {
-        val root = http.getJson("api/sessions/$id/messages", mapOf("limit" to 6, "order" to "latest", "inline_images" to false)).jsonObject
+        val root = reads.fresh("api/sessions/$id/messages", mapOf("limit" to 6, "order" to "latest", "inline_images" to false)).jsonObject
         return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }
             ?.filter { it.role == "assistant" && it.text.isNotBlank() && !it.hidden }
             ?.maxByOrNull { it.timestamp }
@@ -157,7 +160,7 @@ class ChatApi(private val http: HermesHttp) {
     private data class Fence(val requestId: String, val revision: Long?, val generation: Long?)
 
     private suspend fun fence(id: String): Fence {
-        val snapshot = http.getJson("api/sessions/$id/mutation-snapshot").jsonObject
+        val snapshot = reads.fresh("api/sessions/$id/mutation-snapshot").jsonObject
         return Fence(UUID.randomUUID().toString(), snapshot.long("runtime_revision"), snapshot.long("runtime_generation"))
     }
 

@@ -27,6 +27,8 @@ import org.evsyukov.hermes.background.ActivityCheck
 import org.evsyukov.hermes.background.Notifications
 import org.evsyukov.hermes.background.TurnWatcher
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
+import org.evsyukov.hermes.data.cache.CacheDatabase
+import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.files.AttachmentCache
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.server.ProxyType
@@ -55,6 +57,7 @@ class AppContainer(context: Context) {
     val servers = ServerStore(context, KeystoreTokenCipher(), scope)
     val tailnet = Tailnet(context, scope)
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
+    val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.current.value.cacheLimitMb * MEGABYTE })
 
     /**
      * Rebuilt when the active server, its address or its proxy changes; tokens alone do not
@@ -68,7 +71,7 @@ class AppContainer(context: Context) {
             previous?.socket?.stop()
             if (profile?.url == null) return@runningFold null
             val client = clientFor(http, profile.proxy, tailnetProxy)
-            val session = ServerSession(profile, client, servers, strings)
+            val session = ServerSession(profile, client, servers, strings, responses)
             Connection(session, GatewaySocket(session.http, scope, strings))
         }
         .stateIn(scope, SharingStarted.Eagerly, null)
@@ -122,6 +125,10 @@ class AppContainer(context: Context) {
             combine(connection.map { it?.session?.profile?.id }.distinctUntilChanged(), settings.current.map { it.push }.distinctUntilChanged()) { _, _ -> }
                 .collect { runCatching { push.reconcile() } }
         }
+        // A lowered limit evicts at once, not with the next write.
+        scope.launch {
+            settings.current.map { it.cacheLimitMb }.distinctUntilChanged().collect { runCatching { responses.trim() } }
+        }
         // The node runs only while the active server goes through it.
         scope.launch {
             servers.state.map { it.active }.distinctUntilChanged().collect { profile ->
@@ -130,6 +137,8 @@ class AppContainer(context: Context) {
         }
     }
 }
+
+private const val MEGABYTE = 1_048_576L
 
 /** Each connection that must stay open: the current one whenever [keep] is on. */
 internal fun <T : Any> Flow<T?>.keptOpen(keep: Flow<Boolean>): Flow<T> =

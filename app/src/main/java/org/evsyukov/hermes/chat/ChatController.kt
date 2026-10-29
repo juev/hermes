@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.chat
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,11 +109,15 @@ class ChatController(
         jobs.forEach { it.cancel() }
     }
 
-    /** Reads the stored history, then joins the live session to pick up a turn in progress. */
+    /**
+     * Reads the stored history, then joins the live session to pick up a turn in progress. A chat
+     * opened afresh first shows the history the phone keeps, so it does not wait for the server.
+     */
     fun reload() {
         val id = _state.value.storedId ?: return
         _state.update { it.copy(loading = true, error = null) }
         scope.launch {
+            if (_state.value.items.isEmpty()) showCached(id)
             try {
                 val summary = session.chat.get(id)
                 val history = transcriptOf(session.chat.messages(id))
@@ -121,6 +126,19 @@ class ChatController(
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message) }
             }
+        }
+    }
+
+    private suspend fun showCached(id: String) {
+        val cached = session.chat.cached ?: return
+        try {
+            val history = transcriptOf(cached.messages(id))
+            val summary = runCatching { cached.get(id) }.getOrNull()
+            _state.update { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model) else it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Not on the phone yet, or unreadable: the server's answer fills the chat.
         }
     }
 

@@ -65,8 +65,8 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
-    val info = rememberLoadable { api.modelInfo() }
-    val options = rememberLoadable { api.modelOptions() }
+    val info = rememberCached(api) { it.modelInfo() }
+    val options = rememberCached(api) { it.modelOptions() }
     var confirm by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     val resources = LocalResources.current
 
@@ -121,7 +121,7 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
-    val schema = rememberLoadable { api.schema() }
+    val schema = rememberCached(api) { it.schema() }
     val config = rememberLoadable { api.config() }
     var query by remember { mutableStateOf("") }
     var category by remember { mutableStateOf<String?>(null) }

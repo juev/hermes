@@ -83,9 +83,6 @@ abstract class ResponseDao {
         deleteResponsesLike(server, escaped)
     }
 
-    @Query("SELECT DISTINCT server FROM responses")
-    abstract suspend fun servers(): List<String>
-
     @Query("DELETE FROM parts")
     protected abstract suspend fun deleteAllParts()
 

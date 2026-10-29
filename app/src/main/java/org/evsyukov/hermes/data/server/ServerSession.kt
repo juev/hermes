@@ -13,11 +13,15 @@ import org.evsyukov.hermes.data.auth.CallbackResult
 import org.evsyukov.hermes.data.auth.LoopbackReceiver
 import org.evsyukov.hermes.data.auth.PkceRequest
 import org.evsyukov.hermes.data.auth.authorizeUrl
+import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.remote.AdminApi
+import org.evsyukov.hermes.data.remote.CachedReads
 import org.evsyukov.hermes.data.remote.ChatApi
 import org.evsyukov.hermes.data.remote.HermesException
 import org.evsyukov.hermes.data.remote.HermesHttp
 import org.evsyukov.hermes.data.remote.HermesJson
+import org.evsyukov.hermes.data.remote.NetworkReads
+import org.evsyukov.hermes.data.remote.cacheKey
 import org.evsyukov.hermes.data.remote.await
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.errorOf
@@ -35,6 +39,8 @@ class ServerSession(
     val client: OkHttpClient,
     private val store: ServerStore,
     private val strings: AppStrings,
+    /** Keeps the answers of chats and screens on the phone; a session only tried out has none. */
+    private val cache: ResponseCache? = null,
 ) {
     val http = HermesHttp(
         base = requireNotNull(profile.url) { "Bad server address ${profile.baseUrl}" },
@@ -43,8 +49,16 @@ class ServerSession(
         saveTokens = { store.setTokens(profile.id, it) },
         strings = strings,
     )
-    val admin = AdminApi(http)
-    val chat = ChatApi(http)
+    private val reads = NetworkReads(http, cache, profile.id)
+    private val cachedReads = cache?.let { CachedReads(it, profile.id) }
+    val admin = AdminApi(http, reads, cachedReads)
+    val chat = ChatApi(http, reads, cachedReads)
+
+    /** Drops what the phone keeps of a deleted chat. */
+    suspend fun forgetChat(id: String) {
+        cache?.drop(profile.id, cacheKey("api/sessions/$id", emptyMap()))
+        cache?.forget(profile.id, "api/sessions/$id/")
+    }
 
     suspend fun authInfo(): AuthInfo {
         val request = Request.Builder().url(http.endpoint("api/status").build()).build()
@@ -84,7 +98,11 @@ class ServerSession(
         }
     }
 
-    suspend fun signOut() = store.setTokens(profile.id, null)
+    /** Signs out and drops what the phone keeps of this server. */
+    suspend fun signOut() {
+        store.setTokens(profile.id, null)
+        cache?.forget(profile.id)
+    }
 
     /** True when the server answers an authenticated call; a 401 means the sign-in is needed. */
     suspend fun probe(): Boolean = try {
