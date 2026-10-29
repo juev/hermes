@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
     // Collects the libraries of the app and their licenses for the Licenses screen.
     alias(libs.plugins.aboutlibraries)
 }
@@ -151,6 +152,9 @@ dependencies {
 
     implementation(libs.datastore.preferences)
     implementation(libs.work.runtime)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
