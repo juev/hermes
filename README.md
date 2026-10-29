@@ -26,8 +26,15 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   background raises a notification.
 - Dictation goes to the speech-to-text provider configured in Hermes.
 - The server section shows status and changes the gateway, model, `config.yaml` (by schema or as
-  raw YAML), `.env` secrets, cron jobs, skills, toolsets, MCP servers and channels, and shows logs
-  and usage. Steps that break or delete something ask first.
+  raw YAML), `.env` secrets, cron jobs, skills, toolsets and channels, and shows logs and usage.
+  Steps that break or delete something ask first.
+- Integrations, in the server section, list the accounts connected through Nous and the MCP
+  servers. An account shows its state, the reason it failed and the tools of its service, marked
+  as reading, changing or deleting data; it connects, reconnects and disconnects from the phone.
+  A server shows where it comes from, what it starts or calls, its sign-in, the tools the agent
+  may use and its last test; a remote one signs in with OAuth in the browser. Servers of the
+  catalog Nous approved install with the keys they ask for, after the app shows what they clone,
+  build and start.
 - A turn keeps running after the app is left: a foreground service holds the socket, and the
   answer arrives as a notification. Approvals can be answered from the notification.
 - Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as

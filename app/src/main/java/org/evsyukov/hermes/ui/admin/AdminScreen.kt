@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.Psychology
@@ -43,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.serialization.json.JsonObject
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.AdminApi
+import org.evsyukov.hermes.data.remote.ConnectorsApi
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.double
 import org.evsyukov.hermes.data.remote.long
@@ -56,13 +58,14 @@ enum class AdminSection(@StringRes val title: Int, @StringRes val hint: Int, val
     SECRETS(R.string.admin_secrets, R.string.admin_secrets_hint, Icons.Outlined.Key),
     CRON(R.string.admin_cron, R.string.admin_cron_hint, Icons.Outlined.Schedule),
     TOOLS(R.string.admin_tools, R.string.admin_tools_hint, Icons.Outlined.Extension),
+    INTEGRATIONS(R.string.admin_integrations, R.string.admin_integrations_hint, Icons.Outlined.Hub),
     PLATFORMS(R.string.admin_platforms, R.string.admin_platforms_hint, Icons.Outlined.Forum),
     LOGS(R.string.admin_logs, R.string.admin_logs_hint, Icons.AutoMirrored.Outlined.Article),
     USAGE(R.string.admin_usage, R.string.admin_usage_hint, Icons.AutoMirrored.Outlined.ShowChart),
 }
 
 @Composable
-fun AdminScreen(api: AdminApi, section: AdminSection?, onOpen: (AdminSection) -> Unit, onBack: () -> Unit) {
+fun AdminScreen(api: AdminApi, connectors: ConnectorsApi, section: AdminSection?, onOpen: (AdminSection) -> Unit, onBack: () -> Unit) {
     when (section) {
         null -> AdminHub(api, onOpen, onBack)
         AdminSection.OVERVIEW -> OverviewScreen(api, onBack)
@@ -71,6 +74,7 @@ fun AdminScreen(api: AdminApi, section: AdminSection?, onOpen: (AdminSection) ->
         AdminSection.SECRETS -> SecretsScreen(api, onBack)
         AdminSection.CRON -> CronScreen(api, onBack)
         AdminSection.TOOLS -> ToolsScreen(api, onBack)
+        AdminSection.INTEGRATIONS -> IntegrationsScreen(api, connectors, onOpen, onBack)
         AdminSection.PLATFORMS -> PlatformsScreen(api, onBack)
         AdminSection.LOGS -> LogsScreen(api, onBack)
         AdminSection.USAGE -> UsageScreen(api, onBack)

@@ -197,13 +197,39 @@ class AdminApi(private val http: HermesHttp, private val reads: Reads = NetworkR
         http.putJson("api/tools/toolsets/$name", buildJsonObject { put("enabled", enabled) })
     }
 
-    suspend fun mcpServers(): List<JsonObject> = arrayOf(reads.kept("api/mcp/servers"), "servers")
+    suspend fun mcpServers(): List<McpServer> = arrayOf(reads.kept("api/mcp/servers"), "servers").mapNotNull(::mcpServerOf)
 
     suspend fun toggleMcp(name: String, enabled: Boolean) {
         http.putJson("api/mcp/servers/$name/enabled", buildJsonObject { put("enabled", enabled) })
     }
 
-    suspend fun testMcp(name: String): JsonObject = http.postJson("api/mcp/servers/$name/test").jsonObject
+    /** Connects to the server, lists its tools and disconnects; the server keeps no result. */
+    suspend fun testMcp(name: String): McpTest = mcpTestOf(http.postJson("api/mcp/servers/$name/test").jsonObject)
+
+    suspend fun mcpCatalog(): List<McpCatalogEntry> = arrayOf(reads.kept("api/mcp/catalog"), "entries").mapNotNull(::mcpCatalogEntryOf)
+
+    /** Installs a catalog server; [env] holds only the credentials the entry declares. */
+    suspend fun installMcp(name: String, env: Map<String, String>): McpInstall {
+        val result = http.postJson(
+            "api/mcp/catalog/install",
+            buildJsonObject {
+                put("name", name)
+                put("env", JsonObject(env.mapValues { (_, value) -> JsonPrimitive(value) }))
+                put("enable", true)
+            },
+        ).jsonObject
+        return McpInstall(result.bool("background") ?: false, result.string("action"))
+    }
+
+    /** Starts the OAuth sign-in of a server; the page it gives sends the browser back to the dashboard. */
+    suspend fun signInMcp(name: String): McpAuthFlow = mcpAuthFlowOf(http.postJson("api/mcp/servers/$name/auth").jsonObject, name)
+
+    suspend fun mcpSignIn(flow: McpAuthFlow): McpAuthFlow = mcpAuthFlowOf(reads.fresh("api/mcp/oauth/flows/${flow.id}").jsonObject, flow.server)
+
+    /** Frees the server for another sign-in; a flow already over or forgotten stays as it is. */
+    suspend fun cancelMcpSignIn(flow: McpAuthFlow) {
+        http.delete("api/mcp/oauth/flows/${flow.id}")
+    }
 
     suspend fun platforms(): List<JsonObject> = arrayOf(reads.kept("api/messaging/platforms"), "platforms")
 

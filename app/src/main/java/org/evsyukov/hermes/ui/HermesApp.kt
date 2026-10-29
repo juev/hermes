@@ -46,6 +46,7 @@ import org.evsyukov.hermes.data.server.ProxySettings
 import org.evsyukov.hermes.ui.setup.WebSignIn
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ProxyType
+import org.evsyukov.hermes.data.remote.ConnectorsApi
 import org.evsyukov.hermes.ui.admin.AdminScreen
 import org.evsyukov.hermes.ui.chat.ChatScreen
 import org.evsyukov.hermes.ui.search.SearchScreen
@@ -120,7 +121,7 @@ private fun MainScreen(vm: MainViewModel) {
         }
         is Screen.Admin -> {
             val c = connection ?: return
-            AdminScreen(c.session.admin, top.section, onOpen = { vm.push(Screen.Admin(it)) }, onBack = { vm.pop() })
+            AdminScreen(c.session.admin, remember(c) { ConnectorsApi(c.socket) }, top.section, onOpen = { vm.push(Screen.Admin(it)) }, onBack = { vm.pop() })
             return
         }
         is Screen.Settings -> {
