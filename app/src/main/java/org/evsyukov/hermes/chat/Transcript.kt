@@ -234,6 +234,21 @@ fun closeOpen(items: List<ChatItem>, interrupted: Boolean): List<ChatItem> {
     return items.dropLast(1) + last.copy(parts = parts, streaming = false, interrupted = interrupted)
 }
 
+/**
+ * Picks up a turn that runs while the chat was not open. The server writes the answer down after
+ * each round of tools, so the stored history may end with part of it; that part opens again for the
+ * events to come. [streamed] is all the text the turn produced so far: what the stored part lacks of
+ * it is added, and text that does not continue the stored part is left out rather than shown twice.
+ */
+fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String): List<ChatItem> {
+    val last = items.lastOrNull()
+    if (last is ChatItem.Assistant && last.streaming) return items
+    val opened = if (last is ChatItem.Assistant) items.dropLast(1) + last.copy(streaming = true) else openAnswer(items, keyOf)
+    val stored = (opened.last() as ChatItem.Assistant).parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
+    val missing = if (streamed.startsWith(stored)) streamed.substring(stored.length) else ""
+    return if (missing.isBlank()) opened else updateOpen(opened) { it + Part.Text(missing) }
+}
+
 private fun openAnswer(items: List<ChatItem>, keyOf: () -> String): List<ChatItem> {
     val last = items.lastOrNull()
     return if (last is ChatItem.Assistant && last.streaming) items else items + ChatItem.Assistant(keyOf(), emptyList(), streaming = true)
