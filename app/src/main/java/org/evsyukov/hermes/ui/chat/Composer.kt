@@ -151,24 +151,8 @@ fun Composer(
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
-            if (text.isEmpty()) Text(stringResource(if (recorder != null) R.string.composer_listening else R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
-            BasicTextField(
-                value = text,
-                onValueChange = onText,
-                textStyle = TextStyle(color = colors.text, fontSize = 16.sp, lineHeight = 22.sp),
-                cursorBrush = SolidColor(colors.text),
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Sentences,
-                    imeAction = if (enterSends) ImeAction.Send else ImeAction.Default,
-                ),
-                keyboardActions = KeyboardActions(onSend = { if (!running) onSend() }),
-                singleLine = false,
-                maxLines = 8,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp),
-            )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // One row: the buttons sit at the bottom edge, so a field grown past one line keeps them next to its last line.
+        Row(verticalAlignment = Alignment.Bottom) {
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.Add, stringResource(R.string.composer_attach), tint = colors.text) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -192,34 +176,61 @@ fun Composer(
                     )
                 }
             }
-            Spacer(Modifier.weight(1f))
-            when {
-                transcribing -> CircularProgressIndicator(Modifier.padding(10.dp).size(20.dp), strokeWidth = 2.dp)
-                recorder != null -> RoundButton(colors.danger, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop_dictation)) { stopRecording() }
-                else -> IconButton(onClick = {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                        recorder = Recording.start(context)
-                    } else {
-                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }) { Icon(Icons.Outlined.Mic, stringResource(R.string.composer_dictate), tint = colors.text) }
+            // The vertical padding centres one line of text on the 48 dp buttons.
+            Box(Modifier.weight(1f).padding(horizontal = 4.dp, vertical = 12.dp)) {
+                if (text.isEmpty()) Text(stringResource(if (recorder != null) R.string.composer_listening else R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
+                BasicTextField(
+                    value = text,
+                    onValueChange = onText,
+                    textStyle = TextStyle(color = colors.text, fontSize = 16.sp, lineHeight = 22.sp),
+                    cursorBrush = SolidColor(colors.text),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                        imeAction = if (enterSends) ImeAction.Send else ImeAction.Default,
+                    ),
+                    keyboardActions = KeyboardActions(onSend = { if (!running) onSend() }),
+                    singleLine = false,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp),
+                )
+            }
+            ButtonSlot {
+                when {
+                    transcribing -> CircularProgressIndicator(Modifier.padding(10.dp).size(20.dp), strokeWidth = 2.dp)
+                    recorder != null -> RoundButton(colors.danger, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop_dictation)) { stopRecording() }
+                    else -> IconButton(onClick = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            recorder = Recording.start(context)
+                        } else {
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }) { Icon(Icons.Outlined.Mic, stringResource(R.string.composer_dictate), tint = colors.text) }
+                }
             }
             Spacer(Modifier.width(4.dp))
             val canSend = text.isNotBlank() || attachments.isNotEmpty()
-            when {
-                running && !canSend -> RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop), onStop)
-                running -> RoundButton(colors.contrast, colors.onContrast, Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.composer_queue), onSend)
-                else -> RoundButton(
-                    if (canSend) colors.contrast else colors.composerBorder,
-                    colors.onContrast,
-                    Icons.Filled.ArrowUpward,
-                    stringResource(R.string.common_send),
-                    enabled = canSend,
-                    onClick = onSend,
-                )
+            ButtonSlot {
+                when {
+                    running && !canSend -> RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop), onStop)
+                    running -> RoundButton(colors.contrast, colors.onContrast, Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.composer_queue), onSend)
+                    else -> RoundButton(
+                        if (canSend) colors.contrast else colors.composerBorder,
+                        colors.onContrast,
+                        Icons.Filled.ArrowUpward,
+                        stringResource(R.string.common_send),
+                        enabled = canSend,
+                        onClick = onSend,
+                    )
+                }
             }
         }
     }
+}
+
+/** Holds a button smaller than an [IconButton] at the same 48 dp height, so the row's bottom-aligned buttons share one centre line. */
+@Composable
+private fun ButtonSlot(content: @Composable () -> Unit) {
+    Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) { content() }
 }
 
 @Composable
