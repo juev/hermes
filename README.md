@@ -22,6 +22,11 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
 - Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
   ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
   encrypted. Without them a periodic check, or an optional permanent connection, reports news.
+- Chats, the chat list and the server screens open with the copy kept on the phone and update
+  when the server answers, so they also show without a network. The cache takes up to 500 MB by
+  default, set under Settings → Data; the least recently used answers go first. Secrets,
+  `config.yaml`, logs and command output are never kept, and signing out or removing a server
+  deletes its copy.
 - English interface with a Russian translation; Android 13+ lets the app use its own language.
 
 ## Reaching the server
