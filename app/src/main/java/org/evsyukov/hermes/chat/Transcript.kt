@@ -7,6 +7,12 @@ import org.evsyukov.hermes.data.remote.StoredMessage
 import org.evsyukov.hermes.data.remote.double
 import org.evsyukov.hermes.data.remote.string
 
+/**
+ * Skills or a cron run the server expanded a message into: the chat shows a chip with their names
+ * and [full], the text the model got, on demand.
+ */
+data class Invocation(val cron: Boolean, val skills: List<String>, val full: String)
+
 /** A file the user attached: a path on the server, shown as a chip or a picture. */
 data class Attachment(val path: String, val name: String, val image: Boolean)
 
@@ -34,7 +40,30 @@ sealed interface Part {
 sealed interface ChatItem {
     val key: String
 
-    data class User(override val key: String, val text: String, val attachments: List<Attachment>, val rowId: Long? = null) : ChatItem
+    /**
+     * A message the user sent. [text] is what the bubble shows; [sent] is what goes again on
+     * regenerate, which for a skill invocation is the whole message the server built from it.
+     */
+    data class User(
+        override val key: String,
+        val text: String,
+        val attachments: List<Attachment>,
+        val rowId: Long? = null,
+        /** The message this one replies to, from a chat on Telegram or another platform. */
+        val quote: String? = null,
+        val invocation: Invocation? = null,
+        val sent: String = text,
+    ) : ChatItem {
+        /**
+         * The message as it goes again under [key]: regenerate sends what the server got, with the
+         * skills it invoked; an edit sends the [replacement] alone.
+         */
+        fun rewritten(replacement: String?, key: String): User =
+            if (replacement == null) copy(key = key) else copy(key = key, text = replacement, sent = replacement, invocation = null, quote = null)
+    }
+
+    /** The report of a cron job the server filed into the chat that scheduled the job. */
+    data class CronReport(override val key: String, val job: String, val text: String) : ChatItem
 
     data class Assistant(
         override val key: String,
@@ -79,6 +108,64 @@ fun splitUserText(text: String): Pair<String, List<Attachment>> {
     return kept.joinToString("\n").trim() to attachments.distinctBy { it.path }
 }
 
+// What the server writes into a user message it builds itself, as in its own describer of
+// session previews (agent/skill_commands.py, cron/scheduler_prompt.py, gateway/mirror.py).
+private const val CRON_REPORT = "[Cron delivery: "
+private const val CRON_HINT = "[IMPORTANT: You are running as a scheduled cron job."
+private const val SKILL_INVOKED = "[IMPORTANT: The user has invoked the "
+private const val SKILL_INSTRUCTION = "The user has provided the following instruction alongside the skill invocation: "
+private const val RUNTIME_NOTE = "\n\n[Runtime note:"
+private const val BUNDLE = " skill bundle,"
+private const val BUNDLE_INSTRUCTION = "\nUser instruction: "
+private const val BUNDLE_FIRST_SKILL = "\n\n[Loaded as part of the "
+private const val AUTO_LOADED = "[IMPORTANT: The \""
+private const val AUTO_LOADED_SUFFIX = "\" skill is auto-loaded."
+private const val SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
+private const val REPLYING_TO = "[Replying to: \""
+private val SKILL_NAMES = Regex("""(?m)^\[IMPORTANT: The (?:user has invoked the )?"([^"]*)"""")
+
+/** The job and the text of a cron report the server filed as a user message, or null. */
+fun cronReport(text: String): Pair<String, String>? {
+    if (!text.startsWith(CRON_REPORT)) return null
+    val head = text.substringBefore('\n')
+    if (!head.endsWith("]")) return null
+    return head.removePrefix(CRON_REPORT).removeSuffix("]") to text.substringAfter('\n', "").trim()
+}
+
+/**
+ * The skills or the cron run a message was expanded into, and what the user wrote alongside
+ * them; null for a message the user wrote as it is. A cron run shows no text of its own: its
+ * prompt, the previous report and the notes for the model are all in the full text.
+ */
+fun invocationOf(text: String): Pair<Invocation, String>? {
+    // A bundle names its skills in one quoted span: "/clean /work".
+    val skills = SKILL_NAMES.findAll(text).flatMap { it.groupValues[1].split(' ') }.map { it.trimStart('/') }.filter { it.isNotBlank() }.distinct().toList()
+    val written = when {
+        text.startsWith(CRON_HINT) -> return Invocation(cron = true, skills = emptyList(), full = text) to ""
+        text.startsWith(SKILL_INVOKED) && BUNDLE in text.substringBefore('\n') -> between(text, text.indexOf(BUNDLE_INSTRUCTION), BUNDLE_INSTRUCTION, BUNDLE_FIRST_SKILL)
+        text.startsWith(SKILL_INVOKED) -> between(text, text.lastIndexOf(SKILL_INSTRUCTION), SKILL_INSTRUCTION, RUNTIME_NOTE)
+        text.startsWith(AUTO_LOADED) && AUTO_LOADED_SUFFIX in text.substringBefore('\n') ->
+            text.lastIndexOf(SKILL_DIR_NOTE_END).takeIf { it >= 0 }?.let { text.substring(it + SKILL_DIR_NOTE_END.length) }.orEmpty().trim()
+        else -> return null
+    }
+    val cron = written.startsWith(CRON_HINT)
+    return Invocation(cron, skills, text) to if (cron) "" else written
+}
+
+private fun between(text: String, at: Int, marker: String, end: String): String {
+    if (at < 0) return ""
+    val from = at + marker.length
+    val to = text.indexOf(end, from).takeIf { it >= 0 } ?: text.length
+    return text.substring(from, to).trim()
+}
+
+/** Splits `[Replying to: "…"]`, which the server puts before a reply on a chat platform, from the reply. */
+fun splitQuote(text: String): Pair<String?, String> {
+    if (!text.startsWith(REPLYING_TO)) return null to text
+    val end = text.indexOf("\"]\n").takeIf { it >= 0 } ?: if (text.endsWith("\"]")) text.length - 2 else return null to text
+    return text.substring(REPLYING_TO.length, end) to text.substring(minOf(end + 2, text.length)).trim()
+}
+
 /** Paths the agent delivered with `MEDIA:` directives, in order and without repeats. */
 fun mediaPaths(text: String): List<String> = MEDIA_INLINE.findAll(text)
     .map { it.groupValues[1].trim().trim('`', '"', '\'').trimEnd('.', ',', ';', ':', '!', '?', ')') }
@@ -115,8 +202,18 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
         when (m.role) {
             "user" -> {
                 flush()
-                val (text, attachments) = splitUserText(m.text)
-                items += ChatItem.User("u${m.rowId}", text, attachments + m.images.map { Attachment(it, "image", true) }, m.rowId)
+                val report = cronReport(m.text)
+                if (report != null) {
+                    items += ChatItem.CronReport("c${m.rowId}", report.first, report.second)
+                    continue
+                }
+                val invocation = invocationOf(m.text)
+                val (quote, written) = if (invocation == null) splitQuote(m.text) else null to invocation.second
+                val (text, attachments) = splitUserText(written)
+                items += ChatItem.User(
+                    "u${m.rowId}", text, attachments + m.images.map { Attachment(it, "image", true) }, m.rowId,
+                    quote = quote, invocation = invocation?.first, sent = m.text,
+                )
             }
             "assistant" -> {
                 val parts = (current?.parts ?: emptyList()).toMutableList()

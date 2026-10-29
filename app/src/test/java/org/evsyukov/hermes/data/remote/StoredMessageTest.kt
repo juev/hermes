@@ -1,7 +1,9 @@
 package org.evsyukov.hermes.data.remote
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Test
 
 class StoredMessageTest {
@@ -13,6 +15,23 @@ class StoredMessageTest {
             val row = message("""{"id":1,"role":"user","content":"[IMPORTANT: Background process proc_1 completed]","display_kind":"$kind"}""")
             assertThat(row.hidden).isTrue()
         }
+    }
+
+    @Test
+    fun `notices of an older server without a kind are hidden too`() {
+        listOf(
+            "[IMPORTANT: Background process proc_4cf7 completed normally (exit code 0).\nCommand: gh pr checks 523",
+            "[ASYNC DELEGATION BATCH COMPLETE — deleg_c3b1] A background fan-out unit you dispatched earlier",
+            "[System: Your previous response contained only internal reasoning and never produced a visible answer",
+        ).forEach { text ->
+            val row = message(buildJsonObject { put("id", 1); put("role", "user"); put("content", text) }.toString())
+            assertThat(row.hidden).isTrue()
+        }
+    }
+
+    @Test
+    fun `a user message that only starts with a bracket stays`() {
+        assertThat(message("""{"id":1,"role":"user","content":"[черновик] посмотри текст"}""").hidden).isFalse()
     }
 
     @Test

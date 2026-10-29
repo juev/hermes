@@ -289,6 +289,7 @@ fun ChatScreen(
                     itemsIndexed(reversed, key = { _, item -> item.key }) { index, item ->
                         when (item) {
                             is ChatItem.User -> UserBubble(item, last = reversed.indexOfFirst { it is ChatItem.User } == index, actions = actions)
+                            is ChatItem.CronReport -> CronReportMessage(item)
                             is ChatItem.Assistant -> AssistantMessage(
                                 item, last = index == 0, showReasoning = settings.showReasoning, status = state.status, actions = actions,
                                 connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,

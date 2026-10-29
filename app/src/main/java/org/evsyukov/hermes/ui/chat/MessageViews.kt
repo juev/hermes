@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Check
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -73,6 +75,7 @@ import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.ConnectionOp
+import org.evsyukov.hermes.chat.Invocation
 import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.chat.ToolRun
 import org.evsyukov.hermes.chat.stripMedia
@@ -105,11 +108,13 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
             }
             Spacer(Modifier.size(6.dp))
         }
+        item.invocation?.let { InvocationChip(it) }
         if (item.text.isNotBlank()) {
             Box {
-                // What the user wrote reads as Markdown, as do the cron reports the server files as user messages.
+                // What the user wrote reads as Markdown; the message a reply answers comes first as a quote.
+                val quote = item.quote?.let { q -> q.lines().joinToString("\n") { "> $it" } + "\n\n" }.orEmpty()
                 MarkdownText(
-                    keepLineBreaks(item.text),
+                    quote + keepLineBreaks(item.text),
                     inBubble = true,
                     modifier = Modifier
                         .clip(RoundedCornerShape(22.dp))
@@ -129,6 +134,53 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
                 }
             }
         }
+    }
+}
+
+/**
+ * The skills or the cron run a message was expanded into: their names in a chip, and the text the
+ * model got under it on a tap.
+ */
+@Composable
+private fun InvocationChip(invocation: Invocation) {
+    val colors = ChatTheme.colors
+    var open by remember { mutableStateOf(false) }
+    val names = invocation.skills.joinToString(" · ")
+    val label = if (invocation.cron) listOf(stringResource(R.string.chat_cron_run), names).filter { it.isNotEmpty() }.joinToString(" · ") else names
+    Column(horizontalAlignment = Alignment.End) {
+        Row(
+            Modifier.clip(RoundedCornerShape(14.dp)).border(1.dp, colors.composerBorder, RoundedCornerShape(14.dp))
+                .clickable { open = !open }.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(if (invocation.cron) Icons.Outlined.Schedule else Icons.AutoMirrored.Outlined.MenuBook, null, tint = colors.faintText, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = colors.secondaryText, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 240.dp))
+            Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(16.dp))
+        }
+        AnimatedVisibility(open) {
+            Box(
+                Modifier.padding(top = 6.dp).clip(RoundedCornerShape(14.dp)).background(colors.userBubble)
+                    .heightIn(max = 360.dp).verticalScroll(rememberScrollState()).padding(12.dp),
+            ) {
+                SelectionContainer { MarkdownText(invocation.full, aside = true, inBubble = true) }
+            }
+        }
+        Spacer(Modifier.size(6.dp))
+    }
+}
+
+/** A cron report the server filed into the chat: on the side of the agent, under the name of the job. */
+@Composable
+fun CronReportMessage(item: ChatItem.CronReport) {
+    val colors = ChatTheme.colors
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Schedule, stringResource(R.string.chat_cron_report), tint = colors.faintText, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(item.job, color = colors.secondaryText, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (item.text.isNotBlank()) SelectionContainer { MarkdownText(keepLineBreaks(item.text), Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
     }
 }
 

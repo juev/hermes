@@ -382,7 +382,8 @@ class ChatController(
 
     private fun rewriteLast(replacement: String?) {
         val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
-        val text = replacement ?: lastUser.text
+        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}")
+        val text = again.sent
         var hold: TurnHold? = null
         scope.launch {
             try {
@@ -391,7 +392,7 @@ class ChatController(
                 socket.call("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
                 val index = _state.value.items.indexOfLast { it is ChatItem.User }
                 val kept = if (index >= 0) _state.value.items.subList(0, index) else _state.value.items
-                _state.update { it.copy(items = kept + lastUser.copy(key = "local${keys.incrementAndGet()}", text = text), running = true, error = null) }
+                _state.update { it.copy(items = kept + again, running = true, error = null) }
                 awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
