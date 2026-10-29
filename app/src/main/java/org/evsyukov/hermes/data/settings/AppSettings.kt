@@ -41,6 +41,9 @@ data class Settings(
     }
 }
 
+/** The cache limit typed by the user: a whole number of megabytes, zero or more; null when it is not one. */
+fun cacheLimitOf(text: String): Int? = text.trim().toIntOrNull()?.takeIf { it >= 0 }
+
 class AppSettings(private val context: Context, scope: CoroutineScope) {
     private val stored: Flow<Settings> = context.settingsStore.data.map { prefs ->
         Settings(
