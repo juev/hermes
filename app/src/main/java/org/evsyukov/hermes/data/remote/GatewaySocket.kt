@@ -120,7 +120,10 @@ class GatewaySocket(
     @Volatile
     private var pings = false
 
-    /** Keeps the socket open until [stop]; safe to call many times, and does nothing after [stop]. */
+    /**
+     * Keeps the socket open until [stop]; safe to call many times, and does nothing after [stop]. A
+     * socket whose sign-in is over stops trying until it is started again.
+     */
     @Synchronized
     fun start() {
         if (stopped) return
@@ -220,6 +223,8 @@ class GatewaySocket(
                 Log.w(TAG, "Gateway socket failed after ${System.currentTimeMillis() - attemptAt} ms: ${e.message}")
                 // A ticket that could not be fetched fails the waiting callers now, not after their timeout.
                 gate.completeExceptionally(e as? IOException ?: IOException(strings.get(R.string.error_connection_failed), e))
+                // Without a sign-in no attempt can succeed; the next start tries again.
+                if (e is SignInRequiredException || (e as? HermesException)?.status == 401) giveUp(number)
             }
             if (!finish(number)) return
             withTimeoutOrNull(pause) { wakeup.receive() }
@@ -236,6 +241,12 @@ class GatewaySocket(
         return attempt to readyGate
     }
 
+    /** Makes attempt [number] the last one, unless a start came in between. */
+    @Synchronized
+    private fun giveUp(number: Long) {
+        if (attempt == number) wanted = false
+    }
+
     /** Opens the socket of attempt [number], unless a stop came in between. */
     @Synchronized
     private fun open(number: Long, request: Request, listener: Listener): Boolean {
@@ -247,7 +258,7 @@ class GatewaySocket(
     /**
      * Clears up after attempt [number] and moves the number on, so the coroutines the attempt left
      * behind, e.g. one still waiting for `client.capabilities`, announce no ready and start no
-     * heartbeat. False when a stop has cleared up already.
+     * heartbeat. False when a stop has cleared up already or the socket gave up.
      */
     private fun finish(number: Long): Boolean {
         val (more, lost) = synchronized(this) {
@@ -257,6 +268,8 @@ class GatewaySocket(
             heartbeat?.cancel()
             readyGate = CompletableDeferred()
             _state.value = SocketState.DISCONNECTED
+            // The loop ends here, so the next start must begin another one.
+            if (!wanted) connector = null
             wanted to pending.close()
         }
         // Outside the lock: a caller resumed by its failure may call the socket again.
