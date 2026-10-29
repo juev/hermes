@@ -29,6 +29,8 @@
     <string name="error_failed">Something went wrong</string>
     <string name="chat_thinking">Thinking…</string>
     <string name="chat_connecting">Connecting to the server…</string>
+    <string name="chat_usage">%1$s in · %2$s out</string>
+    <string name="chat_usage_included">included in the plan</string>
     <string name="chat_model_expensive">The model is expensive. Switch?</string>
     <string name="chat_sudo_password">Sudo password for: %1$s</string>
     <string name="chat_secret_value">Value of %1$s</string>

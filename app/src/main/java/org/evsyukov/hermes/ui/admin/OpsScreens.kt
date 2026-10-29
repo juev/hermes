@@ -65,6 +65,7 @@ import org.evsyukov.hermes.data.remote.double
 import org.evsyukov.hermes.data.remote.long
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.ui.common.MarkdownText
+import org.evsyukov.hermes.ui.common.tokenCount
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 /** Cron timestamps come as ISO strings or unix seconds, depending on the field. */
@@ -403,10 +404,10 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
                     Text("$${"%.2f".format(cost)}", color = colors.text, fontSize = 30.sp)
                     KeyValue(stringResource(R.string.admin_usage_sessions), (t.long("total_sessions") ?: 0).toString())
                     KeyValue(stringResource(R.string.admin_usage_calls), (t.long("total_api_calls") ?: 0).toString())
-                    KeyValue(stringResource(R.string.admin_usage_input), tokens(t.long("total_input")))
-                    KeyValue(stringResource(R.string.admin_usage_output), tokens(t.long("total_output")))
-                    KeyValue(stringResource(R.string.admin_usage_cache), tokens(t.long("total_cache_read")))
-                    KeyValue(stringResource(R.string.admin_usage_reasoning), tokens(t.long("total_reasoning")))
+                    KeyValue(stringResource(R.string.admin_usage_input), tokenCount(t.long("total_input")))
+                    KeyValue(stringResource(R.string.admin_usage_output), tokenCount(t.long("total_output")))
+                    KeyValue(stringResource(R.string.admin_usage_cache), tokenCount(t.long("total_cache_read")))
+                    KeyValue(stringResource(R.string.admin_usage_reasoning), tokenCount(t.long("total_reasoning")))
                 }
             }
             val daily = (data["daily"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
@@ -431,7 +432,7 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
                 SectionTitle(stringResource(R.string.admin_usage_by_model))
                 Card {
                     models.sortedByDescending { cost(it) }.forEach { m ->
-                        KeyValue(m.string("model").orEmpty(), "$${"%.2f".format(cost(m))} · ${tokens((m.long("input_tokens") ?: 0) + (m.long("output_tokens") ?: 0))}")
+                        KeyValue(m.string("model").orEmpty(), "$${"%.2f".format(cost(m))} · ${tokenCount((m.long("input_tokens") ?: 0) + (m.long("output_tokens") ?: 0))}")
                     }
                 }
             }
@@ -441,13 +442,3 @@ fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
 }
 
 private fun cost(row: JsonObject): Double = (row.double("actual_cost") ?: 0.0).takeIf { it > 0 } ?: row.double("estimated_cost") ?: 0.0
-
-private fun tokens(n: Long?): String {
-    val v = n ?: 0
-    return when {
-        v >= 1_000_000 -> "%.1f M".format(v / 1_000_000.0)
-        v >= 1_000 -> "%.1f K".format(v / 1_000.0)
-        else -> v.toString()
-    }
-}
-

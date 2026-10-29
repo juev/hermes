@@ -24,6 +24,7 @@ import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.RpcException
 import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
@@ -61,6 +62,8 @@ data class ChatState(
     val connecting: Boolean = false,
     /** An expensive model waits for a yes: provider, model and the server's warning. */
     val modelConfirm: Triple<String, String, String>? = null,
+    /** Tokens and cost of the chat so far, as of its last finished turn. */
+    val usage: SessionUsage? = null,
 ) {
     /** A turn runs, and no open answer shows it yet: the chat says it is waiting under the last message. */
     val awaitingAnswer: Boolean get() = running && (items.lastOrNull() as? ChatItem.Assistant)?.streaming != true
@@ -139,7 +142,7 @@ class ChatController(
             try {
                 val summary = session.chat.get(id)
                 val history = transcriptOf(session.chat.messages(id))
-                _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, loading = false) }
+                _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
                 if (summary?.active == true) ensureLive()
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message) }
@@ -152,7 +155,7 @@ class ChatController(
         try {
             val history = transcriptOf(cached.messages(id))
             val summary = runCatching { cached.get(id) }.getOrNull()
-            _state.update { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model) else it }
+            _state.update { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -443,7 +446,10 @@ class ChatController(
         }
         when (event.type) {
             "message.start" -> _state.update { it.copy(running = true, status = null) }
-            "message.complete" -> _state.update { it.copy(running = false, status = null) }
+            "message.complete" -> {
+                _state.update { it.copy(running = false, status = null) }
+                refreshUsage()
+            }
             "session.info" -> _state.update { state ->
                 // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
                 val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
@@ -457,6 +463,24 @@ class ChatController(
             }
         }
         _state.update { it.copy(items = reduce(it.items, event) { "a${keys.incrementAndGet()}" }) }
+    }
+
+    /**
+     * The server totals tokens and cost in the stored chat when a turn ends; the socket reports tokens
+     * alone, counted only since the session was joined.
+     */
+    private fun refreshUsage() {
+        val id = _state.value.storedId ?: return
+        scope.launch {
+            try {
+                session.chat.get(id)?.usage?.let { usage -> _state.update { it.copy(usage = usage) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The last known totals stay; the next turn or opening the chat reads them again.
+                Log.w(TAG, "Usage not read", e)
+            }
+        }
     }
 
     private fun onRequest(request: ServerRequest) {
