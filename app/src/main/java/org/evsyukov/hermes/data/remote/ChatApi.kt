@@ -26,10 +26,19 @@ data class ChatSummary(
     val pinned: Boolean,
     val archived: Boolean,
     val active: Boolean,
+    /** What the chat has spent so far; null while it has spent nothing. */
+    val usage: SessionUsage? = null,
 ) {
     /** The title the sidebar shows: the server's, else the start of the first message; blank for an empty chat. */
     val label: String get() = title.ifBlank { preview }
 }
+
+/**
+ * Tokens and money a chat has spent, as the server totals them after each turn. [input] counts every
+ * token the model read, cached ones too; [costUsd] is null when the server knows no price for the
+ * model, and [included] says the provider bills by subscription, not per token.
+ */
+data class SessionUsage(val input: Long, val output: Long, val costUsd: Double?, val included: Boolean)
 
 /** A hit of the full-text search with the matching piece of text. */
 data class SearchHit(val chat: ChatSummary, val snippet: String, val role: String?)
@@ -183,7 +192,17 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 pinned = obj.flag("pinned"),
                 archived = obj.flag("archived"),
                 active = obj.flag("is_active"),
+                usage = usage(obj),
             )
+        }
+
+        fun usage(obj: JsonObject): SessionUsage? {
+            val input = (obj.long("input_tokens") ?: 0) + (obj.long("cache_read_tokens") ?: 0) + (obj.long("cache_write_tokens") ?: 0)
+            val output = obj.long("output_tokens") ?: 0
+            if (input == 0L && output == 0L) return null
+            // The billed amount when the provider reported one, else the server's estimate by its price list.
+            val cost = obj.double("actual_cost_usd")?.takeIf { it > 0 } ?: obj.double("estimated_cost_usd")?.takeIf { it > 0 }
+            return SessionUsage(input, output, cost, included = cost == null && obj.string("cost_status") == "included")
         }
 
         fun message(obj: JsonObject): StoredMessage {

@@ -80,7 +80,10 @@ import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LocalAttachment
 import org.evsyukov.hermes.data.remote.ModelChoices
+import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.settings.Settings
+import org.evsyukov.hermes.ui.common.dollars
+import org.evsyukov.hermes.ui.common.tokenCount
 import org.evsyukov.hermes.ui.sidebar.RenameDialog
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
@@ -192,7 +195,16 @@ fun ChatScreen(
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clickable(enabled = state.storedId != null) { renaming = true },
                         )
-                        state.model?.let { Text(it, color = colors.faintText, fontSize = 12.sp, maxLines = 1) }
+                        // The model gives way to what the chat has spent when the line runs short.
+                        val spent = state.usage?.let { usageText(it) }
+                        if (state.model != null || spent != null) {
+                            Row {
+                                state.model?.let {
+                                    Text(it, color = colors.faintText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                }
+                                spent?.let { Text(if (state.model != null) " · $it" else it, color = colors.faintText, fontSize = 12.sp, maxLines = 1) }
+                            }
+                        }
                     }
                     Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
                 }
@@ -317,6 +329,13 @@ fun ChatScreen(
             dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
+}
+
+@Composable
+private fun usageText(usage: SessionUsage): String {
+    val tokens = stringResource(R.string.chat_usage, tokenCount(usage.input), tokenCount(usage.output))
+    val cost = usage.costUsd?.let(::dollars) ?: if (usage.included) stringResource(R.string.chat_usage_included) else null
+    return listOfNotNull(tokens, cost).joinToString(" · ")
 }
 
 @Composable

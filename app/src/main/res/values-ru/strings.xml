@@ -29,6 +29,8 @@
     <string name="error_failed">Не получилось</string>
     <string name="chat_thinking">Думает…</string>
     <string name="chat_connecting">Подключение к серверу…</string>
+    <string name="chat_usage">%1$s вход · %2$s выход</string>
+    <string name="chat_usage_included">входит в подписку</string>
     <string name="chat_model_expensive">Модель дорогая. Переключить?</string>
     <string name="chat_sudo_password">Пароль sudo для: %1$s</string>
     <string name="chat_secret_value">Значение %1$s</string>
