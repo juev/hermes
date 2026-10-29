@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 SUBJECT = "mailto:hermes-push@localhost"
 PREVIEW_CHARS = 600
+# delegate_task runs each subagent as an agent of this platform; the turn of its parent chat notifies.
+SUBAGENT = "subagent"
 
 
 def payload(session_id: str, platform: str, response: str, job: str | None) -> dict:
@@ -48,7 +50,7 @@ def deliver(message: dict, root=None) -> int:
 
 def register(ctx) -> None:
     def on_turn(session_id=None, assistant_response=None, platform=None, **_kwargs):
-        if not session_id or not store.subscriptions():
+        if not session_id or platform == SUBAGENT or not store.subscriptions():
             return
         execution = ctx.current_cron_execution()
         job = (getattr(execution, "job_name", None) or getattr(execution, "job_id", None)) if execution else None
