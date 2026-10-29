@@ -165,6 +165,9 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
     }
 
     companion object {
+        /** A message the user sent while the agent worked; `display_content` holds their words. */
+        private const val STEER = "steer"
+
         fun summary(obj: JsonObject, idKey: String = "id"): ChatSummary? {
             val id = obj.string(idKey) ?: obj.string("id") ?: return null
             val started = obj.double("started_at") ?: obj.double("session_started") ?: 0.0
@@ -210,16 +213,21 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                     arguments = function?.get("arguments")?.let { if (it is JsonPrimitive) it.content else it.toString() }.orEmpty(),
                 )
             }.orEmpty()
+            val role = obj.string("role") ?: "assistant"
+            val kind = obj.string("display_kind")
+            // A user row of another kind is what the server told the model on its own: a finished
+            // background process, results of subagents, a notice. The user did not write it.
+            val toModel = role == "user" && kind != null && kind != STEER
             return StoredMessage(
                 rowId = obj.long("id") ?: 0,
-                role = obj.string("role") ?: "assistant",
+                role = role,
                 text = obj.string("display_content") ?: text,
                 reasoning = obj.string("reasoning") ?: obj.string("reasoning_content"),
                 toolCalls = calls,
                 toolName = obj.string("tool_name"),
                 toolCallId = obj.string("tool_call_id"),
                 timestamp = obj.double("timestamp") ?: 0.0,
-                hidden = obj.string("display_kind") == "hidden" || obj.bool("_compressed_summary") == true,
+                hidden = kind == "hidden" || toModel || obj.bool("_compressed_summary") == true,
                 images = images,
             )
         }
