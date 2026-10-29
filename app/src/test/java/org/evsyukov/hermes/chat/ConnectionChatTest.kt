@@ -198,7 +198,10 @@ class ConnectionChatTest {
     @Test
     fun `a card the server closed while the socket was down takes no answers after the chat joins again`() = runBlocking<Unit> {
         val chat = openChat()
-        stateOf = { "live connections=${chat.state.value.connections.map { "${it.opId}:${it.settled}" } loading=${chat.state.value.loading} error=${chat.state.value.error} items=${chat.state.value.items.size}" }
+        stateOf = {
+            val state = chat.state.value
+            "connections=" + state.connections.map { it.opId + ":" + it.settled } + " loading=" + state.loading + " error=" + state.error + " items=" + state.items.size
+        }
 
         next("session.resume")
         gateway.pending = false

@@ -212,7 +212,7 @@ class ChatController(
                 val history = transcriptOf(session.chat.messages(id))
                 _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
                 if (summary?.active == true) ensureLive()
-                Log.i(TAG, "${System.currentTimeMillis()} reload $id: done, connections=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
+                Log.i(TAG, "${System.currentTimeMillis()} reload $id: done, connections=" + _state.value.connections.map { it.opId + ":" + it.settled })
             } catch (e: Exception) {
                 Log.w(TAG, "reload $id failed: $e", e)
                 _state.update { it.copy(loading = false, error = e.message) }
@@ -277,7 +277,7 @@ class ChatController(
         // A card left open while the chat was away comes back with the server's deadline; one the
         // server no longer has open ended while the socket was down and takes no answers.
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
-        Log.i(TAG, "${System.currentTimeMillis()} joined $live, pending=${pending?.opId}, settled=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
+        Log.i(TAG, "${System.currentTimeMillis()} joined $live, pending=" + pending?.opId + ", settled=" + _state.value.connections.map { it.opId + ":" + it.settled })
         _state.update { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
