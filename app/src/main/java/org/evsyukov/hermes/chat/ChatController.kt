@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -68,6 +69,8 @@ data class ChatState(
     val modelConfirm: Triple<String, String, String>? = null,
     /** Tokens and cost of the chat so far, as of its last finished turn. */
     val usage: SessionUsage? = null,
+    /** Connection operations seen in this chat, oldest first; a settled one stays as its outcome. */
+    val connections: List<ConnectionOp> = emptyList(),
 ) {
     /** A turn runs, and no open answer shows it yet: the chat says it is waiting under the last message. */
     val awaitingAnswer: Boolean get() = running && (items.lastOrNull() as? ChatItem.Assistant)?.streaming != true
@@ -259,6 +262,8 @@ class ChatController(
         }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
+        // A card left open while the chat was away comes back with the server's deadline.
+        connectionOf(result["pending_connection"] as? JsonObject)?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
             val obj = request as? JsonObject ?: return@forEach
             val id = obj.string("id") ?: return@forEach
@@ -469,6 +474,183 @@ class ChatController(
         }
     }
 
+    /** A newer snapshot of a known operation replaces it; a new operation joins the chat. */
+    private fun showConnection(connection: ConnectionOp) = _state.update { state ->
+        val known = state.connections.indexOfFirst { it.opId == connection.opId }
+        when {
+            known < 0 -> state.copy(connections = state.connections + connection)
+            connection.seq > state.connections[known].seq -> state.copy(connections = state.connections.toMutableList().also { it[known] = connection })
+            else -> state
+        }
+    }
+
+    private fun owner(live: String) = buildJsonObject {
+        put("type", "session")
+        put("session_id", live)
+    }
+
+    /** Approves or skips rows of the card; the server answers with `connection.update`. */
+    fun answerConnection(opId: String, answers: List<TargetAnswer>) = respondConnection(opId) {
+        put(
+            "targets",
+            JsonArray(
+                answers.map { answer ->
+                    buildJsonObject {
+                        put("name", answer.name)
+                        put("status", if (answer.approved) "approved" else "skipped")
+                        if (answer.env.isNotEmpty()) put("env", JsonObject(answer.env.mapValues { (_, v) -> JsonPrimitive(v) }))
+                    }
+                },
+            ),
+        )
+    }
+
+    /** Ends the operation now with whatever is not resolved: the agent goes on without it. */
+    fun continueConnection(opId: String) = respondConnection(opId) { put("settled_by", "continue") }
+
+    private fun respondConnection(opId: String, result: JsonObjectBuilder.() -> Unit) {
+        val live = liveId ?: return
+        if (_state.value.connections.none { it.opId == opId && !it.settled }) return
+        scope.launch {
+            try {
+                socket.call(
+                    "connection.respond",
+                    buildJsonObject {
+                        put("owner", owner(live))
+                        put("op_id", opId)
+                        put("result", buildJsonObject(result))
+                    },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: strings.get(R.string.error_failed)) }
+            }
+        }
+    }
+
+    /** A new link for a row whose sign-in failed or expired; the row gets it through `connection.update`. */
+    fun retryConnection(opId: String, name: String) {
+        val live = liveId ?: return
+        if (_state.value.connections.none { it.opId == opId && !it.settled }) return
+        scope.launch {
+            try {
+                socket.call(
+                    "connectors.connect",
+                    buildJsonObject {
+                        put("owner", owner(live))
+                        put("connectors", JsonArray(listOf(JsonPrimitive(name))))
+                        put("reconnect", true)
+                    },
+                    timeoutMillis = 45_000,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(error = strings.get(R.string.connect_retry_failed, name)) }
+            }
+        }
+    }
+
+    /**
+     * Installs a catalog plugin again after its card settled, with the choices the user approved;
+     * the row shows the result itself, since the operation is over.
+     */
+    fun reinstallPlugin(opId: String, name: String) {
+        val target = _state.value.connections.firstOrNull { it.opId == opId }?.targets?.firstOrNull { it.name == name } ?: return
+        val catalog = target.catalog ?: return
+        scope.launch {
+            try {
+                val result = socket.call(
+                    "plugins.manage",
+                    buildJsonObject {
+                        put("action", "install")
+                        put("identifier", "")
+                        put("catalog_name", name)
+                        put("force", catalog.approved?.force ?: false)
+                        put("enable", catalog.approved?.enable ?: true)
+                        catalog.approved?.ref?.let { put("ref", it) }
+                        catalog.targetProfile?.let { put("profile", it) }
+                    },
+                    timeoutMillis = 120_000,
+                ) as? JsonObject
+                if (result?.bool("ok") == false) error(result.string("error") ?: strings.get(R.string.error_failed))
+                replaceTarget(opId, name) {
+                    it.copy(state = TargetState.CONNECTED, detail = "", catalog = catalog.copy(alreadyInstalled = false, enabled = result?.bool("enabled") ?: catalog.enabled))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                replaceTarget(opId, name) { it.copy(state = TargetState.FAILED, detail = e.message.orEmpty()) }
+            }
+        }
+    }
+
+    private fun replaceTarget(opId: String, name: String, change: (ConnectionTarget) -> ConnectionTarget) = _state.update { state ->
+        state.copy(
+            connections = state.connections.map { c ->
+                if (c.opId != opId) c else c.copy(targets = c.targets.map { if (it.name == name) change(it) else it })
+            },
+        )
+    }
+
+    /** The user opened the sign-in link of a row; it waits for the browser now. */
+    fun linkOpened(opId: String, name: String) = _state.update { state ->
+        state.copy(connections = state.connections.map { if (it.opId == opId) it.copy(opened = it.opened + name) else it })
+    }
+
+    /**
+     * The user came back from the browser. The server gives the phone no link back to the app, so it
+     * is told now to read the accounts instead of at its next check, and the card takes the result.
+     */
+    fun browserReturned() {
+        val live = liveId ?: return
+        val waiting = _state.value.connections.filter { it.awaitsBrowser }
+        if (waiting.isEmpty()) return
+        scope.launch {
+            for (connection in waiting) {
+                val params = buildJsonObject {
+                    put("owner", owner(live))
+                    put("op_id", connection.opId)
+                }
+                try {
+                    socket.call("connectors.operation.wake", params)
+                    val status = socket.call("connectors.operation.status", params) as? JsonObject ?: continue
+                    _state.update { state -> state.copy(connections = state.connections.map { it.applying(status) }) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The server checks the accounts by itself as well; the card moves with its update.
+                    Log.w(TAG, "Wake of ${connection.opId} failed", e)
+                }
+            }
+        }
+    }
+
+    /** The apps the user can connect through Nous, for a directory card. */
+    suspend fun connectorDirectory(): List<ConnectorApp> {
+        val result = socket.call("connectors.list", buildJsonObject { put("owner", buildJsonObject { put("type", "account") }) }) as? JsonObject
+        if (result?.bool("available") == false) return emptyList()
+        return (result?.get("connectors") as? JsonArray).orEmpty().mapNotNull { row ->
+            val obj = row as? JsonObject ?: return@mapNotNull null
+            ConnectorApp(obj.string("connector") ?: return@mapNotNull null, obj.bool("connected") ?: false, obj.string("connection_status"))
+        }
+    }
+
+    /** Starts connecting [app] to the account from a directory card; the link to sign in, if there is one to open. */
+    suspend fun connectApp(app: ConnectorApp): String? {
+        val result = socket.call(
+            "connectors.connect",
+            buildJsonObject {
+                put("owner", buildJsonObject { put("type", "account") })
+                put("connectors", JsonArray(listOf(JsonPrimitive(app.slug))))
+                put("reconnect", app.status in setOf("failed", "expired", "revoked", "inactive"))
+            },
+            timeoutMillis = 45_000,
+        ) as? JsonObject
+        return (result?.get("targets") as? JsonArray)?.firstNotNullOfOrNull { (it as? JsonObject)?.string("connect_url")?.takeIf { url -> url.startsWith("https://") } }
+    }
+
     private fun answer(result: () -> JsonElement) {
         val prompt = _state.value.prompt ?: return
         socket.respond(prompt.request.id, result())
@@ -514,6 +696,8 @@ class ChatController(
             "request.cancel" -> _state.update { state ->
                 if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
             }
+            "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
+            "connection.update" -> _state.update { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
         }
         _state.update { it.copy(items = reduce(it.items, event) { "a${keys.incrementAndGet()}" }) }
     }

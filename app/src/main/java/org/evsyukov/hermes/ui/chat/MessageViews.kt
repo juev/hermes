@@ -72,6 +72,7 @@ import java.io.File
 import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
 import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.ConnectionOp
 import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.chat.ToolRun
 import org.evsyukov.hermes.chat.stripMedia
@@ -167,7 +168,15 @@ fun FileChip(name: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun AssistantMessage(item: ChatItem.Assistant, last: Boolean, showReasoning: Boolean, status: String?, actions: MessageActions) {
+fun AssistantMessage(
+    item: ChatItem.Assistant,
+    last: Boolean,
+    showReasoning: Boolean,
+    status: String?,
+    actions: MessageActions,
+    connections: List<ConnectionOp> = emptyList(),
+    connectionActions: ConnectionActions? = null,
+) {
     val colors = ChatTheme.colors
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (item.parts.isEmpty() && item.streaming) {
@@ -187,6 +196,8 @@ fun AssistantMessage(item: ChatItem.Assistant, last: Boolean, showReasoning: Boo
                 is Block.Tools -> ToolGroup(block, showReasoning)
             }
         }
+        // The cards of the tools of this answer, outside a folded group of tools.
+        if (connectionActions != null) connections.forEach { ConnectionCard(it, connectionActions) }
         if (item.streaming && item.parts.isNotEmpty() && item.parts.last() !is Part.Text) TypingDot(status)
         val media = item.media
         if (media.isNotEmpty()) {

@@ -83,6 +83,20 @@ class Notifications(private val context: Context) {
         post(TAG_REQUEST, requestId.hashCode(), builder.build())
     }
 
+    /** The agent waits for a service to be connected; only the card in the chat can do it. */
+    fun connection(chatId: String?, opId: String, services: String) {
+        val text = context.getString(R.string.notify_connection_text, services)
+        val builder = NotificationCompat.Builder(context, REQUESTS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(context.getString(R.string.notify_connection_title))
+            .setContentText(text)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(openChat(chatId, opId.hashCode()))
+        post(TAG_REQUEST, opId.hashCode(), builder.build())
+    }
+
     private fun choiceLabel(choice: String): String = when (choice) {
         "once" -> context.getString(R.string.notify_choice_once)
         "session" -> context.getString(R.string.notify_choice_session)
