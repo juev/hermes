@@ -18,6 +18,7 @@ import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.Connection
+import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
@@ -69,6 +70,36 @@ class TurnWatcherTest {
         keep.value = false
 
         assertThat(shadowOf(context).nextStoppedService?.component?.className).isEqualTo(HermesService::class.java.name)
+    }
+
+    @Test
+    fun `the app in front starts the service of a permanent connection again`() {
+        // Before the switch is read, and with it off, the app in front starts nothing.
+        watcher.appInFront()
+        assertThat(shadowOf(context).nextStartedService).isNull()
+        keep.value = false
+        watcher.appInFront()
+        assertThat(shadowOf(context).nextStartedService).isNull()
+
+        // A process started in the background read the switch, and the system refused the service then.
+        keep.value = true
+        shadowOf(context).nextStartedService
+
+        watcher.appInFront()
+        val started = shadowOf(context).nextStartedService
+        assertThat(started?.component?.className).isEqualTo(HermesService::class.java.name)
+        assertThat(started?.getStringExtra("text")).isEqualTo(context.getString(R.string.notify_connected))
+    }
+
+    @Test
+    fun `the app in front keeps the text of a turn under way`() {
+        keep.value = true
+        watcher.bind("live-1", "stored-1", "Chat")
+        watcher.onEvent(GatewayEvent("message.start", "live-1", 1, JsonObject(emptyMap())))
+        shadowOf(context).clearStartedServices()
+
+        watcher.appInFront()
+        assertThat(shadowOf(context).nextStartedService?.getStringExtra("text")).isEqualTo(context.getString(R.string.notify_replying))
     }
 
     @Test

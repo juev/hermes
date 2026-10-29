@@ -163,6 +163,19 @@ class TurnWatcher(
         return hold
     }
 
+    /**
+     * The app came to the front. A process started in the background, by the periodic check or a
+     * push, read the switch while it could not start the service; now it can, and a permanent
+     * connection gets its service back. A turn under way keeps its text.
+     */
+    fun appInFront() {
+        synchronized(service) {
+            if (keepConnected.value != true) return
+            val text = if (_running.value.isEmpty() && holds.isEmpty()) R.string.notify_connected else R.string.notify_replying
+            HermesService.start(context, context.getString(text))
+        }
+    }
+
     internal fun onEvent(event: GatewayEvent) {
         val live = event.sessionId ?: return
         when (event.type) {
