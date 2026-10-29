@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import org.evsyukov.hermes.MainActivity
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.chat.plainText
 
 /** The notifications of the app, one channel per kind so each can be muted on its own. */
 class Notifications(private val context: Context) {
@@ -52,7 +53,8 @@ class Notifications(private val context: Context) {
         return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    fun answer(chatId: String, title: String, text: String, error: Boolean) {
+    fun answer(chatId: String, title: String, reply: String, error: Boolean) {
+        val text = plainText(reply)
         val notification = NotificationCompat.Builder(context, ANSWERS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Hermes" })
@@ -98,7 +100,8 @@ class Notifications(private val context: Context) {
         return PendingIntent.getBroadcast(context, (requestId + choice).hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    fun activity(chatId: String, title: String, text: String) {
+    fun activity(chatId: String, title: String, reply: String) {
+        val text = plainText(reply)
         val notification = NotificationCompat.Builder(context, ACTIVITY)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title.ifBlank { "Hermes" })

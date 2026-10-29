@@ -43,6 +43,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.chat.plainText
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.ui.SearchState
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -117,7 +118,7 @@ private fun HitRow(hit: SearchHit, query: String, onClick: () -> Unit) {
 
 /** Marks the words of the query in the snippet; FTS snippets come with `>>>`/`<<<` or plain. */
 private fun highlight(snippet: String, query: String, color: androidx.compose.ui.graphics.Color): AnnotatedString {
-    val clean = snippet.replace(">>>", "").replace("<<<", "").replace("\n", " ")
+    val clean = plainText(snippet.replace(">>>", "").replace("<<<", "")).replace("\n", " ")
     val words = query.split(' ', '"').map { it.trim('*') }.filter { it.length >= 2 && it.uppercase() !in setOf("OR", "AND", "NOT") }
     return buildAnnotatedString {
         var i = 0
