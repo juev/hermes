@@ -64,11 +64,27 @@ def _save(items: list[dict], root: Path | None) -> None:
     _atomic_write(data_dir(root) / "subscriptions.json", json.dumps(items, indent=1).encode())
 
 
-def subscribe(endpoint: str, p256dh: str, auth: str, name: str = "", root: Path | None = None) -> None:
-    """Adds the phone, or refreshes its keys; the oldest subscriptions go beyond the limit."""
+def _same_phone(item: dict, endpoint: str, name: str, device: str) -> bool:
+    """Whether [item] is an older subscription of the phone that subscribes with [endpoint].
+
+    A phone that lost its endpoint (a reinstall, cleared data) comes back with a new one, and ntfy
+    keeps taking pushes to the old one, so the old one is known by the id of the device instead.
+    Subscriptions made before the app sent that id are known by the name of the phone.
+    """
+    if item.get("endpoint") == endpoint:
+        return True
+    if not device:
+        return False
+    if item.get("device"):
+        return item["device"] == device
+    return bool(name) and item.get("name") == name
+
+
+def subscribe(endpoint: str, p256dh: str, auth: str, name: str = "", device: str = "", root: Path | None = None) -> None:
+    """Adds the phone in place of its older subscriptions; the oldest subscriptions go beyond the limit."""
     with _lock:
-        items = [s for s in subscriptions(root) if s.get("endpoint") != endpoint]
-        items.append({"endpoint": endpoint, "p256dh": p256dh, "auth": auth, "name": name})
+        items = [s for s in subscriptions(root) if not _same_phone(s, endpoint, name, device)]
+        items.append({"endpoint": endpoint, "p256dh": p256dh, "auth": auth, "name": name, "device": device})
         _save(items[-MAX_SUBSCRIPTIONS:], root)
 
 

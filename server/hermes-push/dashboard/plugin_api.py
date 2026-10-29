@@ -36,6 +36,8 @@ class Subscription(BaseModel):
     p256dh: str
     auth: str
     name: str = ""
+    # A stable id of the phone: its new subscription replaces the ones it no longer reads.
+    device: str = ""
 
 
 class Endpoint(BaseModel):
@@ -52,7 +54,7 @@ async def key():
 async def subscribe(body: Subscription):
     if not body.endpoint.startswith("https://"):
         raise HTTPException(status_code=400, detail="endpoint must be https")
-    store.subscribe(body.endpoint, body.p256dh, body.auth, body.name)
+    store.subscribe(body.endpoint, body.p256dh, body.auth, body.name, body.device)
     return {"ok": True}
 
 
