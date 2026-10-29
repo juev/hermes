@@ -1,6 +1,8 @@
 package org.evsyukov.hermes.data.remote
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Response
@@ -23,3 +25,9 @@ internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont
         },
     )
 }
+
+/**
+ * Hands the response to [block] off the main thread and closes it. The body may still be on its way
+ * when the headers are in, and reading it on the main thread fails with NetworkOnMainThreadException.
+ */
+internal suspend fun <T> Response.consume(block: suspend (Response) -> T): T = withContext(Dispatchers.IO) { use { block(it) } }
