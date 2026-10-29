@@ -12,6 +12,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("hermes_push", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
@@ -92,6 +94,19 @@ class PushTest(unittest.TestCase):
 
     def test_a_long_answer_is_cut(self):
         self.assertEqual(len(plugin.payload("s", "tui", "x" * 5000, None)["preview"]), plugin.PREVIEW_CHARS)
+
+    def test_only_turns_of_chats_notify_not_their_subagents(self):
+        hooks = {}
+        ctx = SimpleNamespace(register_hook=hooks.__setitem__, current_cron_execution=lambda: None)
+        plugin.register(ctx)
+        sent = []
+        # The send runs here rather than on a thread, so a push the hook started is seen at once.
+        inline = SimpleNamespace(Thread=lambda target, args, **_: SimpleNamespace(start=lambda: target(*args)))
+        with mock.patch.object(plugin.store, "subscriptions", return_value=[{"endpoint": self.endpoint}]), \
+                mock.patch.object(plugin, "deliver", sent.append), mock.patch.object(plugin, "threading", inline):
+            hooks["post_llm_call"](session_id="child", assistant_response="Found three files", platform="subagent")
+            hooks["post_llm_call"](session_id="chat", assistant_response="Done", platform="tui")
+        self.assertEqual([m["session_id"] for m in sent], ["chat"])
 
 
 if __name__ == "__main__":

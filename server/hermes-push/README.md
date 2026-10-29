@@ -5,6 +5,9 @@ chats of the app, Telegram, Matrix and cron runs. Messages go through UnifiedPus
 example the ntfy app and its server) encrypted with the phone's keys (RFC 8291), so the
 push server sees only ciphertext. Only the `cryptography` package of Hermes is used.
 
+Subagents that `delegate_task` starts inside a chat send nothing: their turns run with the
+platform `subagent`, and the turn of the chat that started them sends the push.
+
 ## Parts
 
 - `__init__.py` registers the `post_llm_call` hook; it runs in the process that ran the turn

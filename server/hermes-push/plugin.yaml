@@ -1,5 +1,5 @@
 name: hermes-push
-version: 0.1.0
+version: 0.1.1
 description: "Web Push (UnifiedPush) to the Hermes Android app when a turn ends: chats, Telegram, Matrix, cron."
 author: "Denis Evsyukov"
 provides_hooks:
