@@ -2,6 +2,8 @@ package org.evsyukov.hermes.ui.admin
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -173,19 +175,19 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
             }
 
             SectionTitle("Gateway")
-            Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
+            GatewayButtons(
+                onRestart = {
                     confirm = restartConfirm to {
                         scope.attempt(snackbar) { action = api.gateway("restart").string("name") ?: "gateway-restart" }
                     }
-                }) { Text(stringResource(R.string.admin_restart)) }
-                OutlinedButton(onClick = { scope.attempt(snackbar) { action = api.gateway("start").string("name") ?: "gateway-start" } }) { Text(stringResource(R.string.admin_start)) }
-                OutlinedButton(onClick = {
+                },
+                onStart = { scope.attempt(snackbar) { action = api.gateway("start").string("name") ?: "gateway-start" } },
+                onStop = {
                     confirm = stopConfirm to {
                         scope.attempt(snackbar) { action = api.gateway("stop", interrupt = true).string("name") ?: "gateway-stop" }
                     }
-                }) { Text(stringResource(R.string.admin_stop), color = colors.danger) }
-            }
+                },
+            )
 
             SectionTitle(stringResource(R.string.admin_update_title))
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -214,4 +216,15 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
     }
     confirm?.let { (text, run) -> ConfirmDialog(stringResource(R.string.common_confirm_title), text, stringResource(R.string.common_yes), run) { confirm = null } }
     action?.let { name -> ActionLog(api, name) { action = null; status.reload() } }
+}
+
+/** Long labels, as in Russian, move a button to the next line instead of squeezing its label. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun GatewayButtons(onRestart: () -> Unit, onStart: () -> Unit, onStop: () -> Unit) {
+    FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onRestart) { Text(stringResource(R.string.admin_restart)) }
+        OutlinedButton(onClick = onStart) { Text(stringResource(R.string.admin_start)) }
+        OutlinedButton(onClick = onStop) { Text(stringResource(R.string.admin_stop), color = ChatTheme.colors.danger) }
+    }
 }
