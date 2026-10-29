@@ -38,8 +38,10 @@ class AppSettingsTest {
         assertThat(Settings().cacheLimitMb).isEqualTo(500)
         AppSettings(context, CoroutineScope(Dispatchers.IO)).update { it.copy(cacheLimitMb = 20_000) }
 
+        // Before the disk is read the limit is unknown, not the default: the default would evict the larger cache.
+        assertThat(AppSettings(context, CoroutineScope(StandardTestDispatcher())).cacheLimitMb.value).isNull()
         val read = AppSettings(context, CoroutineScope(Dispatchers.IO))
-        assertThat(withTimeout(5_000) { read.current.first { it.cacheLimitMb != 500 } }.cacheLimitMb).isEqualTo(20_000)
+        assertThat(withTimeout(5_000) { read.cacheLimitMb.filterNotNull().first() }).isEqualTo(20_000)
     }
 
     @Test
