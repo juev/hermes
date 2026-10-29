@@ -213,6 +213,13 @@
     <string name="chat_edit_title">Изменить сообщение</string>
     <string name="chat_empty_title">Чем могу помочь?</string>
     <string name="composer_file_too_big">Файлы больше 25 МБ не прикрепляются</string>
+    <string name="share_summarize">Пересказать</string>
+    <string name="share_summarize_prompt">Перескажи кратко</string>
+    <string name="share_related">Найти связанное</string>
+    <string name="share_related_prompt">Найди связанное с этим в моих заметках, чатах и подключённых сервисах</string>
+    <string name="share_task">Создать задачу</string>
+    <string name="share_task_prompt">Создай по этому задачу в самом подходящем из подключённых сервисов и пришли ссылку</string>
+    <string name="share_skipped">Часть файлов не прикреплена: они больше 25 МБ или не читаются</string>
     <string name="composer_no_mic">Без доступа к микрофону диктовка не работает</string>
     <string name="composer_not_recognized">Не распознано: %1$s</string>
     <string name="composer_listening">Говорите…</string>

@@ -66,6 +66,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -111,6 +112,8 @@ fun ChatScreen(
     loadModels: suspend () -> ModelChoices,
     transcribe: suspend (ByteArray, String) -> String,
     openLocal: (LocalAttachment) -> Unit,
+    shared: Shared? = null,
+    onSharedTaken: () -> Unit = {},
 ) {
     val state by controller.state.collectAsState()
     val colors = ChatTheme.colors
@@ -124,6 +127,7 @@ fun ChatScreen(
     var renaming by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ChatItem.User?>(null) }
     var localError by remember { mutableStateOf<String?>(null) }
+    var fromShare by remember(controller) { mutableStateOf(false) }
 
     // A chat opens to read it, as in ChatGPT: the keyboard waits for a tap on the field.
     val focus = LocalFocusManager.current
@@ -152,14 +156,25 @@ fun ChatScreen(
     }
     pull.enabled = settings.pullForNewChat && state.items.isNotEmpty()
 
-    fun send() {
-        val text = draft.trim()
+    fun send(text: String = draft.trim()) {
         if (text.isEmpty() && attachments.isEmpty()) return
         if (settings.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         controller.send(text, attachments)
         draft = ""
         attachments = emptyList()
+        fromShare = false
     }
+
+    // A share fills the field of the empty new chat and offers quick actions until a message goes.
+    LaunchedEffect(controller, shared) {
+        val current = controller.state.value
+        if (shared == null || current.storedId != null || current.items.isNotEmpty()) return@LaunchedEffect
+        draft = listOf(draft.trim(), shared.text).filter { it.isNotEmpty() }.joinToString("\n")
+        attachments = attachments + shared.attachments
+        fromShare = true
+        onSharedTaken()
+    }
+    val quickActions = fromShare && state.items.isEmpty() && (draft.isNotBlank() || attachments.isNotEmpty())
 
     // The server gives the phone no link back from the browser; coming back to the app is the sign.
     LifecycleResumeEffect(controller) {
@@ -253,7 +268,8 @@ fun ChatScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.items.isEmpty() && !state.loading) {
-                EmptyChat(serverName) { draft = it }
+                // A suggestion would replace what was shared, so the quick actions stand in for them.
+                EmptyChat(serverName, suggestions = !quickActions) { draft = it }
             } else {
                 LazyColumn(
                     state = listState,
@@ -319,7 +335,11 @@ fun ChatScreen(
                     .clickable { controller.dismissError(); localError = null }.padding(10.dp),
             ) { Text(error, color = colors.text, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         }
-        Box(Modifier.navigationBarsPadding()) {
+        Column(Modifier.navigationBarsPadding()) {
+            if (quickActions) {
+                val resources = LocalResources.current
+                QuickActions(onAction = { send(quickMessage(resources.getString(it.prompt), draft)) }, modifier = Modifier.padding(top = 8.dp))
+            }
             Composer(
                 text = draft,
                 onText = { draft = it },
@@ -378,12 +398,13 @@ private fun usageText(usage: SessionUsage): String {
 }
 
 @Composable
-private fun EmptyChat(serverName: String, onSuggestion: (String) -> Unit) {
+private fun EmptyChat(serverName: String, suggestions: Boolean, onSuggestion: (String) -> Unit) {
     val colors = ChatTheme.colors
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(stringResource(R.string.chat_empty_title), color = colors.text, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(serverName, color = colors.faintText, fontSize = 14.sp)
+        if (!suggestions) return@Column
         Spacer(Modifier.height(28.dp))
         SUGGESTIONS.forEach { id ->
             val suggestion = stringResource(id)

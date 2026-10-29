@@ -37,6 +37,13 @@
                 <data android:scheme="org.evsyukov.hermes" android:host="signed-in" />
                 <data android:scheme="org.evsyukov.hermes" android:host="add-server" />
             </intent-filter>
+            <!-- Share from other apps: a link, text, pictures or any files open in a new chat. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
         <service
             android:name=".background.HermesService"

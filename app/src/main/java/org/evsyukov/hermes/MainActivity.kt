@@ -16,6 +16,7 @@ import androidx.lifecycle.ViewModelProvider
 import org.evsyukov.hermes.data.server.SCHEME
 import org.evsyukov.hermes.ui.HermesApp
 import org.evsyukov.hermes.ui.MainViewModel
+import org.evsyukov.hermes.ui.chat.readShared
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels {
@@ -29,6 +30,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         handle(intent)
+        // A recreated activity and one opened from the recent apps carry the share they were started with once more.
+        if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) share(intent)
         askForNotifications()
         setContent { HermesApp(vm) }
     }
@@ -43,6 +46,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handle(intent)
+        share(intent)
+    }
+
+    private fun share(intent: Intent) {
+        if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return
+        val context = applicationContext
+        vm.share { readShared(context, intent) }
     }
 
     /** A notification opens its chat; the return from the sign-in page needs nothing, the loopback got the code. */
