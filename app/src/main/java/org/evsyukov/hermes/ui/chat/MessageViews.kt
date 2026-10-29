@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -246,11 +247,7 @@ private fun ReasoningBlock(text: String, streaming: Boolean, open: Boolean) {
             Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
         }
         AnimatedVisibility(expanded) {
-            Text(
-                text.trim(),
-                color = colors.secondaryText, fontSize = 14.sp, lineHeight = 20.sp,
-                modifier = Modifier.padding(start = 22.dp, top = 4.dp),
-            )
+            MarkdownText(keepLineBreaks(text.trim()), Modifier.padding(start = 22.dp, top = 4.dp), aside = true)
         }
     }
 }
@@ -308,19 +305,32 @@ private fun ToolRow(run: ToolRun) {
         AnimatedVisibility(expanded) {
             Column(
                 Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp).clip(RoundedCornerShape(10.dp)).background(colors.codeBackground).padding(10.dp)
-                    .heightIn(max = 320.dp),
+                    .heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
             ) {
-                val details = listOfNotNull(run.args.takeIf { it.isNotBlank() && it != "{}" }, run.summary?.takeIf { it.isNotBlank() })
+                val args = run.args.takeIf { it.isNotBlank() && it != "{}" }
+                val summary = run.summary?.takeIf { it.isNotBlank() }
+                val output = run.output
                 SelectionContainer {
-                    Text(
-                        details.joinToString("\n\n").ifEmpty { stringResource(R.string.chat_no_details) },
-                        color = colors.secondaryText, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (args == null && summary == null && output == null) Printed(stringResource(R.string.chat_no_details))
+                        args?.let { Printed(it) }
+                        summary?.let { Text(it, color = colors.secondaryText, fontSize = 13.sp) }
+                        // Prose a tool returned reads as Markdown; what a program printed keeps its characters.
+                        output?.let { if (it.markdown) MarkdownText(it.text, aside = true) else Printed(it.text) }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun Printed(text: String) {
+    Text(
+        text,
+        color = ChatTheme.colors.secondaryText, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    )
 }
 
 /** A short human title for a tool call: the context the server gave, or the tool name. */

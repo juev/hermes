@@ -134,14 +134,24 @@ class TranscriptTest {
         val messages = listOf(
             StoredMessage(1, "user", "сколько места?", null, emptyList(), null, null, 1.0, false, emptyList()),
             StoredMessage(2, "assistant", "", null, listOf(ToolCallInfo("c1", "terminal", "{\"command\":\"df -h\"}")), null, null, 2.0, false, emptyList()),
-            StoredMessage(3, "tool", "/dev/sda1 34%", null, emptyList(), "terminal", "c1", 3.0, false, emptyList()),
+            StoredMessage(3, "tool", """{"output": "/dev/sda1 34%", "exit_code": 0}""", null, emptyList(), "terminal", "c1", 3.0, false, emptyList()),
             StoredMessage(4, "assistant", "Занято 34%", null, emptyList(), null, null, 4.0, false, emptyList()),
         )
         val items = transcriptOf(messages)
         assertThat(items).hasSize(2)
         val answer = items[1] as ChatItem.Assistant
-        assertThat((answer.parts[0] as Part.Tool).run.summary).isEqualTo("/dev/sda1 34%")
+        assertThat((answer.parts[0] as Part.Tool).run.output).isEqualTo(ToolOutput("/dev/sda1 34%", markdown = false))
         assertThat(answer.text).isEqualTo("Занято 34%")
+    }
+
+    @Test
+    fun `a live tool result shows what the tool returned`() {
+        val items = play(
+            event("tool.start", """{"tool_id":"c1","name":"delegate_task"}"""),
+            event("tool.complete", """{"tool_id":"c1","result":{"results":[{"status":"completed","summary":"## Вывод\n\n**Готово**"}]}}"""),
+        )
+        val run = ((items.single() as ChatItem.Assistant).parts.single() as Part.Tool).run
+        assertThat(run.output).isEqualTo(ToolOutput("## Вывод\n\n**Готово**", markdown = true))
     }
 
     @Test
