@@ -86,13 +86,15 @@ class ConnectionChatTest {
     private suspend fun openChat(): ChatController {
         val profile = ServerProfile("home", "Home", server.url("/").toString())
         val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        val chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, "s1")
+        // The pause between attempts is not what a chat test is about: the socket is ready a moment
+        // after a drop instead of a second later, so a step below waits for the chat, not the clock.
+        val chat = ChatController(session, GatewaySocket(session.http, scope, strings, firstPause = 50), scope, strings, "s1")
         withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
         return chat
     }
 
     /** The params of the next call of [method]; other calls before it are skipped. */
-    private suspend fun next(method: String): JsonObject = withTimeout(5_000) {
+    private suspend fun next(method: String, timeoutMillis: Long = 5_000): JsonObject = withTimeout(timeoutMillis) {
         var call = gateway.calls.receive()
         while (call.first != method) call = gateway.calls.receive()
         call.second
@@ -197,9 +199,11 @@ class ConnectionChatTest {
         next("session.resume")
         gateway.pending = false
         gateway.drop()
-        // The test fails on CI now and then and never locally (#56): a timeout names its step.
-        step("the chat joins its session again after the drop") { next("session.resume") }
-        step("the card settles once the session has it no longer") { withTimeout(5_000) { chat.state.first { it.connections.single().settled } } }
+        // A timeout names its step (#56, #57). Both waits are liveness assertions, not latency ones:
+        // the chat has to join and settle at all, and how long a busy CI runner takes to get there is
+        // no part of what is checked.
+        step("the chat joins its session again after the drop") { next("session.resume", timeoutMillis = 30_000) }
+        step("the card settles once the session has it no longer") { withTimeout(30_000) { chat.state.first { it.connections.single().settled } } }
         chat.continueConnection("op1")
         delay(500)
         chat.close()
