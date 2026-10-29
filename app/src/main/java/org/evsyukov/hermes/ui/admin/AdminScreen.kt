@@ -77,7 +77,7 @@ fun AdminScreen(api: AdminApi, section: AdminSection?, onOpen: (AdminSection) ->
 
 @Composable
 private fun AdminHub(api: AdminApi, onOpen: (AdminSection) -> Unit, onBack: () -> Unit) {
-    val status = rememberLoadable { api.status() }
+    val status = rememberCached(api) { it.status() }
     AdminScaffold(stringResource(R.string.sidebar_server), onBack, status.loading, status.reload) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             status.value?.let { StatusSummary(it) }
@@ -110,8 +110,8 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
-    val status = rememberLoadable { api.status() }
-    val stats = rememberLoadable { api.systemStats() }
+    val status = rememberCached(api) { it.status() }
+    val stats = rememberCached(api) { it.systemStats() }
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     var action by remember { mutableStateOf<String?>(null) }
     var update by remember { mutableStateOf<JsonObject?>(null) }

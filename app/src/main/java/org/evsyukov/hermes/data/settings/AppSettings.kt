@@ -33,7 +33,13 @@ data class Settings(
     val keepConnected: Boolean = false,
     /** Push through UnifiedPush when the server has the hermes-push plugin and a distributor is installed. */
     val push: Boolean = true,
-)
+    /** How much the cache of chats and screens may take on the phone, in megabytes. */
+    val cacheLimitMb: Int = DEFAULT_CACHE_LIMIT_MB,
+) {
+    companion object {
+        const val DEFAULT_CACHE_LIMIT_MB = 500
+    }
+}
 
 class AppSettings(private val context: Context, scope: CoroutineScope) {
     private val stored: Flow<Settings> = context.settingsStore.data.map { prefs ->
@@ -47,6 +53,7 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
             checkMinutes = prefs[CHECK_MINUTES] ?: 15,
             keepConnected = prefs[KEEP_CONNECTED] ?: false,
             push = prefs[PUSH] ?: true,
+            cacheLimitMb = prefs[CACHE_LIMIT_MB] ?: Settings.DEFAULT_CACHE_LIMIT_MB,
         )
     }
 
@@ -72,6 +79,7 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
             prefs[CHECK_MINUTES] = next.checkMinutes
             prefs[KEEP_CONNECTED] = next.keepConnected
             prefs[PUSH] = next.push
+            prefs[CACHE_LIMIT_MB] = next.cacheLimitMb
         }
     }
 
@@ -85,5 +93,6 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
         val CHECK_MINUTES = intPreferencesKey("check_minutes")
         val KEEP_CONNECTED = booleanPreferencesKey("keep_connected")
         val PUSH = booleanPreferencesKey("push")
+        val CACHE_LIMIT_MB = intPreferencesKey("cache_limit_mb")
     }
 }

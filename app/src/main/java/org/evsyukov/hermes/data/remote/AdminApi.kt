@@ -33,16 +33,20 @@ data class ActionStatus(val name: String, val running: Boolean, val exitCode: In
 /**
  * The management part of the dashboard: status, settings, secrets, models, cron, skills, tools,
  * logs and usage. Answers stay JSON where the screens only show them; the rest is parsed here.
+ * Secrets, the config, logs and command output are never kept on the phone.
  */
-class AdminApi(private val http: HermesHttp) {
-    suspend fun status(): JsonObject = http.getJson("api/status").jsonObject
+class AdminApi(private val http: HermesHttp, private val reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null) {
+    /** The same reads answered from the phone's cache alone; null without a cache. Not for changes. */
+    val cached: AdminApi? = cachedReads?.let { AdminApi(http, it) }
 
-    suspend fun systemStats(): JsonObject = http.getJson("api/system/stats").jsonObject
+    suspend fun status(): JsonObject = reads.kept("api/status").jsonObject
 
-    suspend fun config(): JsonObject = http.getJson("api/config").jsonObject
+    suspend fun systemStats(): JsonObject = reads.kept("api/system/stats").jsonObject
+
+    suspend fun config(): JsonObject = reads.fresh("api/config").jsonObject
 
     suspend fun schema(): ConfigSchema {
-        val root = http.getJson("api/config/schema").jsonObject
+        val root = reads.kept("api/config/schema").jsonObject
         val fields = root["fields"]?.jsonObject.orEmpty().map { (path, value) ->
             val field = value.jsonObject
             ConfigField(
@@ -68,13 +72,13 @@ class AdminApi(private val http: HermesHttp) {
         http.putJson("api/config", buildJsonObject { put("config", nest(path.split('.'), value)) })
     }
 
-    suspend fun rawConfig(): String = http.getJson("api/config/raw").jsonObject.string("yaml").orEmpty()
+    suspend fun rawConfig(): String = reads.fresh("api/config/raw").jsonObject.string("yaml").orEmpty()
 
     suspend fun saveRawConfig(yaml: String) {
         http.putJson("api/config/raw", buildJsonObject { put("yaml_text", yaml) })
     }
 
-    suspend fun env(): JsonObject = http.getJson("api/env").jsonObject
+    suspend fun env(): JsonObject = reads.fresh("api/env").jsonObject
 
     suspend fun setEnv(key: String, value: String) {
         http.putJson("api/env", buildJsonObject { put("key", key); put("value", value) })
@@ -87,10 +91,10 @@ class AdminApi(private val http: HermesHttp) {
     suspend fun revealEnv(key: String): String =
         http.postJson("api/env/reveal", buildJsonObject { put("key", key) }).jsonObject.string("value").orEmpty()
 
-    suspend fun modelInfo(): JsonObject = http.getJson("api/model/info").jsonObject
+    suspend fun modelInfo(): JsonObject = reads.kept("api/model/info").jsonObject
 
     suspend fun modelOptions(refresh: Boolean = false): ModelChoices {
-        val root = http.getJson("api/model/options", mapOf("refresh" to refresh.takeIf { it })).jsonObject
+        val root = reads.kept("api/model/options", mapOf("refresh" to refresh.takeIf { it })).jsonObject
         val providers = arrayOf(root, "providers").map { p ->
             ModelProvider(
                 slug = p.string("slug").orEmpty(),
@@ -121,7 +125,7 @@ class AdminApi(private val http: HermesHttp) {
     }
 
     suspend fun action(name: String, lines: Int = 200): ActionStatus {
-        val obj = http.getJson("api/actions/$name/status", mapOf("lines" to lines)).jsonObject
+        val obj = reads.fresh("api/actions/$name/status", mapOf("lines" to lines)).jsonObject
         return ActionStatus(
             name = name,
             running = obj.bool("running") ?: false,
@@ -131,12 +135,12 @@ class AdminApi(private val http: HermesHttp) {
     }
 
     suspend fun updateCheck(force: Boolean = false): JsonObject =
-        http.getJson("api/hermes/update/check", mapOf("force" to force.takeIf { it })).jsonObject
+        reads.fresh("api/hermes/update/check", mapOf("force" to force.takeIf { it })).jsonObject
 
     suspend fun update(): JsonObject = http.postJson("api/hermes/update").jsonObject
 
     suspend fun logs(query: LogQuery): List<String> {
-        val obj = http.getJson(
+        val obj = reads.fresh(
             "api/logs",
             mapOf(
                 "file" to query.file,
@@ -149,12 +153,12 @@ class AdminApi(private val http: HermesHttp) {
         return (obj["lines"] as? JsonArray)?.mapNotNull { it.str() }.orEmpty()
     }
 
-    suspend fun usage(days: Int): JsonObject = http.getJson("api/analytics/usage", mapOf("days" to days)).jsonObject
+    suspend fun usage(days: Int): JsonObject = reads.kept("api/analytics/usage", mapOf("days" to days)).jsonObject
 
-    suspend fun cronJobs(): List<JsonObject> = arrayOf(http.getJson("api/cron/jobs"), "jobs")
+    suspend fun cronJobs(): List<JsonObject> = arrayOf(reads.kept("api/cron/jobs"), "jobs")
 
     suspend fun cronRuns(id: String): List<JsonObject> =
-        (http.getJson("api/cron/jobs/$id/runs", mapOf("limit" to 30)).jsonObject["runs"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
+        (reads.kept("api/cron/jobs/$id/runs", mapOf("limit" to 30)).jsonObject["runs"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
 
     suspend fun cronCommand(id: String, command: String): JsonElement = http.postJson("api/cron/jobs/$id/$command")
 
@@ -177,23 +181,23 @@ class AdminApi(private val http: HermesHttp) {
         http.putJson("api/cron/jobs/$id", buildJsonObject { put("updates", updates) }).jsonObject
 
     suspend fun cronTargets(): List<JsonObject> =
-        (http.getJson("api/cron/delivery-targets").jsonObject["targets"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
+        (reads.kept("api/cron/delivery-targets").jsonObject["targets"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
 
-    suspend fun skills(): List<JsonObject> = arrayOf(http.getJson("api/skills"), "skills")
+    suspend fun skills(): List<JsonObject> = arrayOf(reads.kept("api/skills"), "skills")
 
     suspend fun toggleSkill(name: String, enabled: Boolean) {
         http.putJson("api/skills/toggle", buildJsonObject { put("name", name); put("enabled", enabled) })
     }
 
-    suspend fun skillContent(name: String): String = http.getJson("api/skills/content", mapOf("name" to name)).jsonObject.string("content").orEmpty()
+    suspend fun skillContent(name: String): String = reads.fresh("api/skills/content", mapOf("name" to name)).jsonObject.string("content").orEmpty()
 
-    suspend fun toolsets(): List<JsonObject> = arrayOf(http.getJson("api/tools/toolsets"), "toolsets")
+    suspend fun toolsets(): List<JsonObject> = arrayOf(reads.kept("api/tools/toolsets"), "toolsets")
 
     suspend fun toggleToolset(name: String, enabled: Boolean) {
         http.putJson("api/tools/toolsets/$name", buildJsonObject { put("enabled", enabled) })
     }
 
-    suspend fun mcpServers(): List<JsonObject> = arrayOf(http.getJson("api/mcp/servers"), "servers")
+    suspend fun mcpServers(): List<JsonObject> = arrayOf(reads.kept("api/mcp/servers"), "servers")
 
     suspend fun toggleMcp(name: String, enabled: Boolean) {
         http.putJson("api/mcp/servers/$name/enabled", buildJsonObject { put("enabled", enabled) })
@@ -201,11 +205,11 @@ class AdminApi(private val http: HermesHttp) {
 
     suspend fun testMcp(name: String): JsonObject = http.postJson("api/mcp/servers/$name/test").jsonObject
 
-    suspend fun platforms(): List<JsonObject> = arrayOf(http.getJson("api/messaging/platforms"), "platforms")
+    suspend fun platforms(): List<JsonObject> = arrayOf(reads.kept("api/messaging/platforms"), "platforms")
 
     suspend fun testPlatform(id: String): JsonObject = http.postJson("api/messaging/platforms/$id/test").jsonObject
 
-    suspend fun memory(): JsonObject = http.getJson("api/memory").jsonObject
+    suspend fun memory(): JsonObject = reads.fresh("api/memory").jsonObject
 
     /** A list answer comes bare or wrapped in an object under [key], depending on the route. */
     private fun arrayOf(root: JsonElement, key: String): List<JsonObject> = when (root) {

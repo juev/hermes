@@ -48,11 +48,6 @@ class ResponseCache(
         lock.withLock { dao.delete(server, request) }
     }
 
-    /** Drops what belongs to servers no longer in the list. */
-    suspend fun keepOnly(servers: Set<String>) = withContext(Dispatchers.IO) {
-        lock.withLock { dao.servers().filter { it !in servers }.forEach { dao.deleteStarting(it, "") } }
-    }
-
     /** Brings the total within a limit that was just lowered. */
     suspend fun trim() = withContext(Dispatchers.IO) { lock.withLock { evict() } }
 

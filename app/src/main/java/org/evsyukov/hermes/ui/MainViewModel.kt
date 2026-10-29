@@ -118,6 +118,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     private var loadJob: Job? = null
 
+    /** The server has answered for the list shown, so the copy on the phone must not replace it. */
+    private var listedByServer = false
+
     /** The check of the server under way; a new one replaces it, so an older answer cannot win. */
     private var accessJob: Job? = null
 
@@ -132,7 +135,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 _chat.value?.close()
                 _chat.value = null
                 _sidebar.value = SidebarState()
+                listedByServer = false
                 if (connection == null) return@collectLatest
+                showCachedChats(connection)
                 newChat()
                 pendingChat?.let { id ->
                     pendingChat = null
@@ -237,10 +242,23 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 val mode = _sidebar.value.mode
                 val page = connection.session.chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 _sidebar.update { it.copy(chats = page.chats, total = page.total, loading = false) }
+                listedByServer = true
             } catch (e: Exception) {
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
+        }
+    }
+
+    /** Shows the first page the phone keeps until the server answers, or when it cannot. */
+    private fun showCachedChats(connection: Connection) {
+        val cached = connection.session.chat.cached ?: return
+        val mode = _sidebar.value.mode
+        viewModelScope.launch {
+            val page = runCatching {
+                cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+            }.getOrNull() ?: return@launch
+            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = page.chats, total = page.total) else it }
         }
     }
 
@@ -263,6 +281,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     fun showList(mode: ListMode) {
         if (_sidebar.value.mode == mode) return
         _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0) }
+        listedByServer = false
+        container.connection.value?.let(::showCachedChats)
         refreshChats()
     }
 
@@ -310,6 +330,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     fun deleteChat(id: String) = mutate(id) {
         it.delete(id)
+        container.connection.value?.session?.forgetChat(id)
         if (_chat.value?.state?.value?.storedId == id) newChat()
     }
 

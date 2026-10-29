@@ -81,7 +81,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
-    val jobs = rememberLoadable { api.cronJobs() }
+    val jobs = rememberCached(api) { it.cronJobs() }
     var open by remember { mutableStateOf<JsonObject?>(null) }
     var creating by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
@@ -114,7 +114,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
 
     open?.let { job ->
         val id = job.string("id").orEmpty()
-        val runs = rememberLoadable(id) { api.cronRuns(id) }
+        val runs = rememberCached(api, id) { it.cronRuns(id) }
         AlertDialog(
             onDismissRequest = { open = null },
             title = { Text(job.string("name") ?: id) },
@@ -161,7 +161,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
         var schedule by remember { mutableStateOf("") }
         var prompt by remember { mutableStateOf("") }
         var deliver by remember { mutableStateOf("local") }
-        val targets = rememberLoadable { api.cronTargets() }
+        val targets = rememberCached(api) { it.cronTargets() }
         AlertDialog(
             onDismissRequest = { creating = false },
             title = { Text(stringResource(R.string.admin_cron_new)) },
@@ -197,9 +197,9 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
-    val skills = rememberLoadable { api.skills() }
-    val toolsets = rememberLoadable { api.toolsets() }
-    val mcp = rememberLoadable { api.mcpServers() }
+    val skills = rememberCached(api) { it.skills() }
+    val toolsets = rememberCached(api) { it.toolsets() }
+    val mcp = rememberCached(api) { it.mcpServers() }
     var skillText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var query by remember { mutableStateOf("") }
     val resources = LocalResources.current
@@ -289,7 +289,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
-    val platforms = rememberLoadable { api.platforms() }
+    val platforms = rememberCached(api) { it.platforms() }
     AdminScaffold(stringResource(R.string.admin_platforms), onBack, platforms.loading, platforms.reload, snackbar) {
         ErrorText(platforms.error)
         LazyColumn(Modifier.fillMaxSize()) {
@@ -384,7 +384,7 @@ fun LogsScreen(api: AdminApi, onBack: () -> Unit) {
 fun UsageScreen(api: AdminApi, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     var days by remember { mutableIntStateOf(30) }
-    val usage = rememberLoadable(days) { api.usage(days) }
+    val usage = rememberCached(api, days) { it.usage(days) }
     AdminScaffold(stringResource(R.string.admin_usage), onBack, usage.loading, usage.reload) {
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,13 +65,33 @@ import org.evsyukov.hermes.ui.theme.ChatTheme
 class Loadable<T>(val value: T?, val error: String?, val loading: Boolean, val reload: () -> Unit)
 
 @Composable
-fun <T> rememberLoadable(vararg keys: Any?, load: suspend () -> T): Loadable<T> {
+fun <T> rememberLoadable(vararg keys: Any?, load: suspend () -> T): Loadable<T> = loadable(keys, cached = null, load = load)
+
+/**
+ * Like [rememberLoadable], but while the server is asked the section shows the answer the
+ * phone keeps: [read] runs on the cached copy of [api] first, then on [api] itself.
+ */
+@Composable
+fun <T> rememberCached(api: AdminApi, vararg keys: Any?, read: suspend (AdminApi) -> T): Loadable<T> =
+    loadable(keys, cached = api.cached?.let { cached -> { read(cached) } }, load = { read(api) })
+
+@Composable
+private fun <T> loadable(keys: Array<out Any?>, cached: (suspend () -> T)?, load: suspend () -> T): Loadable<T> {
     var value by remember(*keys) { mutableStateOf<T?>(null) }
     var error by remember(*keys) { mutableStateOf<String?>(null) }
     var loading by remember(*keys) { mutableStateOf(true) }
     var tick by remember(*keys) { mutableIntStateOf(0) }
     LaunchedEffect(tick, *keys) {
         loading = true
+        if (value == null && cached != null) {
+            try {
+                value = cached()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not on the phone: the section waits for the server.
+            }
+        }
         try {
             value = load()
             error = null

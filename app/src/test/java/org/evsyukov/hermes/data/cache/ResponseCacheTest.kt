@@ -98,10 +98,10 @@ class ResponseCacheTest {
     }
 
     @Test
-    fun `keepOnly drops the servers that are gone`() = runBlocking {
+    fun `forget without a prefix drops the whole server`() = runBlocking {
         cache.write("home", "a", "{}")
         cache.write("work", "a", "{}")
-        cache.keepOnly(setOf("work"))
+        cache.forget("home")
 
         assertThat(cache.read("home", "a")).isNull()
         assertThat(cache.read("work", "a")).isNotNull()
