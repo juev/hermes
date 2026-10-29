@@ -26,19 +26,21 @@ import org.intellij.markdown.ast.ASTNode
 
 /**
  * Markdown of a reply or of a `.md` file: tables, task lists, images and highlighted code.
- * [aside] sets it smaller and dimmer, for reasoning and for what tools returned.
+ * [aside] sets it smaller and dimmer, for reasoning and for what tools returned. [inBubble] gives
+ * code the page background, which stands out from the bubble of a user message.
  */
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier, aside: Boolean = false) {
+fun MarkdownText(text: String, modifier: Modifier = Modifier, aside: Boolean = false, inBubble: Boolean = false) {
     val colors = ChatTheme.colors
+    val code = if (inBubble) colors.background else colors.codeBackground
     Markdown(
         content = text,
         colors = markdownColor(
             text = if (aside) colors.secondaryText else colors.text,
-            codeBackground = colors.codeBackground,
-            inlineCodeBackground = colors.userBubble,
+            codeBackground = code,
+            inlineCodeBackground = if (inBubble) colors.background else colors.userBubble,
             dividerColor = colors.divider,
-            tableBackground = colors.codeBackground,
+            tableBackground = code,
         ),
         typography = if (aside) asideTypography() else replyTypography(),
         modifier = modifier,

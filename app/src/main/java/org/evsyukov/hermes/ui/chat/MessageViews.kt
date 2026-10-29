@@ -107,11 +107,10 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
         }
         if (item.text.isNotBlank()) {
             Box {
-                Text(
-                    item.text,
-                    color = colors.text,
-                    fontSize = 16.sp,
-                    lineHeight = 23.sp,
+                // What the user wrote reads as Markdown, as do the cron reports the server files as user messages.
+                MarkdownText(
+                    keepLineBreaks(item.text),
+                    inBubble = true,
                     modifier = Modifier
                         .clip(RoundedCornerShape(22.dp))
                         .background(colors.userBubble)
