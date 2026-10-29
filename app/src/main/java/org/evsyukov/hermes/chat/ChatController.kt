@@ -61,7 +61,10 @@ data class ChatState(
     val connecting: Boolean = false,
     /** An expensive model waits for a yes: provider, model and the server's warning. */
     val modelConfirm: Triple<String, String, String>? = null,
-)
+) {
+    /** A turn runs, and no open answer shows it yet: the chat says it is waiting under the last message. */
+    val awaitingAnswer: Boolean get() = running && (items.lastOrNull() as? ChatItem.Assistant)?.streaming != true
+}
 
 /**
  * One open chat. A new chat lives only in the app until its first message; the server session is
@@ -97,6 +100,13 @@ class ChatController(
     /** When the last message was sent, for the log of its first reply; 0 once the reply came. */
     @Volatile
     private var sentAt = 0L
+
+    /**
+     * A turn was sent and has not started. The server may report the session idle meanwhile: a new
+     * session announces its agent once built, and that can happen before the prompt reaches it.
+     */
+    @Volatile
+    private var awaitingStart = false
 
     init {
         jobs += scope.launch { socket.events.collect(::onEvent) }
@@ -183,7 +193,17 @@ class ChatController(
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
         val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
-        _state.update { it.copy(storedId = storedId ?: it.storedId, running = running, model = info?.string("model") ?: it.model) }
+        // A turn under way when the chat opens goes on in its answer, with what streamed while the chat was away.
+        val resumed = running && !starting
+        val streamed = (result["inflight"] as? JsonObject)?.string("assistant").orEmpty()
+        _state.update {
+            it.copy(
+                storedId = storedId ?: it.storedId,
+                running = running,
+                model = info?.string("model") ?: it.model,
+                items = if (resumed) resumeTurn(it.items, streamed) { "a${keys.incrementAndGet()}" } else it.items,
+            )
+        }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
@@ -207,6 +227,7 @@ class ChatController(
         if (text.isBlank() && attachments.isEmpty()) return
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
         _state.update { it.copy(items = it.items + ChatItem.User("local${keys.incrementAndGet()}", text, shown), running = true, error = null) }
+        awaitingStart = true
         val hold = onTurnStart()
         val started = System.currentTimeMillis().also { sentAt = it }
         scope.launch {
@@ -238,6 +259,7 @@ class ChatController(
                 }
             } catch (e: Exception) {
                 hold.release()
+                awaitingStart = false
                 Log.w(TAG, "Send failed", e)
                 _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_send_failed)) }
             }
@@ -280,6 +302,7 @@ class ChatController(
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message) }
             }
+            awaitingStart = false
             _state.update { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
         }
     }
@@ -302,11 +325,13 @@ class ChatController(
                 val index = _state.value.items.indexOfLast { it is ChatItem.User }
                 val kept = if (index >= 0) _state.value.items.subList(0, index) else _state.value.items
                 _state.update { it.copy(items = kept + lastUser.copy(key = "local${keys.incrementAndGet()}", text = text), running = true, error = null) }
+                awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
                 hold?.submitted()
             } catch (e: Exception) {
                 hold?.release()
+                awaitingStart = false
                 _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_failed)) }
             }
         }.invokeOnCompletion { cause -> if (cause != null) hold?.release() }
@@ -414,10 +439,14 @@ class ChatController(
             }
         }
         when (event.type) {
+            "message.start", "message.complete", "error" -> awaitingStart = false
+        }
+        when (event.type) {
             "message.start" -> _state.update { it.copy(running = true, status = null) }
             "message.complete" -> _state.update { it.copy(running = false, status = null) }
             "session.info" -> _state.update { state ->
-                val running = event.payload.bool("running")
+                // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
+                val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
                 state.copy(running = running ?: state.running, model = event.payload.string("model") ?: state.model)
             }
             "status.update" -> _state.update { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }

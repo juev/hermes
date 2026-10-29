@@ -80,6 +80,46 @@ class TranscriptTest {
     }
 
     @Test
+    fun `a running turn the history ends with opens again and gets the text it lacks`() {
+        val tool = Part.Tool(ToolRun("c1", "terminal", "ls", "", done = true))
+        val stored = listOf(ChatItem.User("u1", "найди", emptyList()), ChatItem.Assistant("a2", listOf(Part.Text("Ищу. "), tool), streaming = false))
+        val items = resumeTurn(stored, "Ищу. Нашёл", keys)
+        assertThat(items).hasSize(2)
+        val answer = items.last() as ChatItem.Assistant
+        assertThat(answer.streaming).isTrue()
+        assertThat(answer.parts).containsExactly(Part.Text("Ищу. "), tool, Part.Text("Нашёл")).inOrder()
+        // The next event of the turn lands in the same answer.
+        assertThat(play(event("tool.start", """{"tool_id":"c2","name":"terminal"}"""), start = items)).hasSize(2)
+    }
+
+    @Test
+    fun `a running turn with no stored answer gets one that is open`() {
+        val stored = listOf<ChatItem>(ChatItem.User("u1", "привет", emptyList()))
+        val waiting = resumeTurn(stored, "", keys)
+        assertThat((waiting.last() as ChatItem.Assistant).parts).isEmpty()
+        assertThat((waiting.last() as ChatItem.Assistant).streaming).isTrue()
+        val streamed = resumeTurn(stored, "Здравствуйте", keys)
+        assertThat((streamed.last() as ChatItem.Assistant).parts).containsExactly(Part.Text("Здравствуйте"))
+    }
+
+    @Test
+    fun `text that does not continue the stored answer is not shown twice`() {
+        val stored = listOf(ChatItem.User("u1", "найди", emptyList()), ChatItem.Assistant("a2", listOf(Part.Text("Ищу")), streaming = false))
+        assertThat((resumeTurn(stored, "Другое", keys).last() as ChatItem.Assistant).parts).containsExactly(Part.Text("Ищу"))
+    }
+
+    @Test
+    fun `a running turn shows that it waits until an answer is open`() {
+        val user = ChatItem.User("u1", "привет", emptyList())
+        val done = ChatItem.Assistant("a1", listOf(Part.Text("ответ")), streaming = false)
+        val open = ChatItem.Assistant("a2", emptyList(), streaming = true)
+        assertThat(ChatState(items = listOf(user), running = true).awaitingAnswer).isTrue()
+        assertThat(ChatState(items = listOf(user, done), running = true).awaitingAnswer).isTrue()
+        assertThat(ChatState(items = listOf(user, open), running = true).awaitingAnswer).isFalse()
+        assertThat(ChatState(items = listOf(user), running = false).awaitingAnswer).isFalse()
+    }
+
+    @Test
     fun `stopping closes running tools`() {
         val items = closeOpen(play(event("tool.start", """{"tool_id":"c1","name":"web_search"}""")), interrupted = true)
         val answer = items.single() as ChatItem.Assistant
