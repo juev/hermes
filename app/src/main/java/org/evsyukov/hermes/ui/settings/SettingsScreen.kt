@@ -1,7 +1,10 @@
 package org.evsyukov.hermes.ui.settings
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings as AndroidSettings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +45,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.BuildConfig
@@ -116,9 +120,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             ClickRow(stringResource(R.string.settings_system_notifications), stringResource(R.string.settings_system_notifications_hint), onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName))
             })
-            ClickRow(stringResource(R.string.settings_battery), stringResource(R.string.settings_battery_hint), onClick = {
-                context.startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
-            })
+            BatteryRow(settings.keepConnected)
 
             SectionTitle(stringResource(R.string.settings_push))
             val push by container.push.status.collectAsState()
@@ -242,6 +244,36 @@ private fun CacheLimitDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) 
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
+
+/**
+ * Battery optimization of the app as the system has it. Only the permanent connection needs it off,
+ * so the row shows while that is on, or while it is off already and can be turned back on. The tap
+ * opens the system list, where it changes both ways; the state is read again when the user returns.
+ */
+@Composable
+internal fun BatteryRow(keepConnected: Boolean) {
+    val context = LocalContext.current
+    var exempt by remember { mutableStateOf(batteryExempt(context)) }
+    LifecycleResumeEffect(Unit) {
+        exempt = batteryExempt(context)
+        onPauseOrDispose {}
+    }
+    if (!keepConnected && !exempt) return
+    ClickRow(
+        stringResource(R.string.settings_battery),
+        stringResource(if (exempt) R.string.settings_battery_off else R.string.settings_battery_on),
+        onClick = {
+            try {
+                context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e: ActivityNotFoundException) {
+                context.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+            }
+        },
+    )
+}
+
+private fun batteryExempt(context: Context): Boolean =
+    context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) == true
 
 @Composable
 private fun Toggle(title: String, sub: String?, value: Boolean, onChange: (Boolean) -> Unit) {

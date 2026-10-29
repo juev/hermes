@@ -127,8 +127,9 @@
     <string name="settings_keep_hint">Events arrive at once, but an icon stays in the shade and the battery drains faster</string>
     <string name="settings_system_notifications">System notifications</string>
     <string name="settings_system_notifications_hint">Channels, sound, lock screen display</string>
-    <string name="settings_battery">No battery restrictions</string>
-    <string name="settings_battery_hint">So the system does not stop background work</string>
+    <string name="settings_battery">Battery optimization</string>
+    <string name="settings_battery_on">On: while the phone sleeps, the system may close the permanent connection</string>
+    <string name="settings_battery_off">Off: the connection stays open while the phone sleeps, and the battery drains faster</string>
     <string name="settings_tailscale">Built-in Tailscale</string>
     <string name="settings_tailscale_absent">Not included in this build.</string>
     <string name="settings_tailnet_state">State: %1$s</string>

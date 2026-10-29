@@ -127,8 +127,9 @@
     <string name="settings_keep_hint">События приходят сразу, но в шторке висит значок и батарея тратится быстрее</string>
     <string name="settings_system_notifications">Уведомления в системе</string>
     <string name="settings_system_notifications_hint">Каналы, звук, показ на экране блокировки</string>
-    <string name="settings_battery">Без ограничений батареи</string>
-    <string name="settings_battery_hint">Чтобы система не останавливала фоновую работу</string>
+    <string name="settings_battery">Оптимизация батареи</string>
+    <string name="settings_battery_on">Включена: пока телефон спит, система может закрыть постоянное подключение</string>
+    <string name="settings_battery_off">Выключена: подключение держится и во сне телефона, а батарея тратится быстрее</string>
     <string name="settings_tailscale">Встроенный Tailscale</string>
     <string name="settings_tailscale_absent">Не входит в эту сборку.</string>
     <string name="settings_tailnet_state">Состояние: %1$s</string>
