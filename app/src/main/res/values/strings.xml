@@ -21,6 +21,8 @@
     <string name="notify_replying">Hermes is replying…</string>
     <string name="notify_model_error">model error</string>
     <string name="notify_approval_title">Allow the command?</string>
+    <string name="notify_approval_tool_title">Allow %1$s?</string>
+    <string name="notify_approval_mcp_title">Confirm the MCP server action?</string>
     <string name="notify_waiting_title">The agent is waiting for an answer</string>
     <string name="notify_waiting_text">Open the chat to answer</string>
     <string name="chat_describe_image">What is in this image?</string>
@@ -229,6 +231,8 @@
     <string name="chat_choice_always">Allow always</string>
     <string name="chat_choice_deny">Deny</string>
     <string name="chat_approval_title">The agent asks for permission</string>
+    <string name="chat_approval_tool_title">The agent wants to use %1$s</string>
+    <string name="chat_approval_mcp_title">An MCP server asks to confirm</string>
     <string name="chat_clarify_title">The agent has a question</string>
     <string name="chat_own_answer">Your own answer</string>
     <string name="chat_answer">Answer</string>

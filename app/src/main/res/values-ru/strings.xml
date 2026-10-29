@@ -21,6 +21,8 @@
     <string name="notify_replying">Hermes отвечает…</string>
     <string name="notify_model_error">ошибка модели</string>
     <string name="notify_approval_title">Разрешить команду?</string>
+    <string name="notify_approval_tool_title">Разрешить %1$s?</string>
+    <string name="notify_approval_mcp_title">Подтвердить действие MCP-сервера?</string>
     <string name="notify_waiting_title">Агент ждёт ответа</string>
     <string name="notify_waiting_text">Откройте чат, чтобы ответить</string>
     <string name="chat_describe_image">Что на этом изображении?</string>
@@ -229,6 +231,8 @@
     <string name="chat_choice_always">Разрешить всегда</string>
     <string name="chat_choice_deny">Отклонить</string>
     <string name="chat_approval_title">Агент просит разрешения</string>
+    <string name="chat_approval_tool_title">Агент хочет вызвать %1$s</string>
+    <string name="chat_approval_mcp_title">MCP-сервер просит подтверждения</string>
     <string name="chat_clarify_title">Агент уточняет</string>
     <string name="chat_own_answer">Свой ответ</string>
     <string name="chat_answer">Ответить</string>

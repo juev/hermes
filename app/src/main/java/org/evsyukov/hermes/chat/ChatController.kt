@@ -46,7 +46,13 @@ class LocalAttachment(val name: String, val mime: String?, val bytes: ByteArray)
 sealed interface Prompt {
     val request: ServerRequest
 
-    data class Approval(override val request: ServerRequest, val command: String, val description: String, val choices: List<String>) : Prompt
+    data class Approval(
+        override val request: ServerRequest,
+        val kind: ApprovalKind,
+        val command: String,
+        val description: String,
+        val choices: List<String>,
+    ) : Prompt
     data class Clarify(override val request: ServerRequest, val questions: List<Question>) : Prompt
     data class Secret(override val request: ServerRequest, val title: String, val sudo: Boolean) : Prompt
 
@@ -729,12 +735,7 @@ class ChatController(
         if (live == null || sessionId != live) return
         val params = request.params
         val prompt = when (request.method) {
-            "approval" -> Prompt.Approval(
-                request,
-                command = params.string("command").orEmpty(),
-                description = params.string("description") ?: params.string("tool_name").orEmpty(),
-                choices = (params["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: listOf("once", "deny"),
-            )
+            "approval" -> approvalOf(request)
             "clarify" -> Prompt.Clarify(
                 request,
                 (params["questions"] as? JsonArray)?.mapNotNull { q ->
