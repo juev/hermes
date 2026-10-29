@@ -177,6 +177,9 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
         /** A message the user sent while the agent worked; `display_content` holds their words. */
         private const val STEER = "steer"
 
+        /** Openings of what the server told the model on its own: a finished process, subagents, a nudge. */
+        private val OLD_NOTICES = listOf("[IMPORTANT: Background process ", "[ASYNC DELEGATION BATCH COMPLETE", "[System: ")
+
         fun summary(obj: JsonObject, idKey: String = "id"): ChatSummary? {
             val id = obj.string(idKey) ?: obj.string("id") ?: return null
             val started = obj.double("started_at") ?: obj.double("session_started") ?: 0.0
@@ -237,16 +240,19 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
             // A user row of another kind is what the server told the model on its own: a finished
             // background process, results of subagents, a notice. The user did not write it.
             val toModel = role == "user" && kind != null && kind != STEER
+            // Older servers wrote the same notices without a kind; only their opening tells them apart.
+            val shown = obj.string("display_content") ?: text
+            val oldNotice = role == "user" && kind == null && OLD_NOTICES.any { shown.startsWith(it) }
             return StoredMessage(
                 rowId = obj.long("id") ?: 0,
                 role = role,
-                text = obj.string("display_content") ?: text,
+                text = shown,
                 reasoning = obj.string("reasoning") ?: obj.string("reasoning_content"),
                 toolCalls = calls,
                 toolName = obj.string("tool_name"),
                 toolCallId = obj.string("tool_call_id"),
                 timestamp = obj.double("timestamp") ?: 0.0,
-                hidden = kind == "hidden" || toModel || obj.bool("_compressed_summary") == true,
+                hidden = kind == "hidden" || toModel || oldNotice || obj.bool("_compressed_summary") == true,
                 images = images,
             )
         }

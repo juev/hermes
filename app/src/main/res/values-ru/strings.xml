@@ -249,6 +249,8 @@
     <string name="chat_refuse">Отказать</string>
     <string name="chat_models_failed">Список моделей не загрузился: %1$s</string>
     <string name="chat_edit">Изменить</string>
+    <string name="chat_cron_run">Запуск cron</string>
+    <string name="chat_cron_report">Задача cron</string>
     <string name="chat_retry">Повторить</string>
     <string name="chat_stopped">Остановлено</string>
     <string name="chat_read_aloud">Прочитать вслух</string>

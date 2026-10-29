@@ -249,6 +249,8 @@
     <string name="chat_refuse">Refuse</string>
     <string name="chat_models_failed">Couldn\'t load the model list: %1$s</string>
     <string name="chat_edit">Edit</string>
+    <string name="chat_cron_run">Cron run</string>
+    <string name="chat_cron_report">Cron job</string>
     <string name="chat_retry">Try again</string>
     <string name="chat_stopped">Stopped</string>
     <string name="chat_read_aloud">Read aloud</string>
