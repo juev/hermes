@@ -97,14 +97,18 @@ class ConnectionDropStressTest {
                 } finally {
                     chat.close()
                     socket.stop()
+                    // The upgrade of the dropped connection is still closing; a server closed over it
+                    // gives up on the queue and would fail a round for nothing.
+                    kotlinx.coroutines.delay(100)
                 }
             } catch (e: TimeoutCancellationException) {
                 val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat")).joinToString("\n") { "${it.tag}: ${it.msg}" }
                 throw AssertionError("Round $round of $rounds timed out: $step\nCalls the gateway got: ${gateway.methods()}\n$log", e)
             } finally {
-                server.close()
+                runCatching { server.close() }
                 db.close()
             }
+            if (round % 10 == 0) println("stress: round $round of $rounds passed")
         }
     }
 
