@@ -18,6 +18,10 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   and cron runs in a section of their own. Search uses the server's full-text index.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
+- Hermes is in the Android share sheet. A link, text, pictures or files shared from another app
+  open in a new chat of the active server: the text in the field, the files as attachments. Three
+  buttons above the field send it at once: Summarize, Find related, Create a task; the agent picks
+  the connected service for the result. A message of one's own can go instead.
 - When the agent needs an integration, a card under its answer connects it: accounts through
   Nous (sign-in in the browser, several accounts of one service by name), MCP servers with the
   keys they ask for, and plugins and skills of the catalog with their source, scan and advanced

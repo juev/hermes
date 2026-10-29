@@ -103,7 +103,7 @@ fun Composer(
 
     fun add(uris: List<Uri>) {
         scope.launch {
-            val picked = withContext(Dispatchers.IO) { uris.mapNotNull { read(context, it) } }
+            val picked = withContext(Dispatchers.IO) { uris.mapNotNull { readAttachment(context, it) } }
             if (picked.size < uris.size) onError(resources.getString(R.string.composer_file_too_big))
             onAttachments(attachments + picked)
         }
@@ -265,8 +265,8 @@ private fun PendingAttachment(attachment: LocalAttachment, onOpen: () -> Unit, o
     }
 }
 
-/** Reads a picked file whole; the gateway takes attachments as base64 inside one frame. */
-private fun read(context: Context, uri: Uri): LocalAttachment? {
+/** Reads a picked or shared file whole; the gateway takes attachments as base64 inside one frame. */
+internal fun readAttachment(context: Context, uri: Uri): LocalAttachment? {
     val resolver = context.contentResolver
     var name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
     var size = -1L

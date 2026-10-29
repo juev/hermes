@@ -212,6 +212,8 @@ private fun MainScreen(vm: MainViewModel) {
                 loadModels = { c.session.admin.modelOptions() },
                 transcribe = { audio, mime -> c.session.chat.transcribe(audio, mime) },
                 openLocal = { attachment -> vm.openLocalFile(container.attachments.put(attachment.name, attachment.bytes), attachment.name, attachment.mime) },
+                shared = vm.shared.collectAsState().value,
+                onSharedTaken = vm::sharedTaken,
             )
         }
     }

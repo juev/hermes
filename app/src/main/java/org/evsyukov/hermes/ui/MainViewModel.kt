@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
@@ -39,6 +41,7 @@ import org.evsyukov.hermes.data.server.parseServerLink
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
+import org.evsyukov.hermes.ui.chat.Shared
 import org.evsyukov.hermes.ui.viewer.ViewerFile
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -351,6 +354,26 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         current?.close()
         _chat.value = controller(connection, null)
         stack.clear()
+    }
+
+    private val _shared = MutableStateFlow<Shared?>(null)
+
+    /** A share from another app, waiting for the empty new chat to take it into its field. */
+    val shared: StateFlow<Shared?> = _shared.asStateFlow()
+
+    /** Opens a new chat for a share; [read] takes the files of the sharing app, off the main thread. */
+    fun share(read: () -> Shared?) {
+        newChat()
+        stack.clear()
+        viewModelScope.launch {
+            val shared = withContext(Dispatchers.IO) { read() } ?: return@launch
+            if (shared.skipped > 0) _notice.value = container.strings.get(R.string.share_skipped)
+            if (shared.text.isNotEmpty() || shared.attachments.isNotEmpty()) _shared.value = shared
+        }
+    }
+
+    fun sharedTaken() {
+        _shared.value = null
     }
 
     private fun controller(connection: Connection, id: String?): ChatController {

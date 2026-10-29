@@ -213,6 +213,13 @@
     <string name="chat_edit_title">Edit message</string>
     <string name="chat_empty_title">How can I help?</string>
     <string name="composer_file_too_big">Files over 25 MB are not attached</string>
+    <string name="share_summarize">Summarize</string>
+    <string name="share_summarize_prompt">Summarize this.</string>
+    <string name="share_related">Find related</string>
+    <string name="share_related_prompt">Find what relates to this in my notes, chats and connected services.</string>
+    <string name="share_task">Create a task</string>
+    <string name="share_task_prompt">Create a task from this in the service that fits best among those connected, and give me the link.</string>
+    <string name="share_skipped">Some files were not attached: they are over 25 MB or cannot be read</string>
     <string name="composer_no_mic">Dictation does not work without microphone access</string>
     <string name="composer_not_recognized">Not recognized: %1$s</string>
     <string name="composer_listening">Speak…</string>
