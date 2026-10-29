@@ -64,6 +64,23 @@ class PushTest(unittest.TestCase):
         self.assertTrue(store.unsubscribe("https://e/1", root=self.root))
         self.assertEqual(store.subscriptions(self.root), [])
 
+    def test_a_phone_back_with_a_new_endpoint_replaces_its_old_ones(self):
+        # Made before the app sent the id of the device: two of this phone, one of another.
+        store.subscribe("https://e/1", "k1", "a1", "CPH2747", root=self.root)
+        store.subscribe("https://e/2", "k2", "a2", "CPH2747", root=self.root)
+        store.subscribe("https://e/3", "k3", "a3", "Pixel 9", root=self.root)
+        store.subscribe("https://e/4", "k4", "a4", "CPH2747", device="d1", root=self.root)
+        self.assertEqual([s["endpoint"] for s in store.subscriptions(self.root)], ["https://e/3", "https://e/4"])
+        # Same model, another phone: both stay. The first phone after a reinstall: only its new one.
+        store.subscribe("https://e/5", "k5", "a5", "CPH2747", device="d2", root=self.root)
+        store.subscribe("https://e/6", "k6", "a6", "CPH2747", device="d1", root=self.root)
+        self.assertEqual([s["endpoint"] for s in store.subscriptions(self.root)], ["https://e/3", "https://e/5", "https://e/6"])
+
+    def test_without_the_id_of_the_device_only_the_endpoint_is_replaced(self):
+        store.subscribe("https://e/1", "k1", "a1", "CPH2747", root=self.root)
+        store.subscribe("https://e/2", "k2", "a2", "CPH2747", root=self.root)
+        self.assertEqual([s["endpoint"] for s in store.subscriptions(self.root)], ["https://e/1", "https://e/2"])
+
     def test_the_key_is_made_once_and_kept(self):
         self.assertIsNone(store.vapid(self.root))
         first = store.vapid(self.root, create=True).public_key

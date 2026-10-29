@@ -17,6 +17,18 @@ platform `subagent`, and the turn of the chat that started them sends the push.
   `DELETE /subscriptions`, `POST /test`.
 - Data: `<HERMES_HOME>/plugin-data/hermes-push/` with `vapid.pem` and `subscriptions.json`.
 
+## One subscription per phone
+
+The plugin drops a subscription when the push server answers 404 or 410. ntfy does not: it
+takes a post to an `up*` topic that nobody reads. A phone that lost its endpoint, after a
+reinstall or cleared data, would leave the old one behind and get every push twice.
+
+So `POST /subscriptions` takes `device`, a stable id of the phone (Android's `ANDROID_ID`,
+which a reinstall keeps), and the new subscription replaces the older ones of the same
+`device`. Subscriptions made before the app sent it carry no `device` and are replaced by the
+same `name`, the model of the phone. A request without `device` replaces only the subscription
+with the same endpoint.
+
 ## Install
 
 1. Put the directory at `<HERMES_HOME>/plugins/hermes-push` (or mount it there read-only).
