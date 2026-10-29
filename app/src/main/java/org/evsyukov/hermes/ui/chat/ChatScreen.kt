@@ -218,6 +218,10 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) },
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
+                    // The sent message waits for the start of the answer, e.g. while the socket connects.
+                    if (state.running && state.items.lastOrNull() is ChatItem.User) {
+                        item(key = "pending") { PendingReply(if (state.connecting) stringResource(R.string.chat_connecting) else state.status) }
+                    }
                     itemsIndexed(reversed, key = { _, item -> item.key }) { index, item ->
                         when (item) {
                             is ChatItem.User -> UserBubble(item, last = reversed.indexOfFirst { it is ChatItem.User } == index, actions = actions)

@@ -28,6 +28,7 @@
     <string name="error_send_failed">Сообщение не отправлено</string>
     <string name="error_failed">Не получилось</string>
     <string name="chat_thinking">Думает…</string>
+    <string name="chat_connecting">Подключение к серверу…</string>
     <string name="chat_model_expensive">Модель дорогая. Переключить?</string>
     <string name="chat_sudo_password">Пароль sudo для: %1$s</string>
     <string name="chat_secret_value">Значение %1$s</string>

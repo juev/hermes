@@ -375,6 +375,12 @@ private fun MediaCard(path: String, actions: MessageActions) {
     }
 }
 
+/** The answer that has not begun yet: the typing dot and what the app waits for. */
+@Composable
+fun PendingReply(status: String?) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) { TypingDot(status) }
+}
+
 @Composable
 private fun TypingDot(status: String?) {
     val transition = rememberInfiniteTransition(label = "typing")
