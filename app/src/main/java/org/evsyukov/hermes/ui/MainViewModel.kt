@@ -26,8 +26,11 @@ import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatMutations
+import org.evsyukov.hermes.chat.withLocalPins
 import org.evsyukov.hermes.data.auth.CallbackPageText
+import org.evsyukov.hermes.data.remote.ChatApi
 import org.evsyukov.hermes.data.remote.ChatSummary
+import org.evsyukov.hermes.data.remote.HermesException
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
 import org.evsyukov.hermes.data.server.ProxySettings
@@ -55,6 +58,13 @@ enum class ListMode(val archived: Boolean, val sources: String?, val excludeSour
     CHATS(false, null, "cron"),
     ARCHIVE(true, null, null),
     CRON(false, "cron", null),
+    ;
+
+    /** Whether [chat] belongs to this list, as the server filters it. */
+    fun admits(chat: ChatSummary): Boolean =
+        chat.archived == archived &&
+            (sources == null || chat.source in sources.split(',')) &&
+            (excludeSources == null || chat.source !in excludeSources.split(','))
 }
 
 data class SidebarState(
@@ -250,12 +260,32 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             _sidebar.update { it.copy(loading = true, error = null) }
             try {
                 val mode = _sidebar.value.mode
-                val page = connection.session.chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                _sidebar.update { it.copy(chats = page.chats, total = page.total, loading = false) }
+                val chat = connection.session.chat
+                val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+                val chats = withPins(connection, chat, page.chats, mode, forgetGone = true)
+                _sidebar.update { it.copy(chats = chats, total = page.total, loading = false) }
                 listedByServer = true
             } catch (e: Exception) {
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
                 _sidebar.update { it.copy(loading = false, error = e.message) }
+            }
+        }
+    }
+
+    /**
+     * [chats] with the chats pinned on the phone, those beyond the page included. A pinned chat the
+     * server no longer has leaves the pins when [forgetGone]; the copy on the phone cannot tell that.
+     */
+    private suspend fun withPins(connection: Connection, api: ChatApi, chats: List<ChatSummary>, mode: ListMode, forgetGone: Boolean): List<ChatSummary> {
+        val server = connection.session.profile.id
+        return withLocalPins(chats, container.pins.of(server), mode::admits) { id ->
+            try {
+                api.get(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (forgetGone && e is HermesException && e.status == 404) container.pins.set(server, id, false)
+                null
             }
         }
     }
@@ -268,7 +298,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             val page = runCatching {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
-            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = page.chats, total = page.total) else it }
+            val chats = withPins(connection, cached, page.chats, mode, forgetGone = false)
+            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total) else it }
         }
     }
 
@@ -281,6 +312,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             try {
                 val mode = state.mode
                 val page = connection.session.chat.list(offset = state.chats.size, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+                // The first page already brought every pinned chat, so the ones met again are left out.
                 _sidebar.update { s -> s.copy(chats = (s.chats + page.chats).distinctBy { it.id }, total = page.total, loading = false) }
             } catch (e: Exception) {
                 _sidebar.update { it.copy(loading = false, error = e.message) }
@@ -357,7 +389,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         val connection = container.connection.value ?: return
         viewModelScope.launch {
             try {
-                action(ChatMutations(connection.session.chat, connection.socket, container.turns::liveOf))
+                val server = connection.session.profile.id
+                action(ChatMutations(connection.session.chat, connection.socket, container.turns::liveOf) { chat, pinned -> container.pins.set(server, chat, pinned) })
                 if (_chat.value?.state?.value?.storedId == id) _chat.value?.reload()
             } catch (e: Exception) {
                 Log.w(TAG, "Change of chat $id failed", e)
