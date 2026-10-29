@@ -1,6 +1,8 @@
 package org.evsyukov.hermes.push
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.provider.Settings
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -57,7 +59,8 @@ class PushApi(private val http: HermesHttp) {
         if (e.status == 404) null else throw e
     }
 
-    suspend fun subscribe(endpoint: String, p256dh: String, auth: String, name: String) {
+    /** [device] stays the same across reinstalls, so the server drops the endpoints this phone has lost. */
+    suspend fun subscribe(endpoint: String, p256dh: String, auth: String, name: String, device: String) {
         http.postJson(
             "api/plugins/hermes-push/subscriptions",
             buildJsonObject {
@@ -65,6 +68,7 @@ class PushApi(private val http: HermesHttp) {
                 put("p256dh", p256dh)
                 put("auth", auth)
                 put("name", name)
+                put("device", device)
             },
         )
     }
@@ -154,7 +158,7 @@ class PushManager(
         }
         val previous = context.pushStore.data.first()[endpointKey(instance)]
         val state = try {
-            PushApi(current.http).subscribe(endpoint, p256dh, auth, android.os.Build.MODEL)
+            PushApi(current.http).subscribe(endpoint, p256dh, auth, android.os.Build.MODEL, deviceId())
             if (previous != null && previous != endpoint) runCatching { PushApi(current.http).unsubscribe(previous) }
             context.pushStore.edit { it[endpointKey(instance)] = endpoint }
             PushState.ON
@@ -196,6 +200,10 @@ class PushManager(
     }
 
     private fun endpointKey(instance: String) = stringPreferencesKey("endpoint:$instance")
+
+    /** ANDROID_ID: one per signing key and user of the phone, kept across reinstalls and cleared data. */
+    @SuppressLint("HardwareIds")
+    private fun deviceId(): String = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
 
     private companion object {
         const val TAG = "HermesPush"
