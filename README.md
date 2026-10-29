@@ -106,7 +106,9 @@ those of the Maven libraries; both appear under Settings → Licenses. A library
 but Apache-2.0 fails the build until its copyright notice is added in `app/aboutlibraries/licenses`.
 A release is signed from `HERMES_KEYSTORE`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_KEY_ALIAS` and
 `HERMES_KEY_PASSWORD`. A tag `v1.2.3` makes CI build the signed APK and publish it as a release;
-a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release.
+a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release. The version code comes from the tag:
+`v1.2.3-rc4` gives 1020304 and `v1.2.3` gives 1020399, above all of its candidates, so an updater
+sees every release as new. A tag of any other shape fails the build.
 
 ## Known limits
 

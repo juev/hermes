@@ -17,10 +17,16 @@ android {
         applicationId = "org.evsyukov.hermes"
         minSdk = 31
         targetSdk = 37
-        // A release takes its version from the tag: `-Phermes.version=1.2.3` gives the code 10203.
+        // A release takes its version from the tag. Every tag gives a new code and the final
+        // release a code above its candidates: `1.2.3-rc4` gives 1020304, `1.2.3` gives 1020399.
+        // A version of any other shape fails the build.
         val version = providers.gradleProperty("hermes.version").orElse("0.1.0").get()
-        val (major, minor, patch) = version.substringBefore("-").split(".").map { it.toInt() }
-        versionCode = major * 10_000 + minor * 100 + patch
+        val match = Regex("""(\d+)\.(\d{1,2})\.(\d{1,2})(?:-rc(\d{1,2}))?""").matchEntire(version)
+            ?: error("hermes.version $version is neither 1.2.3 nor 1.2.3-rcN")
+        val (major, minor, patch, rc) = match.destructured
+        require(rc.isEmpty() || rc.toInt() in 1..98) { "hermes.version $version: rc must be 1 to 98" }
+        val candidate = if (rc.isEmpty()) 99 else rc.toInt()
+        versionCode = ((major.toInt() * 100 + minor.toInt()) * 100 + patch.toInt()) * 100 + candidate
         versionName = version
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
