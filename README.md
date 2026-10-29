@@ -8,7 +8,10 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
 
 - Chats stream over the dashboard's JSON-RPC socket (`/api/ws`): Markdown, reasoning, tool runs
   folded into one line, files the agent delivers (`MEDIA:` lines), approvals and questions of
-  the agent.
+  the agent. Answers, reasoning and the prose tools return (subagent summaries, skills, pages)
+  render as Markdown; terminal output and diffs stay as printed. What the server writes to the
+  model on its own, such as a finished background process, is not shown. Notifications carry
+  the text without Markdown syntax.
 - The drawer lists chats by date and source (Telegram, Matrix), with pinned chats, the archive
   and cron runs in a section of their own. Search uses the server's full-text index.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
