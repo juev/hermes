@@ -24,6 +24,7 @@ import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.RpcException
 import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.server.ServerSession
@@ -56,6 +57,8 @@ data class ChatState(
     val error: String? = null,
     val model: String? = null,
     val status: String? = null,
+    /** A message waits for the socket to connect. */
+    val connecting: Boolean = false,
     /** An expensive model waits for a yes: provider, model and the server's warning. */
     val modelConfirm: Triple<String, String, String>? = null,
 )
@@ -147,7 +150,8 @@ class ChatController(
         }
     }
 
-    private suspend fun ensureLive(): String {
+    /** Joins the live session; [starting] a turn, the chat stays running whatever the session was doing. */
+    private suspend fun ensureLive(starting: Boolean = false): String {
         liveId?.let { return it }
         val stored = _state.value.storedId
         val result = if (stored == null) {
@@ -178,7 +182,7 @@ class ChatController(
         liveId = live
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
-        val running = result.bool("running") ?: info?.bool("running") ?: false
+        val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
         _state.update { it.copy(storedId = storedId ?: it.storedId, running = running, model = info?.string("model") ?: it.model) }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
@@ -191,12 +195,12 @@ class ChatController(
     }
 
     /** Runs [block] on the live session; a session the server dropped is joined again once. */
-    private suspend fun <T> withLive(block: suspend (String) -> T): T = try {
-        block(ensureLive())
+    private suspend fun <T> withLive(starting: Boolean = false, block: suspend (String) -> T): T = try {
+        block(ensureLive(starting))
     } catch (e: RpcException) {
         if (!e.sessionGone()) throw e
         liveId = null
-        block(ensureLive())
+        block(ensureLive(starting))
     }
 
     fun send(text: String, attachments: List<LocalAttachment>) {
@@ -207,9 +211,15 @@ class ChatController(
         val started = System.currentTimeMillis().also { sentAt = it }
         scope.launch {
             try {
-                socket.awaitReady()
+                // A message sent before the socket is up says so instead of waiting in silence.
+                if (socket.state.value != SocketState.READY) _state.update { it.copy(connecting = true) }
+                try {
+                    socket.awaitReady()
+                } finally {
+                    _state.update { it.copy(connecting = false) }
+                }
                 val socketMillis = System.currentTimeMillis() - started
-                withLive { live ->
+                withLive(starting = true) { live ->
                     val sessionMillis = System.currentTimeMillis() - started
                     hold.live(live)
                     val refs = attachments.mapNotNull { attach(live, it) }
