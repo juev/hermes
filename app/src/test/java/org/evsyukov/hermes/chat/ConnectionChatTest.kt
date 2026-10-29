@@ -8,6 +8,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -42,6 +43,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
@@ -94,6 +96,17 @@ class ConnectionChatTest {
         var call = gateway.calls.receive()
         while (call.first != method) call = gateway.calls.receive()
         call.second
+    }
+
+    /** Runs a step that waits; its timeout fails with the step's name, the calls the gateway got and the log of the socket. */
+    private suspend fun <T> step(name: String, block: suspend () -> T): T {
+        val started = System.currentTimeMillis()
+        return try {
+            block()
+        } catch (e: TimeoutCancellationException) {
+            val log = ShadowLog.getLogsForTag("HermesSocket").joinToString("\n") { it.msg }
+            throw AssertionError("Timed out after ${System.currentTimeMillis() - started} ms: $name\nCalls the gateway got: ${gateway.methods()}\n$log", e)
+        }
     }
 
     private suspend fun ChatController.target(name: String, state: TargetState) =
@@ -184,8 +197,9 @@ class ConnectionChatTest {
         next("session.resume")
         gateway.pending = false
         gateway.drop()
-        next("session.resume")
-        withTimeout(5_000) { chat.state.first { it.connections.single().settled } }
+        // The test fails on CI now and then and never locally (#56): a timeout names its step.
+        step("the chat joins its session again after the drop") { next("session.resume") }
+        step("the card settles once the session has it no longer") { withTimeout(5_000) { chat.state.first { it.connections.single().settled } } }
         chat.continueConnection("op1")
         delay(500)
         chat.close()

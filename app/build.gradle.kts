@@ -68,6 +68,8 @@ android {
         unitTests.all {
             // Robolectric sets up Android's shared memory through the JDK's internal access to file descriptors.
             it.jvmArgs("--add-exports", "java.base/jdk.internal.access=ALL-UNNAMED")
+            // A failure on CI shows its message and cause, not only the class of the exception.
+            it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         }
     }
 }
