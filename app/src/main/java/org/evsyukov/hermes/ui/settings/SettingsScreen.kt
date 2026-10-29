@@ -13,16 +13,20 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +39,7 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -42,6 +47,7 @@ import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.BuildConfig
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.settings.Settings
+import org.evsyukov.hermes.data.settings.cacheLimitOf
 import org.evsyukov.hermes.push.PushState
 import org.evsyukov.hermes.ui.admin.AdminScaffold
 import org.evsyukov.hermes.ui.admin.ClickRow
@@ -61,6 +67,11 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
     val settings by container.settings.current.collectAsState()
     val tailnet by container.tailnet.status.collectAsState()
     var cacheSize by remember { mutableLongStateOf(container.attachments.size()) }
+    var cacheTick by remember { mutableIntStateOf(0) }
+    var editLimit by remember { mutableStateOf(false) }
+    LaunchedEffect(cacheTick, settings.cacheLimitMb) {
+        cacheSize = container.attachments.size() + runCatching { container.responses.size() }.getOrDefault(0)
+    }
     var tailnetLogs by remember { mutableStateOf<String?>(null) }
 
     fun change(update: (Settings) -> Settings) = scope.launch { container.settings.update(update) }
@@ -171,9 +182,13 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             )
 
             SectionTitle(stringResource(R.string.settings_data))
+            ClickRow(stringResource(R.string.settings_cache_limit), stringResource(R.string.settings_cache_limit_hint, settings.cacheLimitMb), onClick = { editLimit = true })
             ClickRow(stringResource(R.string.settings_clear_cache), stringResource(R.string.settings_megabytes, cacheSize / 1_048_576.0), onClick = {
-                container.attachments.clear()
-                cacheSize = container.attachments.size()
+                scope.launch {
+                    container.attachments.clear()
+                    runCatching { container.responses.clear() }
+                    cacheTick++
+                }
             })
             ClickRow(stringResource(R.string.settings_sign_out), stringResource(R.string.settings_sign_out_hint), onClick = onSignOut)
 
@@ -183,6 +198,12 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             ClickRow(stringResource(R.string.settings_source), SOURCE_URL, onClick = { runCatching { browser.openUri(SOURCE_URL) } })
             ClickRow(stringResource(R.string.settings_licenses), stringResource(R.string.settings_licenses_hint), onClick = onLicenses)
             Spacer(Modifier.size(32.dp))
+        }
+    }
+    if (editLimit) {
+        CacheLimitDialog(settings.cacheLimitMb, onDismiss = { editLimit = false }) { mb ->
+            editLimit = false
+            change { it.copy(cacheLimitMb = mb) }
         }
     }
     tailnetLogs?.let { logs ->
@@ -200,6 +221,26 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             confirmButton = { TextButton(onClick = { tailnetLogs = null }) { Text(stringResource(R.string.common_close)) } },
         )
     }
+}
+
+/** Asks for the limit of the cache in megabytes; any whole number from zero up is accepted. */
+@Composable
+private fun CacheLimitDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) -> Unit) {
+    var text by remember { mutableStateOf(current.toString()) }
+    val parsed = cacheLimitOf(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_cache_limit)) },
+        text = {
+            OutlinedTextField(
+                text, { text = it }, singleLine = true, isError = parsed == null,
+                label = { Text(stringResource(R.string.settings_cache_limit_field)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+        },
+        confirmButton = { TextButton(onClick = { parsed?.let(onSave) }, enabled = parsed != null) { Text(stringResource(R.string.common_save)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
+    )
 }
 
 @Composable

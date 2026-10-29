@@ -138,7 +138,10 @@
     <string name="settings_token_renews">The token is valid until %1$s, then it renews itself.</string>
     <string name="settings_token_expires">The token is valid until %1$s, there is no refresh token: you will need to sign in again afterwards.</string>
     <string name="settings_data">Data</string>
-    <string name="settings_clear_cache">Clear attachment cache</string>
+    <string name="settings_cache_limit">Cache limit</string>
+    <string name="settings_cache_limit_hint">%1$d MB for chats and screens; the ones unused longest go first</string>
+    <string name="settings_cache_limit_field">Megabytes</string>
+    <string name="settings_clear_cache">Clear cache</string>
     <string name="settings_megabytes">%1$.1f MB</string>
     <string name="settings_sign_out">Sign out of the server</string>
     <string name="settings_sign_out_hint">This server\'s tokens will be removed from the phone</string>
