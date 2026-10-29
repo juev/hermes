@@ -47,6 +47,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.chat.ApprovalKind
 import org.evsyukov.hermes.chat.Prompt
 import org.evsyukov.hermes.data.remote.ModelChoices
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -74,9 +75,16 @@ fun PromptSheet(
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (prompt) {
                 is Prompt.Approval -> {
-                    Text(stringResource(R.string.chat_approval_title), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
+                    val title = when (val kind = prompt.kind) {
+                        ApprovalKind.Command -> stringResource(R.string.chat_approval_title)
+                        is ApprovalKind.Tool -> stringResource(R.string.chat_approval_tool_title, kind.name)
+                        ApprovalKind.Mcp -> stringResource(R.string.chat_approval_mcp_title)
+                    }
+                    Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
+                    // The server's question is prose, unlike a command.
+                    if (prompt.kind == ApprovalKind.Mcp && prompt.command.isNotBlank()) Text(prompt.command, color = colors.text)
                     if (prompt.description.isNotBlank()) Text(prompt.description, color = colors.secondaryText)
-                    if (prompt.command.isNotBlank()) {
+                    if (prompt.kind == ApprovalKind.Command && prompt.command.isNotBlank()) {
                         SelectionContainer {
                             Text(
                                 prompt.command,

@@ -14,11 +14,13 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.chat.ApprovalKind
+import org.evsyukov.hermes.chat.approvalOf
 import org.evsyukov.hermes.chat.connectionOf
+import org.evsyukov.hermes.chat.summary
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.ServerRequest
@@ -239,13 +241,15 @@ class TurnWatcher(
         if (inForeground) return
         val stored = chats[request.params.string("session_id") ?: return]
         when (request.method) {
-            "approval" -> notifications.request(
-                stored,
-                request.id,
-                context.getString(R.string.notify_approval_title),
-                request.params.string("command") ?: request.params.string("description").orEmpty(),
-                (request.params["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: listOf("once", "deny"),
-            )
+            "approval" -> {
+                val approval = approvalOf(request)
+                val title = when (val kind = approval.kind) {
+                    ApprovalKind.Command -> context.getString(R.string.notify_approval_title)
+                    is ApprovalKind.Tool -> context.getString(R.string.notify_approval_tool_title, kind.name)
+                    ApprovalKind.Mcp -> context.getString(R.string.notify_approval_mcp_title)
+                }
+                notifications.request(stored, request.id, title, approval.summary, approval.choices)
+            }
             "clarify", "sudo", "secret" -> notifications.request(
                 stored,
                 request.id,
