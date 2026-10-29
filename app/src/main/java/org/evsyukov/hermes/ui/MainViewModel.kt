@@ -343,7 +343,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         stack.clear()
     }
 
-    /** An empty chat, as the pencil button and the pull past the end give; it reaches the server with the first message. */
+    /** An empty chat, as the pencil button and the pull past the end give; the server lists it from the first message. */
     fun newChat() {
         val connection = container.connection.value ?: return
         val current = _chat.value

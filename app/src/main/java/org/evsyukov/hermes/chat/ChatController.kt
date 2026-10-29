@@ -4,12 +4,16 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -70,9 +74,10 @@ data class ChatState(
 }
 
 /**
- * One open chat. A new chat lives only in the app until its first message; the server session is
- * created then. An existing chat shows its stored history at once and joins the live session in
- * the background, so a turn that runs elsewhere keeps streaming here.
+ * One open chat. A new chat creates its server session while it is still empty, so the agent is built
+ * before the first message; the server keeps no chat for it until that message, and leaving the empty
+ * chat closes the session. An existing chat shows its stored history at once and joins the live
+ * session in the background, so a turn that runs elsewhere keeps streaming here.
  */
 class ChatController(
     private val session: ServerSession,
@@ -97,6 +102,15 @@ class ChatController(
 
     /** The model picked before the first message; the session is created with it. */
     private var draftModel: Pair<String, String>? = null
+
+    /** One join at a time, so a message sent while the draft is being created does not create a second session. */
+    private val joining = Mutex()
+
+    /** The answer of `session.create` for a new chat that has not been sent; guarded by [joining]. */
+    private var draft: JsonObject? = null
+
+    @Volatile
+    private var closed = false
     private val keys = AtomicLong()
     private val jobs = mutableListOf<Job>()
 
@@ -123,12 +137,54 @@ class ChatController(
                 }
             }
         }
-        if (storedId != null) reload()
+        if (storedId != null) {
+            reload()
+        } else {
+            // Waits for the socket rather than opening it: the app decides when it connects.
+            jobs += scope.launch { socket.state.collect { renewDraft() } }
+        }
     }
 
     fun close() {
+        closed = true
         jobs.forEach { it.cancel() }
+        scope.launch { renewDraft() }
     }
+
+    /**
+     * Creates the session of a new chat while it is empty, on a ready socket. The draft it replaces
+     * belongs to a lost connection, another model or a chat that is closed, so it is closed first.
+     */
+    private suspend fun renewDraft() = withContext(NonCancellable) {
+        joining.withLock {
+            val ready = socket.state.value == SocketState.READY
+            draft?.let { old ->
+                draft = null
+                // The server drops a session of a lost connection by itself.
+                if (ready) old.string("session_id")?.let { live -> runCatching { socket.call("session.close", buildJsonObject { put("session_id", live) }) } }
+            }
+            if (closed || !ready || liveId != null || _state.value.storedId != null) return@withLock
+            draft = try {
+                create()
+            } catch (e: Exception) {
+                // The first message creates the session then.
+                Log.w(TAG, "Draft session not created", e)
+                null
+            }
+        }
+    }
+
+    private suspend fun create() = socket.call(
+        "session.create",
+        buildJsonObject {
+            put("source", "android")
+            put("close_on_disconnect", false)
+            draftModel?.let { (provider, model) ->
+                put("provider", provider)
+                put("model", model)
+            }
+        },
+    ) as JsonObject
 
     /**
      * Reads the stored history, then joins the live session to pick up a turn in progress. A chat
@@ -166,19 +222,13 @@ class ChatController(
     /** Joins the live session; [starting] a turn, the chat stays running whatever the session was doing. */
     private suspend fun ensureLive(starting: Boolean = false): String {
         liveId?.let { return it }
+        return joining.withLock { liveId ?: join(starting) }
+    }
+
+    private suspend fun join(starting: Boolean): String {
         val stored = _state.value.storedId
         val result = if (stored == null) {
-            socket.call(
-                "session.create",
-                buildJsonObject {
-                    put("source", "android")
-                    put("close_on_disconnect", false)
-                    draftModel?.let { (provider, model) ->
-                        put("provider", provider)
-                        put("model", model)
-                    }
-                },
-            ) as JsonObject
+            draft?.also { draft = null } ?: create()
         } else {
             socket.call(
                 "session.resume",
@@ -361,6 +411,8 @@ class ChatController(
         if (liveId == null && _state.value.storedId == null) {
             draftModel = provider to model
             _state.update { it.copy(model = model) }
+            // The draft session was built for the model before; a new one is created with the pick.
+            jobs += scope.launch { renewDraft() }
             return
         }
         scope.launch {
