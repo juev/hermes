@@ -26,7 +26,8 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   answer arrives as a notification. Approvals can be answered from the notification.
 - Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
   ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
-  encrypted. Without them a periodic check, or an optional permanent connection, reports news.
+  encrypted. A self-hosted ntfy server works too; how to connect it is in
+  `server/hermes-push/README.md`. Without them a periodic check, or an optional permanent connection, reports news.
   While the permanent connection is on, Settings shows whether battery optimization is on for the
   app and opens the system list to change it. Push needs no exemption: the distributor holds the
   connection.
