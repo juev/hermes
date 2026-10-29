@@ -29,7 +29,7 @@ jobs:
       - name: Repeat the unit suite until one run fails
         run: |
           set -u
-echo "nproc: $(nproc)"
+          echo "nproc: $(nproc)"
           runs="${RUNS:-6}"
           for i in $(seq 1 "$runs"); do
             echo "=== run $i of $runs ==="
