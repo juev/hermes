@@ -93,7 +93,8 @@ a tag with a suffix, `v1.2.3-rc1`, becomes a pre-release.
   check (15 minutes at least); the dashboard has no push of its own.
 - On a plain `hermes dashboard` the REST session routes refuse sessions that live in the dashboard
   process, so the app renames, archives and deletes them over the socket. Pinning has no socket
-  method and may fail for such chats.
+  method, so such a chat is pinned on the phone only: other devices and the desktop do not see
+  that pin.
 - The dashboard in gateway mode (`session_authority`) is handled for the common calls only.
 
 ## License
