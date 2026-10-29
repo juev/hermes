@@ -70,6 +70,8 @@ enum class ListMode(val archived: Boolean, val sources: String?, val excludeSour
 data class SidebarState(
     val chats: List<ChatSummary> = emptyList(),
     val total: Int = 0,
+    /** How many chats the pages of the server brought: [chats] also holds those pinned on the phone. */
+    val listed: Int = 0,
     val loading: Boolean = false,
     val error: String? = null,
     val mode: ListMode = ListMode.CHATS,
@@ -263,7 +265,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 val chat = connection.session.chat
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 val chats = withPins(connection, chat, page.chats, mode, forgetGone = true)
-                _sidebar.update { it.copy(chats = chats, total = page.total, loading = false) }
+                _sidebar.update { it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) }
                 listedByServer = true
             } catch (e: Exception) {
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
@@ -299,21 +301,21 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
             val chats = withPins(connection, cached, page.chats, mode, forgetGone = false)
-            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total) else it }
+            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
         }
     }
 
     fun loadMoreChats() {
         val connection = container.connection.value ?: return
         val state = _sidebar.value
-        if (state.loading || state.chats.size >= state.total) return
+        if (state.loading || state.listed >= state.total) return
         viewModelScope.launch {
             _sidebar.update { it.copy(loading = true) }
             try {
                 val mode = state.mode
-                val page = connection.session.chat.list(offset = state.chats.size, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+                val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 // The first page already brought every pinned chat, so the ones met again are left out.
-                _sidebar.update { s -> s.copy(chats = (s.chats + page.chats).distinctBy { it.id }, total = page.total, loading = false) }
+                _sidebar.update { s -> s.copy(chats = (s.chats + page.chats).distinctBy { it.id }, total = page.total, listed = s.listed + page.chats.size, loading = false) }
             } catch (e: Exception) {
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
@@ -322,7 +324,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     fun showList(mode: ListMode) {
         if (_sidebar.value.mode == mode) return
-        _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0) }
+        _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0, listed = 0) }
         listedByServer = false
         container.connection.value?.let(::showCachedChats)
         refreshChats()
