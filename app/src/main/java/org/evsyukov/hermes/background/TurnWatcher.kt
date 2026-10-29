@@ -18,9 +18,11 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.chat.connectionOf
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
 import java.util.concurrent.ConcurrentHashMap
 
@@ -209,6 +211,14 @@ class TurnWatcher(
                 settle()
             }
             "request.cancel" -> event.payload.string("id")?.let(notifications::cancelRequest)
+            "connection.request" -> {
+                if (inForeground) return
+                val connection = connectionOf(event.payload) ?: return
+                val services = connection.targets.joinToString(", ") { it.catalog?.display ?: it.name }.ifEmpty { context.getString(R.string.connect_title_directory) }
+                notifications.connection(chats[live], connection.opId, services)
+            }
+            // A settled operation waits for nobody.
+            "connection.update" -> if (event.payload.bool("settled") == true) event.payload.string("op_id")?.let(notifications::cancelRequest)
         }
     }
 

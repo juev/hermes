@@ -2,7 +2,9 @@ package org.evsyukov.hermes.ui.chat
 
 import android.content.ClipData
 import android.content.Intent
+import android.net.Uri
 import android.speech.tts.TextToSpeech
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -71,6 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import org.evsyukov.hermes.R
 import java.io.File
 import java.util.Locale
@@ -79,6 +82,7 @@ import kotlinx.coroutines.launch
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LocalAttachment
+import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.data.remote.ModelChoices
 import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.settings.Settings
@@ -155,6 +159,33 @@ fun ChatScreen(
         controller.send(text, attachments)
         draft = ""
         attachments = emptyList()
+    }
+
+    // The server gives the phone no link back from the browser; coming back to the app is the sign.
+    LifecycleResumeEffect(controller) {
+        controller.browserReturned()
+        onPauseOrDispose {}
+    }
+    fun openUrl(url: String) = CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url))
+    val connectionActions = ConnectionActions(
+        answer = controller::answerConnection,
+        proceed = controller::continueConnection,
+        retry = controller::retryConnection,
+        reinstall = controller::reinstallPlugin,
+        openLink = { opId, name, url ->
+            controller.linkOpened(opId, name)
+            openUrl(url)
+        },
+        directory = controller::connectorDirectory,
+        connectApp = controller::connectApp,
+        openUrl = ::openUrl,
+    )
+    // A card stands under the answer whose tool opened it; one whose answer is not in the chat stands at the end.
+    val cardsOf = remember(state.items, state.connections) {
+        val owners = state.items.filterIsInstance<ChatItem.Assistant>().flatMap { item ->
+            item.parts.filterIsInstance<Part.Tool>().map { it.run.id to item.key }
+        }.toMap()
+        state.connections.groupBy { owners[it.toolCallId] }
     }
 
     val actions = MessageActions(
@@ -234,10 +265,18 @@ fun ChatScreen(
                     if (state.awaitingAnswer) {
                         item(key = "pending") { PendingReply(if (state.connecting) stringResource(R.string.chat_connecting) else state.status) }
                     }
+                    cardsOf[null]?.asReversed()?.forEach { connection ->
+                        item(key = "connection:${connection.opId}") {
+                            Column(Modifier.padding(horizontal = 16.dp)) { ConnectionCard(connection, connectionActions) }
+                        }
+                    }
                     itemsIndexed(reversed, key = { _, item -> item.key }) { index, item ->
                         when (item) {
                             is ChatItem.User -> UserBubble(item, last = reversed.indexOfFirst { it is ChatItem.User } == index, actions = actions)
-                            is ChatItem.Assistant -> AssistantMessage(item, last = index == 0, showReasoning = settings.showReasoning, status = state.status, actions = actions)
+                            is ChatItem.Assistant -> AssistantMessage(
+                                item, last = index == 0, showReasoning = settings.showReasoning, status = state.status, actions = actions,
+                                connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,
+                            )
                         }
                     }
                 }

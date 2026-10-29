@@ -18,6 +18,12 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   and cron runs in a section of their own. Search uses the server's full-text index.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
+- When the agent needs an integration, a card under its answer connects it: accounts through
+  Nous (sign-in in the browser, several accounts of one service by name), MCP servers with the
+  keys they ask for, and plugins and skills of the catalog with their source, scan and advanced
+  choices. The server gives the phone no link back from the browser, so the app asks the server
+  to check the account when the user returns to it. A card that waits while the app is in the
+  background raises a notification.
 - Dictation goes to the speech-to-text provider configured in Hermes.
 - The server section shows status and changes the gateway, model, `config.yaml` (by schema or as
   raw YAML), `.env` secrets, cron jobs, skills, toolsets, MCP servers and channels, and shows logs
