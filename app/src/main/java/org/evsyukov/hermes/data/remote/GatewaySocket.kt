@@ -226,7 +226,7 @@ class GatewaySocket(
                 // Without a sign-in no attempt can succeed; the next start tries again.
                 if (e is SignInRequiredException || (e as? HermesException)?.status == 401) giveUp(number)
             }
-            if (!finish(number)) return
+            if (!finish(number, gate)) return
             withTimeoutOrNull(pause) { wakeup.receive() }
             pause = (pause * 2).coerceAtMost(30_000L)
         }
@@ -260,13 +260,16 @@ class GatewaySocket(
      * behind, e.g. one still waiting for `client.capabilities`, announce no ready and start no
      * heartbeat. False when a stop has cleared up already or the socket gave up.
      */
-    private fun finish(number: Long): Boolean {
+    private fun finish(number: Long, gate: CompletableDeferred<Unit>): Boolean {
         val (more, lost) = synchronized(this) {
             if (attempt != number) return false
             attempt++
             socket?.cancel()
             heartbeat?.cancel()
-            readyGate = CompletableDeferred()
+            // A socket that gave up keeps the failed gate of its last attempt until the next start, so a
+            // caller that looks only now, e.g. one whose start ran the whole attempt, fails with the
+            // reason at once instead of waiting for a connection nobody opens.
+            readyGate = if (wanted) CompletableDeferred() else gate
             _state.value = SocketState.DISCONNECTED
             // The loop ends here, so the next start must begin another one.
             if (!wanted) connector = null

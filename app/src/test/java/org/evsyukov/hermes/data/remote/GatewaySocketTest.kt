@@ -306,6 +306,21 @@ class GatewaySocketTest {
         assertThat(gateway.sockets).hasSize(1)
     }
 
+    @Test
+    fun `a caller learns the sign-in is over also when the loop gave up before it looked`() = runBlocking {
+        var tokens: Tokens? = Tokens("expired", expiresAt = 1)
+        val strings = AppStrings(ApplicationProvider.getApplicationContext<Application>().resources)
+        val http = HermesHttp(server.url("/"), OkHttpClient(), tokens = { tokens }, saveTokens = { tokens = it }, strings = strings)
+        // The loop runs inside the start and gives up before the caller reads the gate, the way a busy
+        // caller thread lets it.
+        val socket = GatewaySocket(http, CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), strings).also { this@GatewaySocketTest.socket = it }
+
+        val failed = runCatching { withTimeout(2_000) { socket.awaitReady() } }
+
+        assertThat(failed.exceptionOrNull()).isInstanceOf(SignInRequiredException::class.java)
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
     /** Ready, and done with the calls that follow the gateway's ready, so no late answer counts as a pong. */
     private suspend fun settled(socket: GatewaySocket) {
         socket.awaitReady()
