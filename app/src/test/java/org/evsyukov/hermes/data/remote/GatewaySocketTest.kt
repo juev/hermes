@@ -24,6 +24,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.data.auth.Tokens
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -58,9 +59,14 @@ class GatewaySocketTest {
         server.close()
     }
 
-    private fun socket(firstPause: Long = 1_000, probeMillis: Long = 500): GatewaySocket {
+    private fun socket(
+        firstPause: Long = 1_000,
+        probeMillis: Long = 500,
+        tokens: suspend () -> Tokens? = { null },
+        saveTokens: suspend (Tokens?) -> Unit = {},
+    ): GatewaySocket {
         val strings = AppStrings(ApplicationProvider.getApplicationContext<Application>().resources)
-        val http = HermesHttp(server.url("/"), OkHttpClient(), tokens = { null }, saveTokens = {}, strings = strings)
+        val http = HermesHttp(server.url("/"), OkHttpClient(), tokens = tokens, saveTokens = saveTokens, strings = strings)
         return GatewaySocket(http, scope, strings, firstPause, probeMillis).also { socket = it }
     }
 
@@ -278,6 +284,26 @@ class GatewaySocketTest {
         } finally {
             threads.shutdownNow()
         }
+    }
+
+    @Test
+    fun `a socket whose sign-in is over stops trying until it is started again`() = runBlocking {
+        server.enqueue(upgrade())
+        // Run out, and nothing to refresh them with.
+        var tokens: Tokens? = Tokens("expired", expiresAt = 1)
+        val socket = socket(firstPause = 50, tokens = { tokens }, saveTokens = { tokens = it })
+
+        val failed = runCatching { socket.awaitReady() }
+        // Many pauses of the loop.
+        delay(500)
+
+        assertThat(failed.exceptionOrNull()).isInstanceOf(SignInRequiredException::class.java)
+        assertThat(server.requestCount).isEqualTo(0)
+        assertThat(socket.state.value).isEqualTo(SocketState.DISCONNECTED)
+
+        // The tokens are gone; this server lets the app in without them, and the next start connects.
+        socket.awaitReady()
+        assertThat(gateway.sockets).hasSize(1)
     }
 
     /** Ready, and done with the calls that follow the gateway's ready, so no late answer counts as a pong. */

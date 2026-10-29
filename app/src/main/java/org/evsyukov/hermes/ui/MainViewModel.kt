@@ -95,6 +95,24 @@ internal class OfflineRecovery(private val access: StateFlow<Access>, private va
     }
 }
 
+/**
+ * Finds out whether the app may chat with the server and opens the socket once it may. Tokens kept on
+ * the phone mostly still work, so with them the socket connects while the checks run, not after them,
+ * and the first message finds it ready; a sign-in that turns out to be over stops the socket again.
+ */
+internal suspend fun checkServer(
+    hasTokens: Boolean,
+    authRequired: suspend () -> Boolean,
+    signedIn: suspend () -> Boolean,
+    openSocket: () -> Unit,
+): Access {
+    if (hasTokens) openSocket()
+    val required = authRequired()
+    if (required && (!hasTokens || !signedIn())) return Access.SIGN_IN
+    openSocket()
+    return Access.OK
+}
+
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class MainViewModel(val container: AppContainer) : ViewModel() {
     val stack = mutableStateListOf<Screen>()
@@ -163,7 +181,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
-    /** Probes the server; a valid session opens the socket and loads the chats. */
+    /** Probes the server; a valid session keeps the socket open and loads the chats. */
     fun checkAccess() {
         val connection = container.connection.value ?: return
         accessJob?.cancel()
@@ -171,19 +189,11 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         val since = recovery.checkStarting()
         accessJob = viewModelScope.launch {
             try {
-                val info = connection.session.authInfo()
                 val hasTokens = container.servers.load().tokens[connection.session.profile.id] != null
-                if (info.required && !hasTokens) {
-                    _access.value = Access.SIGN_IN
-                    return@launch
-                }
-                if (info.required && !connection.session.probe()) {
-                    _access.value = Access.SIGN_IN
-                    return@launch
-                }
-                _access.value = Access.OK
+                val access = checkServer(hasTokens, { connection.session.authInfo().required }, connection.session::probe, connection.socket::start)
+                _access.value = access
+                if (access != Access.OK) return@launch
                 _accessError.value = null
-                connection.socket.start()
                 refreshChats()
                 container.scope.launch { runCatching { container.push.reconcile() } }
             } catch (e: CancellationException) {
