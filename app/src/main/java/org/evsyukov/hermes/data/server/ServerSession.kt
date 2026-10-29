@@ -22,6 +22,7 @@ import org.evsyukov.hermes.data.remote.HermesHttp
 import org.evsyukov.hermes.data.remote.HermesJson
 import org.evsyukov.hermes.data.remote.NetworkReads
 import org.evsyukov.hermes.data.remote.cacheKey
+import org.evsyukov.hermes.data.remote.consume
 import org.evsyukov.hermes.data.remote.await
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.errorOf
@@ -62,7 +63,7 @@ class ServerSession(
 
     suspend fun authInfo(): AuthInfo {
         val request = Request.Builder().url(http.endpoint("api/status").build()).build()
-        val status = client.newCall(request).await().use { response ->
+        val status = client.newCall(request).await().consume { response ->
             if (!response.isSuccessful) throw errorOf(response)
             HermesJson.parseToJsonElement(response.body.string()).jsonObject
         }
@@ -89,7 +90,7 @@ class ServerSession(
                     if (result.state != pkce.state) throw IOException(strings.get(R.string.error_sign_in_state))
                     val body = JsonObject(mapOf("code" to JsonPrimitive(result.code), "code_verifier" to JsonPrimitive(pkce.verifier)))
                     val request = Request.Builder().url(http.endpoint("auth/native/token").build()).post(body.toBody()).build()
-                    client.newCall(request).await().use { response ->
+                    client.newCall(request).await().consume { response ->
                         if (!response.isSuccessful) throw errorOf(response)
                         store.setTokens(profile.id, parseTokens(response.body.string()))
                     }

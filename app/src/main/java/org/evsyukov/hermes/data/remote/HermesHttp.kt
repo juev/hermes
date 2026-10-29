@@ -73,12 +73,12 @@ class HermesHttp(
         }
         val body = JsonObject(mapOf("refresh_token" to JsonPrimitive(current.refreshToken), "provider" to JsonPrimitive(current.provider)))
         val request = Request.Builder().url(endpoint("auth/native/refresh").build()).post(body.toBody()).build()
-        client.newCall(request).await().use { response ->
+        return client.newCall(request).await().consume { response ->
             when {
                 response.isSuccessful -> {
                     val fresh = parseTokens(response.body.string(), current)
                     saveTokens(fresh)
-                    return fresh
+                    fresh
                 }
                 response.code == 401 || response.code == 400 -> {
                     saveTokens(null)
@@ -130,7 +130,7 @@ class HermesHttp(
         url(withQuery(path, emptyMap())).delete(body?.toBody())
     }
 
-    suspend fun json(build: Request.Builder.() -> Unit): JsonElement = execute(build).use { response ->
+    suspend fun json(build: Request.Builder.() -> Unit): JsonElement = execute(build).consume { response ->
         if (!response.isSuccessful) throw errorOf(response)
         val text = response.body.string()
         if (text.isBlank()) JsonObject(emptyMap()) else HermesJson.parseToJsonElement(text)
