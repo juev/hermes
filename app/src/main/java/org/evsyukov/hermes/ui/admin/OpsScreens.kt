@@ -200,14 +200,12 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
     var tab by remember { mutableIntStateOf(0) }
     val skills = rememberCached(api) { it.skills() }
     val toolsets = rememberCached(api) { it.toolsets() }
-    val mcp = rememberCached(api) { it.mcpServers() }
     var skillText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var query by remember { mutableStateOf("") }
-    val resources = LocalResources.current
 
-    AdminScaffold(stringResource(R.string.admin_tools), onBack, skills.loading || toolsets.loading || mcp.loading, { skills.reload(); toolsets.reload(); mcp.reload() }, snackbar) {
+    AdminScaffold(stringResource(R.string.admin_tools), onBack, skills.loading || toolsets.loading, { skills.reload(); toolsets.reload() }, snackbar) {
         PrimaryTabRow(tab, containerColor = colors.background) {
-            listOf(stringResource(R.string.admin_tab_skills), stringResource(R.string.admin_tab_tools), "MCP").forEachIndexed { i, label -> Tab(tab == i, { tab = i }, text = { Text(label) }) }
+            listOf(stringResource(R.string.admin_tab_skills), stringResource(R.string.admin_tab_tools)).forEachIndexed { i, label -> Tab(tab == i, { tab = i }, text = { Text(label) }) }
         }
         if (tab == 0) {
             OutlinedTextField(query, { query = it }, placeholder = { Text(stringResource(R.string.common_search)) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(12.dp))
@@ -228,7 +226,7 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
                     }
                 }
             }
-            1 -> {
+            else -> {
                 ErrorText(toolsets.error)
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(toolsets.value.orEmpty(), key = { it.string("name").orEmpty() }) { set ->
@@ -242,32 +240,6 @@ fun ToolsScreen(api: AdminApi, onBack: () -> Unit) {
                         )
                         ClickRow(set.string("label") ?: name, sub.joinToString(" · "), onClick = {}) {
                             Switch(set.bool("enabled") == true, { on -> scope.attempt(snackbar) { api.toggleToolset(name, on); toolsets.reload() } })
-                        }
-                        HorizontalDivider(color = colors.divider)
-                    }
-                }
-            }
-            else -> {
-                ErrorText(mcp.error)
-                Text(stringResource(R.string.admin_mcp_hint), color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(mcp.value.orEmpty(), key = { it.string("name").orEmpty() }) { server ->
-                        val name = server.string("name").orEmpty()
-                        val tools = (server["tools"] as? JsonArray)?.size
-                        ClickRow(name, listOfNotNull(server.string("transport"), server.string("url") ?: server.string("command"), tools?.let { stringResource(R.string.admin_tools_count, it) }).joinToString(" · "), onClick = {
-                            scope.attempt(snackbar) {
-                                val result = api.testMcp(name)
-                                val count = (result["tools"] as? JsonArray)?.size ?: 0
-                                snackbar.showSnackbar(
-                                    if (result.bool("ok") == true) {
-                                        resources.getQuantityString(R.plurals.admin_mcp_works, count, name, count)
-                                    } else {
-                                        "$name: ${result.string("error") ?: resources.getString(R.string.admin_mcp_no_answer)}"
-                                    },
-                                )
-                            }
-                        }) {
-                            Switch(server.bool("enabled") != false, { on -> scope.attempt(snackbar) { api.toggleMcp(name, on); mcp.reload() } })
                         }
                         HorizontalDivider(color = colors.divider)
                     }
