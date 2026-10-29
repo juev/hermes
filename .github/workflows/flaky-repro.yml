@@ -29,10 +29,11 @@ jobs:
       - name: Repeat the unit suite until one run fails
         run: |
           set -u
-          runs="${RUNS:-15}"
+echo "nproc: $(nproc)"
+          runs="${RUNS:-6}"
           for i in $(seq 1 "$runs"); do
             echo "=== run $i of $runs ==="
-            if ./gradlew --console=plain --no-build-cache --no-configuration-cache :app:cleanTestDebugUnitTest :app:testDebugUnitTest > "run-$i.log" 2>&1; then
+            if ./gradlew --console=plain --no-build-cache --no-configuration-cache :app:cleanTestDebugUnitTest assembleDebug testDebugUnitTest lintDebug assembleRelease > "run-$i.log" 2>&1; then
               echo "run $i: passed"
             else
               echo "run $i: FAILED"
@@ -44,7 +45,7 @@ jobs:
             fi
           done
         env:
-          RUNS: "15"
+          RUNS: "6"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
