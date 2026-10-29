@@ -33,7 +33,7 @@ jobs:
           runs="${RUNS:-6}"
           for i in $(seq 1 "$runs"); do
             echo "=== run $i of $runs ==="
-            if ./gradlew --console=plain --no-build-cache --no-configuration-cache :app:cleanTestDebugUnitTest assembleDebug testDebugUnitTest lintDebug assembleRelease > "run-$i.log" 2>&1; then
+            if ./gradlew --console=plain --no-build-cache --no-configuration-cache :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests "*ConnectionDropStressTest*" > "run-$i.log" 2>&1; then
               echo "run $i: passed"
             else
               echo "run $i: FAILED"
@@ -45,7 +45,8 @@ jobs:
             fi
           done
         env:
-          RUNS: "6"
+          RUNS: "3"
+          STRESS_ROUNDS: "100"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
