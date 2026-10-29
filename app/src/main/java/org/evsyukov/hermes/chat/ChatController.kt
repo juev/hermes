@@ -140,6 +140,7 @@ class ChatController(
         // After a reconnect the old live id may be gone: join the session again.
         jobs += scope.launch {
             socket.ready.drop(1).collect {
+                Log.i(TAG, "ready again: liveId=$liveId storedId=${_state.value.storedId}")
                 if (liveId != null) {
                     liveId = null
                     reload()
@@ -201,15 +202,19 @@ class ChatController(
      */
     fun reload() {
         val id = _state.value.storedId ?: return
+        Log.i(TAG, "reload $id starts")
         _state.update { it.copy(loading = true, error = null) }
         scope.launch {
             if (_state.value.items.isEmpty()) showCached(id)
             try {
                 val summary = session.chat.get(id)
+                Log.i(TAG, "reload $id: summary read, active=${summary?.active}")
                 val history = transcriptOf(session.chat.messages(id))
                 _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
                 if (summary?.active == true) ensureLive()
+                Log.i(TAG, "reload $id: done, connections=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
             } catch (e: Exception) {
+                Log.w(TAG, "reload $id failed: $e", e)
                 _state.update { it.copy(loading = false, error = e.message) }
             }
         }
@@ -236,6 +241,7 @@ class ChatController(
 
     private suspend fun join(starting: Boolean): String {
         val stored = _state.value.storedId
+        Log.i(TAG, "join: stored=$stored")
         val result = if (stored == null) {
             draft?.also { draft = null } ?: create()
         } else {

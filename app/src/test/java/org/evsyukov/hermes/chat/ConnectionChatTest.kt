@@ -55,6 +55,9 @@ class ConnectionChatTest {
     private val gateway = ConnectingGateway()
     private val strings = AppStrings(context.resources)
 
+    /** What the failing step prints beside the socket log: the state of the chat under test. */
+    private var stateOf: (() -> String)? = null
+
     @Before
     fun setUp() {
         server.dispatcher = object : Dispatcher() {
@@ -104,8 +107,11 @@ class ConnectionChatTest {
         return try {
             block()
         } catch (e: TimeoutCancellationException) {
-            val log = ShadowLog.getLogsForTag("HermesSocket").joinToString("\n") { it.msg }
-            throw AssertionError("Timed out after ${System.currentTimeMillis() - started} ms: $name\nCalls the gateway got: ${gateway.methods()}\n$log", e)
+            val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat"))
+                .sortedBy { it.time }
+                .joinToString("\n") { "+${it.time - started} ms ${it.tag}: ${it.msg}" }
+            val state = runCatching { stateOf?.invoke() }.getOrNull()
+            throw AssertionError("Timed out after ${System.currentTimeMillis() - started} ms: $name\nChat state: $state\nCalls the gateway got: ${gateway.methods()}\n$log", e)
         }
     }
 
@@ -193,6 +199,7 @@ class ConnectionChatTest {
     @Test
     fun `a card the server closed while the socket was down takes no answers after the chat joins again`() = runBlocking<Unit> {
         val chat = openChat()
+        stateOf = { "live connections=${chat.state.value.connections.map { "${it.opId}:${it.settled}" } loading=${chat.state.value.loading} error=${chat.state.value.error} items=${chat.state.value.items.size}" }
 
         next("session.resume")
         gateway.pending = false
