@@ -22,7 +22,7 @@ class ResponseCacheTest {
         .allowMainThreadQueries()
         .build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var limit = 1_000L
+    private var limit: Long? = 1_000L
     private var clock = 0L
     private val cache = ResponseCache(db.responses(), scope, { limit }, { ++clock })
 
@@ -64,7 +64,25 @@ class ResponseCacheTest {
         assertThat(cache.read("home", "b")).isNull()
         assertThat(cache.read("home", "a")).isNotNull()
         assertThat(cache.read("home", "c")).isNotNull()
-        assertThat(cache.size()).isAtMost(limit)
+        assertThat(cache.size()).isAtMost(limit!!)
+    }
+
+    @Test
+    fun `an emoji on the border of two parts reads back whole`() = runBlocking {
+        limit = 10_000_000
+        val body = "x".repeat(256 * 1024 - 1) + "\uD83D\uDE00" + "y"
+        cache.write("home", "a", body)
+
+        assertThat(cache.read("home", "a")).isEqualTo(body)
+    }
+
+    @Test
+    fun `nothing is evicted while the limit is not read yet`() = runBlocking {
+        limit = null
+        cache.write("home", "a", "x".repeat(4_000))
+        cache.trim()
+
+        assertThat(cache.read("home", "a")).isNotNull()
     }
 
     @Test

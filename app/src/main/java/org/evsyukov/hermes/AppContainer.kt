@@ -57,7 +57,7 @@ class AppContainer(context: Context) {
     val servers = ServerStore(context, KeystoreTokenCipher(), scope)
     val tailnet = Tailnet(context, scope)
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
-    val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.current.value.cacheLimitMb * MEGABYTE })
+    val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })
 
     /**
      * Rebuilt when the active server, its address or its proxy changes; tokens alone do not
@@ -127,7 +127,7 @@ class AppContainer(context: Context) {
         }
         // A lowered limit evicts at once, not with the next write.
         scope.launch {
-            settings.current.map { it.cacheLimitMb }.distinctUntilChanged().collect { runCatching { responses.trim() } }
+            settings.cacheLimitMb.filterNotNull().distinctUntilChanged().collect { runCatching { responses.trim() } }
         }
         // The node runs only while the active server goes through it.
         scope.launch {

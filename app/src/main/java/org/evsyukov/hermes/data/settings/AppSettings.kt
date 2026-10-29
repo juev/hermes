@@ -70,6 +70,9 @@ class AppSettings(private val context: Context, scope: CoroutineScope) {
      */
     val keepConnected: StateFlow<Boolean?> = stored.map { it.keepConnected }.stateIn(scope, SharingStarted.Eagerly, null)
 
+    /** The cache limit as it is on disk; null until it is read, so the default cannot evict a larger cache. */
+    val cacheLimitMb: StateFlow<Int?> = stored.map { it.cacheLimitMb }.stateIn(scope, SharingStarted.Eagerly, null)
+
     suspend fun update(change: (Settings) -> Settings) {
         context.settingsStore.edit { prefs ->
             val next = change(current.value)
