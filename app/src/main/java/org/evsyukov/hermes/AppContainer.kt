@@ -3,6 +3,9 @@ package org.evsyukov.hermes
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -31,6 +35,7 @@ import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.files.AttachmentCache
 import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
@@ -99,6 +104,11 @@ class AppContainer(context: Context) {
         scope.launch {
             connection.keptOpen(settings.keepConnected.filterNotNull()).collect { it.socket.start() }
         }
+        // For the log: how long after the start of the process the first socket could take calls.
+        scope.launch {
+            connection.filterNotNull().flatMapLatest { it.socket.state }.first { it == SocketState.READY }
+            Log.i(TIMING_TAG, "Gateway ready ${SystemClock.uptimeMillis() - Process.getStartUptimeMillis()} ms after the app started")
+        }
         // A network that came back or changed is tried at once, not after the pause of the socket.
         context.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
@@ -139,6 +149,9 @@ class AppContainer(context: Context) {
 }
 
 private const val MEGABYTE = 1_048_576L
+
+/** The log tag of the timings of the connection and of the first reply. */
+const val TIMING_TAG = "HermesTiming"
 
 /** Each connection that must stay open: the current one whenever [keep] is on. */
 internal fun <T : Any> Flow<T?>.keptOpen(keep: Flow<Boolean>): Flow<T> =

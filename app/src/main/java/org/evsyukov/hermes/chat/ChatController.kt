@@ -18,6 +18,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.TIMING_TAG
 import org.evsyukov.hermes.background.TurnHold
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
@@ -89,6 +90,10 @@ class ChatController(
     private var draftModel: Pair<String, String>? = null
     private val keys = AtomicLong()
     private val jobs = mutableListOf<Job>()
+
+    /** When the last message was sent, for the log of its first reply; 0 once the reply came. */
+    @Volatile
+    private var sentAt = 0L
 
     init {
         jobs += scope.launch { socket.events.collect(::onEvent) }
@@ -199,9 +204,13 @@ class ChatController(
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
         _state.update { it.copy(items = it.items + ChatItem.User("local${keys.incrementAndGet()}", text, shown), running = true, error = null) }
         val hold = onTurnStart()
+        val started = System.currentTimeMillis().also { sentAt = it }
         scope.launch {
             try {
+                socket.awaitReady()
+                val socketMillis = System.currentTimeMillis() - started
                 withLive { live ->
+                    val sessionMillis = System.currentTimeMillis() - started
                     hold.live(live)
                     val refs = attachments.mapNotNull { attach(live, it) }
                     // The words first: the server titles the chat by the start of its first message.
@@ -211,6 +220,11 @@ class ChatController(
                     }
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
                     hold.submitted()
+                    Log.i(
+                        TIMING_TAG,
+                        "Sent: socket ready after $socketMillis ms, session after $sessionMillis ms, " +
+                            "prompt accepted after ${System.currentTimeMillis() - started} ms",
+                    )
                 }
             } catch (e: Exception) {
                 hold.release()
@@ -378,6 +392,17 @@ class ChatController(
             }
         }
         if (live == null || event.sessionId != live) return
+        val sent = sentAt
+        if (sent != 0L) {
+            when (event.type) {
+                "message.start" -> Log.i(TIMING_TAG, "Turn started ${System.currentTimeMillis() - sent} ms after sending")
+                "message.delta" -> {
+                    Log.i(TIMING_TAG, "First words of the reply ${System.currentTimeMillis() - sent} ms after sending")
+                    sentAt = 0L
+                }
+                "message.complete", "error" -> sentAt = 0L
+            }
+        }
         when (event.type) {
             "message.start" -> _state.update { it.copy(running = true, status = null) }
             "message.complete" -> _state.update { it.copy(running = false, status = null) }
