@@ -178,6 +178,22 @@ class ConnectionChatTest {
     }
 
     @Test
+    fun `a card the server closed while the socket was down takes no answers after the chat joins again`() = runBlocking<Unit> {
+        val chat = openChat()
+
+        next("session.resume")
+        gateway.pending = false
+        gateway.drop()
+        next("session.resume")
+        withTimeout(5_000) { chat.state.first { it.connections.single().settled } }
+        chat.continueConnection("op1")
+        delay(500)
+        chat.close()
+
+        assertThat(gateway.methods()).doesNotContain("connection.respond")
+    }
+
+    @Test
     fun `a request of another session opens no card here`() = runBlocking<Unit> {
         val chat = openChat()
 
@@ -207,7 +223,16 @@ private class ConnectingGateway : WebSocketListener() {
     @Volatile
     private var socket: WebSocket? = null
 
+    /** Whether a resumed session still has the card open. */
+    @Volatile
+    var pending = true
+
     fun methods(): List<String> = seen.toList()
+
+    /** The connection drops; the app connects again and the chat joins its session anew. */
+    fun drop() {
+        socket!!.close(1012, "restart")
+    }
 
     fun send(type: String, sessionId: String, payload: String) {
         socket!!.send("""{"jsonrpc":"2.0","method":"event","params":{"type":"$type","session_id":"$sessionId","payload":$payload}}""")
@@ -223,7 +248,9 @@ private class ConnectingGateway : WebSocketListener() {
         val id = frame["id"]?.jsonPrimitive?.content ?: return
         val method = frame["method"]?.jsonPrimitive?.content ?: return
         val result = when (method) {
-            "session.resume" -> """{"session_id":"live1","stored_session_id":"s1","running":true,"pending_connection":$REQUEST}"""
+            "session.resume" ->
+                if (pending) """{"session_id":"live1","stored_session_id":"s1","running":true,"pending_connection":$REQUEST}"""
+                else """{"session_id":"live1","stored_session_id":"s1","running":true}"""
             "connection.respond" -> """{"status":"ok","settled":false}"""
             "connectors.operation.wake" -> """{"status":"ok"}"""
             "connectors.operation.status" ->
