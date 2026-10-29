@@ -108,9 +108,8 @@ class ConnectionChatTest {
             block()
         } catch (e: TimeoutCancellationException) {
             val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat"))
-                .sortedBy { it.time }
-                .joinToString("\n") { "+${it.time - started} ms ${it.tag}: ${it.msg}" }
-            val state = runCatching { stateOf?.invoke() }.getOrNull()
+                .joinToString("\n") { "${it.tag}: ${it.msg}" }
+            val state: String? = try { stateOf?.invoke() } catch (e: Exception) { null }
             throw AssertionError("Timed out after ${System.currentTimeMillis() - started} ms: $name\nChat state: $state\nCalls the gateway got: ${gateway.methods()}\n$log", e)
         }
     }

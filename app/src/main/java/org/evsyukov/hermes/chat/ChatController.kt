@@ -140,7 +140,7 @@ class ChatController(
         // After a reconnect the old live id may be gone: join the session again.
         jobs += scope.launch {
             socket.ready.drop(1).collect {
-                Log.i(TAG, "ready again: liveId=$liveId storedId=${_state.value.storedId}")
+                Log.i(TAG, "${System.currentTimeMillis()} ready again: liveId=$liveId storedId=${_state.value.storedId}")
                 if (liveId != null) {
                     liveId = null
                     reload()
@@ -202,17 +202,17 @@ class ChatController(
      */
     fun reload() {
         val id = _state.value.storedId ?: return
-        Log.i(TAG, "reload $id starts")
+        Log.i(TAG, "${System.currentTimeMillis()} reload $id starts")
         _state.update { it.copy(loading = true, error = null) }
         scope.launch {
             if (_state.value.items.isEmpty()) showCached(id)
             try {
                 val summary = session.chat.get(id)
-                Log.i(TAG, "reload $id: summary read, active=${summary?.active}")
+                Log.i(TAG, "${System.currentTimeMillis()} reload $id: summary read, active=${summary?.active}")
                 val history = transcriptOf(session.chat.messages(id))
                 _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
                 if (summary?.active == true) ensureLive()
-                Log.i(TAG, "reload $id: done, connections=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
+                Log.i(TAG, "${System.currentTimeMillis()} reload $id: done, connections=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
             } catch (e: Exception) {
                 Log.w(TAG, "reload $id failed: $e", e)
                 _state.update { it.copy(loading = false, error = e.message) }
@@ -241,7 +241,7 @@ class ChatController(
 
     private suspend fun join(starting: Boolean): String {
         val stored = _state.value.storedId
-        Log.i(TAG, "join: stored=$stored")
+        Log.i(TAG, "${System.currentTimeMillis()} join: stored=$stored")
         val result = if (stored == null) {
             draft?.also { draft = null } ?: create()
         } else {
@@ -277,6 +277,7 @@ class ChatController(
         // A card left open while the chat was away comes back with the server's deadline; one the
         // server no longer has open ended while the socket was down and takes no answers.
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
+        Log.i(TAG, "${System.currentTimeMillis()} joined $live, pending=${pending?.opId}, settled=${_state.value.connections.map { "${it.opId}:${it.settled}" }}")
         _state.update { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
