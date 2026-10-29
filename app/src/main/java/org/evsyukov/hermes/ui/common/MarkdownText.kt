@@ -1,20 +1,28 @@
 package org.evsyukov.hermes.ui.common
 
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.coil3.Coil3ImageTransformerImpl
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeFence
+import com.mikepenz.markdown.compose.elements.MarkdownTable
+import com.mikepenz.markdown.compose.elements.MarkdownTableHeader
+import com.mikepenz.markdown.compose.elements.MarkdownTableRow
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.MarkdownTypography
+import com.mikepenz.markdown.model.markdownDimens
 import org.evsyukov.hermes.ui.theme.ChatTheme
+import org.intellij.markdown.ast.ASTNode
 
 /**
  * Markdown of a reply or of a `.md` file: tables, task lists, images and highlighted code.
@@ -34,12 +42,32 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, aside: Boolean = f
         ),
         typography = if (aside) asideTypography() else replyTypography(),
         modifier = modifier,
+        // A column narrower than this would hold a word or two per line, so a table that does not
+        // fit at this width scrolls sideways instead.
+        dimens = markdownDimens(tableCellWidth = 80.dp, tableCellPadding = 8.dp),
         imageTransformer = Coil3ImageTransformerImpl,
         // Code blocks get the bar with the language and a copy button.
         components = markdownComponents(
             codeBlock = { model -> MarkdownHighlightedCodeBlock(content = model.content, node = model.node, style = model.typography.code, showHeader = true) },
             codeFence = { model -> MarkdownHighlightedCodeFence(content = model.content, node = model.node, style = model.typography.code, showHeader = true) },
+            table = { model -> WrappedTable(model.content, model.node, model.typography.table) },
         ),
+    )
+}
+
+/** A table whose cells wrap their text; the library cuts every cell to one line. */
+@Composable
+private fun WrappedTable(content: String, node: ASTNode, style: TextStyle) {
+    MarkdownTable(
+        content = content,
+        node = node,
+        style = style,
+        headerBlock = { content, header, tableWidth, style ->
+            MarkdownTableHeader(content, header, tableWidth, style, verticalAlignment = Alignment.Top, maxLines = Int.MAX_VALUE, overflow = TextOverflow.Clip)
+        },
+        rowBlock = { content, row, tableWidth, style ->
+            MarkdownTableRow(content, row, tableWidth, style, verticalAlignment = Alignment.Top, maxLines = Int.MAX_VALUE, overflow = TextOverflow.Clip)
+        },
     )
 }
 
