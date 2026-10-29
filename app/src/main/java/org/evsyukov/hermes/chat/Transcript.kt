@@ -19,7 +19,9 @@ data class ToolRun(
     val done: Boolean,
     val failed: Boolean = false,
     val durationSeconds: Double? = null,
+    /** The server's one-line account, like "Did 3 searches in 2s". */
     val summary: String? = null,
+    val output: ToolOutput? = null,
 )
 
 /** A piece of an answer, in the order the agent produced it. */
@@ -126,7 +128,7 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
             "tool" -> {
                 val turn = current ?: continue
                 val parts = turn.parts.map { part ->
-                    if (part is Part.Tool && part.run.id == m.toolCallId) Part.Tool(part.run.copy(summary = m.text.take(2000))) else part
+                    if (part is Part.Tool && part.run.id == m.toolCallId) Part.Tool(part.run.copy(output = toolOutput(m.text))) else part
                 }
                 current = turn.copy(parts = parts)
             }
@@ -183,7 +185,8 @@ fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): Lis
                             part.run.copy(
                                 done = true,
                                 durationSeconds = payload.double("duration_s"),
-                                summary = payload.string("summary") ?: payload.string("result_text")?.take(2000),
+                                summary = payload.string("summary"),
+                                output = payload["result"]?.let(::toolOutput) ?: payload.string("result_text")?.let(::toolOutput),
                             ),
                         )
                     } else {
