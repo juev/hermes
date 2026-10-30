@@ -5,6 +5,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -198,6 +200,11 @@ class ChatController(
     /**
      * Reads the stored history, then joins the live session to pick up a turn in progress. A chat
      * opened afresh first shows the history the phone keeps, so it does not wait for the server.
+     *
+     * The head and the history are on their way together, and the session joins as soon as the chat
+     * is known to be active, so a reconnect does not wait for the transcript: a history that is slow
+     * or cannot be read takes nothing away from a live chat. What the chat already shows and the
+     * history does not have yet stays under it.
      */
     fun reload() {
         val id = _state.value.storedId ?: return
@@ -205,13 +212,44 @@ class ChatController(
         scope.launch {
             if (_state.value.items.isEmpty()) showCached(id)
             try {
-                val summary = session.chat.get(id)
-                val history = transcriptOf(session.chat.messages(id))
-                _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
-                if (summary?.active == true) ensureLive()
+                coroutineScope {
+                    val head = async { runCatching { session.chat.get(id) } }
+                    val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
+                    val summary = head.await().getOrNull()
+                    summary?.let { read ->
+                        _state.update { it.copy(title = read.title, model = read.model, usage = read.usage) }
+                    }
+                    // The join does not wait for the history: it is what makes the chat live again
+                    // after a reconnect, and a transcript that fails to come must not hold it back.
+                    val joinFailure = if (summary?.active == true) runCatching { ensureLive() }.exceptionOrNull() else null
+                    val read = history.await()
+                    if (read.isSuccess) {
+                        showHistory(read.getOrDefault(emptyList()))
+                    } else {
+                        _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                    }
+                    joinFailure?.let { throw it }
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message) }
             }
+        }
+    }
+
+    /**
+     * Puts [history] on the screen under what the chat got while it was on its way: a message the
+     * server has not stored yet, and an answer that streams whose turn the history does not end with.
+     */
+    private fun showHistory(history: List<ChatItem>) {
+        _state.update { state ->
+            val known = history.mapTo(HashSet()) { it.key }
+            val unstored = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
+            val streaming = state.items.lastOrNull()
+                ?.takeIf { it is ChatItem.Assistant && it.streaming && history.lastOrNull() !is ChatItem.Assistant }
+            val live = listOfNotNull(streaming) + unstored
+            state.copy(items = if (live.isEmpty()) history else history + live, loading = false)
         }
     }
 
