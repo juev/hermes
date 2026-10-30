@@ -68,6 +68,8 @@ class ConnectionDropStressTest {
         // One client, as in the app: a client per round would leave threads behind.
         val client = OkHttpClient()
         for (round in 1..rounds) {
+            // The log of a round alone: what a previous round said tells nothing about this one.
+            ShadowLog.clear()
             val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
             val server = MockWebServer()
             val gateway = StressGateway()
