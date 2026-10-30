@@ -79,7 +79,8 @@ class ConnectionChatTest {
         // and takes a fake gateway, so no test here waits for a socket that drops and comes back.
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
-                "/api/sessions/s1" -> json("""{"id":"s1","title":"Mail","is_active":true}""")
+                // The real detail route has no is_active; only the list and the live-session list know.
+                "/api/sessions/s1" -> json("""{"id":"s1","title":"Mail","last_active":123.0}""")
                 "/api/sessions/s1/messages" -> when {
                     historyFails -> MockResponse.Builder().code(500).build()
                     historyEndsWithUser -> json("""{"messages":[{"id":1,"role":"user","content":"send the report"}]}""")
@@ -287,6 +288,24 @@ class ConnectionChatTest {
     }
 
     @Test
+    fun `a chat whose detail has no is_active still joins its running session and gets its events`() = runBlocking<Unit> {
+        // openChat waits for the card of the running session: it is only there if the chat joined,
+        // which the detail alone cannot tell (it has no is_active).
+        val chat = openChat()
+
+        gateway.send("message.delta", "live1", """{"text":"half"}""")
+        val live = withTimeout(5_000) { chat.state.first { state -> state.items.any { it is ChatItem.Assistant && it.text.contains("half") } } }
+        gateway.send("message.complete", "live1", """{"text":"half","status":"complete"}""")
+        val done = withTimeout(5_000) {
+            chat.state.first { state -> !state.running && state.items.lastOrNull().let { it is ChatItem.Assistant && !it.streaming } }
+        }
+        chat.close()
+
+        assertThat(live.running).isTrue()
+        assertThat(done.running).isFalse()
+    }
+
+    @Test
     fun `a chat joins its session even when its history cannot be read`() = runBlocking<Unit> {
         historyFails = true
 
@@ -425,6 +444,7 @@ private class FakeGateway : GatewayChannel {
                 val card = if (pending) ""","pending_connection":$REQUEST""" else ""
                 """{"session_id":"live1","stored_session_id":"s1","running":$running$streamed$card}"""
             }
+            "session.active_list" -> """{"sessions":[{"id":"live1","session_key":"s1","status":"working"}]}"""
             "connection.respond" -> """{"status":"ok","settled":false}"""
             "connectors.operation.wake" -> """{"status":"ok"}"""
             "connectors.operation.status" -> STATUS
