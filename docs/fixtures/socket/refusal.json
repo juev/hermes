@@ -1,0 +1,12 @@
+{
+  "captured": "2026-10-30",
+  "server_version": "0.22.5",
+  "request": "GET /api/ws  with Connection: Upgrade, Upgrade: websocket, Sec-WebSocket-Version: 13, Sec-WebSocket-Key: <16 bytes base64>",
+  "status": 403,
+  "body": "",
+  "response_headers": {
+    "Content-Type": "text/plain",
+    "Content-Length": "0"
+  },
+  "note": "Seen three ways from this Mac over the tailnet: curl --http1.1 with the upgrade headers gives 403 and no body; curl over HTTP/2, which cannot upgrade, gives the REST 401 with its JSON body instead; URLSessionWebSocketTask gives NSURLErrorBadServerResponse with task.response.statusCode 403. So a client that probes the socket with a plain GET learns the wrong thing: only a real upgrade over HTTP/1.1 reaches the denial. The proxy adds its security headers to both answers, and the 403 carries no reason a client could read."
+}

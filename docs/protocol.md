@@ -49,9 +49,13 @@ a client happens to do as what the server does.
   `release_date` are display strings. `gateway_running`, `gateway_state`, `active_sessions`, `overall`
   and `components` are what a connect screen may show; `disk`, `memory`, `profiles`, `install_id` and the
   per-platform gateway state belong to admin screens (§4).
-- Without a token every route that needs one answers `401` with the same body, `/api/ws` included — it
-  answers before the socket is upgraded, and not with the `403` the first reading of the Android client
-  suggested. The body is in `docs/fixtures/api-status/unauthorized.json`:
+- Without a token every REST route that needs one answers `401` with the same body. The socket is the
+  exception: a real WebSocket handshake on `/api/ws` is refused with `403`, an empty body and no JSON to
+  read (`docs/fixtures/socket/refusal.json`). The same address without an upgrade gets the `401` of REST
+  instead — over HTTP/2 it always does, because HTTP/2 has no upgrade — so a client that probes the
+  socket with a plain GET learns the wrong thing. The first reading of the Android client was right
+  about the `403` and wrong about the reason: it is the handshake that is denied. The `401` body is in
+  `docs/fixtures/api-status/unauthorized.json`:
 
   ```json
   {"error": "unauthenticated", "detail": "Unauthorized", "reason": "no_cookie", "login_url": "/login"}
@@ -118,10 +122,10 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/server/` (`HttpClients.kt
 - The socket takes no header: `POST /api/auth/ws-ticket` with the bearer answers `{"ticket": "…"}`,
   the ticket lives 30 seconds and opens one socket (§5). A dashboard that needs no sign-in takes no
   ticket.
-- Without a token the REST routes and `/api/ws` alike answer `401` with the body of §1. A client reads
-  `reason` and, if it wants a browser instead of §3's flow, follows `login_url`. A socket the dashboard
-  refuses after the upgrade closes with the WebSocket code `4401` — that line is from the Android client
-  and was not yet reproduced.
+- Without a token the REST routes answer `401` with the body of §1; the socket handshake is refused with
+  `403` and an empty body instead (§5). A client reads `reason` and, if it wants a browser instead of
+  §3's flow, follows `login_url`. A socket the dashboard refuses after the upgrade closes with the
+  WebSocket code `4401` — that line is from the Android client and was not yet reproduced.
 - `Unknown —` what `expires_at` is when the identity provider gives no expiry (both clients read `0`
   as "no expiry"), whether a refresh token expires, and what an expired ticket on `/api/ws` answers
   besides the close code.
@@ -162,9 +166,13 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
 - Heartbeat: when `gateway.ready` says `heartbeat`, the client sends `gateway.ping` every 15 seconds
   with a 10 second timeout and treats 45 seconds without a frame as a lost connection. A gateway
   without the flag is not pinged.
-- `Unknown —` what an expired ticket answers on the handshake besides the close code (§3), and which
-  methods take a timeout of their own. The observation that would settle the second is a call that
-  outlives the client's default.
+- A handshake the dashboard will not accept — no ticket on a dashboard that wants one, an expired
+  ticket — is answered `403` with an empty body, before any JSON-RPC frame is exchanged. The client
+  cannot tell an expired ticket from a missing one by the answer; it fetches a fresh ticket and, when
+  the `403` comes back three times in a row, stops and says the sign-in is over.
+- `Unknown —` what an expired ticket answers exactly, as opposed to no ticket at all, and which methods
+  take a timeout of their own. The observation that would settle the second is a call that outlives the
+  client's default.
 
 Source, read on v0.22.5 and not yet reproduced against a live server:
 `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`GatewaySocket.kt`, `GatewayChannel.kt`).
