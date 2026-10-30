@@ -4,7 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.evsyukov.hermes.data.remote.ChatApi
-import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.GatewayChannel
 import org.evsyukov.hermes.data.remote.HermesException
 import org.evsyukov.hermes.data.remote.string
 
@@ -16,7 +16,7 @@ import org.evsyukov.hermes.data.remote.string
  */
 class ChatMutations(
     private val chat: ChatApi,
-    private val socket: GatewaySocket,
+    private val socket: GatewayChannel,
     private val liveOf: (String) -> String?,
     private val pinLocally: suspend (String, Boolean) -> Unit,
 ) {
