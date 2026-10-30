@@ -279,8 +279,17 @@ Source: `../app/src/main/java/org/evsyukov/hermes/chat/Approval.kt`,
   path the dashboard does not have answers `404 {"detail":"Path not found"}`, and a path it cannot read
   answers `400`. A client that opens the file in a browser instead of fetching it puts the token in the
   query, `?path=…&token=…`, as the Android client does — the header is what an app should use.
-- Uploading: `POST /api/files/upload-stream` takes a multipart body with `path`, `overwrite` and
-  `file`, and answers the path it wrote. Read from the Android client; not yet observed.
+- A file a person sends with a message does not go over HTTP: it goes into the live session, on the
+  socket. A picture is `image.attach_bytes {session_id, content_base64, filename}`, which puts it in
+  the vision queue of the next turn and needs nothing in the prompt; any other file is
+  `file.attach {session_id, data_url: "data:<mime>;base64,…", name}`, whose answer carries `ref_text` —
+  the line the prompt has to carry so the agent knows the file. Both take a long timeout (two minutes
+  in the Android client). Read from `../app/src/main/java/org/evsyukov/hermes/chat/ChatController.kt`
+  and not yet observed; attaching to a chat that a person is using would leave the file in that chat,
+  which is why it has not been tried.
+- `POST /api/files/upload-stream` is the other route: a multipart body with `path`, `overwrite` and
+  `file`, answering the path it wrote. The Android client has it and uses it outside a turn; whether a
+  chat client needs it is `Unknown —`.
 - Images: a row's `content` can carry parts of type `image_url` with a `data:` URL, and a user message
   names its pictures with `@image:` and its files with `@file:` lines, which the dashboard follows with
   the content it read in `--- Attached Context ---`. No such row appeared in the captures of
