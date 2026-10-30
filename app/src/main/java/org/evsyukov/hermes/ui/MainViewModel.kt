@@ -356,6 +356,21 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         stack.clear()
     }
 
+    /**
+     * The default model of new chats changed. An empty chat on the screen was started on the old
+     * default and its agent is already built, so it is started again: the next message uses the
+     * new model. A chat with messages keeps its own model, and the server gives an open chat that
+     * never picked one the new default at its next turn.
+     */
+    fun mainModelChanged() {
+        val current = _chat.value ?: return
+        val state = current.state.value
+        if (state.storedId != null || state.items.isNotEmpty()) return
+        val connection = container.connection.value ?: return
+        current.close()
+        _chat.value = controller(connection, null)
+    }
+
     private val _shared = MutableStateFlow<Shared?>(null)
 
     /** A share from another app, waiting for the empty new chat to take it into its field. */

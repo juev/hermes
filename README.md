@@ -32,7 +32,9 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
 - Dictation goes to the speech-to-text provider configured in Hermes.
 - The server section shows status and changes the gateway, model, `config.yaml` (by schema or as
   raw YAML), `.env` secrets, cron jobs, skills, toolsets and channels, and shows logs and usage.
-  Steps that break or delete something ask first.
+  Steps that break or delete something ask first. Choosing the default model saves it to
+  `config.yaml` and needs no gateway restart: a chat started afterwards uses it, and an open chat
+  that has not picked a model of its own takes it at its next turn.
 - Integrations, in the server section, list the accounts connected through Nous and the MCP
   servers. An account shows its state, the reason it failed and the tools of its service, marked
   as reading, changing or deleting data; it connects, reconnects and disconnects from the phone.

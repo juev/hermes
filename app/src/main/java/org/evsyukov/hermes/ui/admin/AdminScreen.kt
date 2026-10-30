@@ -65,11 +65,18 @@ enum class AdminSection(@StringRes val title: Int, @StringRes val hint: Int, val
 }
 
 @Composable
-fun AdminScreen(api: AdminApi, connectors: ConnectorsApi, section: AdminSection?, onOpen: (AdminSection) -> Unit, onBack: () -> Unit) {
+fun AdminScreen(
+    api: AdminApi,
+    connectors: ConnectorsApi,
+    section: AdminSection?,
+    onOpen: (AdminSection) -> Unit,
+    onBack: () -> Unit,
+    onMainModelChanged: () -> Unit = {},
+) {
     when (section) {
         null -> AdminHub(api, onOpen, onBack)
         AdminSection.OVERVIEW -> OverviewScreen(api, onBack)
-        AdminSection.MODEL -> ModelScreen(api, onBack)
+        AdminSection.MODEL -> ModelScreen(api, onBack, onMainModelChanged)
         AdminSection.CONFIG -> ConfigScreen(api, onBack)
         AdminSection.SECRETS -> SecretsScreen(api, onBack)
         AdminSection.CRON -> CronScreen(api, onBack)
