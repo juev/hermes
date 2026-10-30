@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -268,7 +269,13 @@ class ChatController(
                 // The session joins while the history is still on its way: the live id is what a
                 // message and a card need, and a transcript that is slow or fails must not hold
                 // the chat back. The answer is put on the screen below, under the history.
-                val joined = if (summary?.active == true) {
+                //
+                // The stored detail has no `is_active` (only the list does), so a chat running in
+                // the dashboard process is looked up in the gateway's live list: without that the
+                // chat would open on its history alone and the tools and answer of the running turn
+                // would never arrive.
+                val live = if (summary?.active == true) null else liveSession(id)
+                val joined = if (summary?.active == true || live != null) {
                     runCatching {
                         joining.withLock {
                             if (liveId != null) {
@@ -344,6 +351,22 @@ class ChatController(
         }
         val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
         return adopt(result, stored, starting, generation)
+    }
+
+    /**
+     * The live session of stored chat [id] from the gateway's process-local list, or null when this
+     * gateway does not host it. The socket is given a moment to come up; a chat opened offline
+     * waits for its history, not for the live list.
+     */
+    private suspend fun liveSession(id: String): JsonObject? {
+        val ready = socket.state.value == SocketState.READY || withTimeoutOrNull(3_000) { socket.awaitReady(); true } == true
+        if (!ready) return null
+        return runCatching {
+            val answer = socket.call("session.active_list", buildJsonObject { put("current_session_id", id) }, timeoutMillis = 10_000) as? JsonObject
+            (answer?.get("sessions") as? JsonArray)?.mapNotNull { it as? JsonObject }?.firstOrNull {
+                it.string("session_key") == id || it.string("id") == id
+            }
+        }.getOrNull()
     }
 
     /** Asks the server to join the session of [stored]; [adopt] puts the answer on the screen. */
