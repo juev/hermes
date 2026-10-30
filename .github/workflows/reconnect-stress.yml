@@ -1,0 +1,65 @@
+name: Reconnect stress
+
+# The drop and rejoin of a chat with a card left open (#56), many times over, on
+# the runner where the flaky test used to fail. Not on a push or a schedule: a
+# hundred rounds take about ten minutes, so it is asked for by hand when the
+# reconnect path changes or a flake is suspected again.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: How many times to repeat the run
+        default: "1"
+      rounds:
+        description: Rounds of the drop and rejoin in each run
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./scripts/build-tailnet.sh
+      - name: Repeat the stress test until one run fails
+        run: |
+          set -u
+          echo "nproc: $(nproc)"
+          for i in $(seq 1 "${RUNS}"); do
+            echo "=== run $i of $RUNS ==="
+            if ./gradlew --console=plain --no-build-cache --no-configuration-cache \
+                 :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests "*ConnectionDropStressTest*" \
+                 > "run-$i.log" 2>&1; then
+              echo "run $i: passed"
+            else
+              echo "run $i: FAILED"
+              grep -n -A6 "FAILED" "run-$i.log" | head -60
+              mkdir -p failed
+              cp "run-$i.log" failed/
+              cp -r app/build/test-results/testDebugUnitTest failed/ 2>/dev/null || true
+              break
+            fi
+          done
+        env:
+          RUNS: ${{ inputs.runs }}
+          STRESS_ROUNDS: ${{ inputs.rounds }}
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reconnect-stress
+          path: |
+            run-*.log
+            failed/
+          if-no-files-found: warn
