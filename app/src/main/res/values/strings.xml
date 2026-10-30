@@ -28,6 +28,7 @@
     <string name="chat_describe_image">What is in this image?</string>
     <string name="chat_look_files">Take a look at the files</string>
     <string name="error_send_failed">Message not sent</string>
+    <string name="error_send_unknown">Delivery not confirmed: the message may have reached the server. Check the chat before sending it again.</string>
     <string name="error_failed">Something went wrong</string>
     <string name="chat_thinking">Thinking…</string>
     <string name="chat_connecting">Connecting to the server…</string>
@@ -257,6 +258,9 @@
     <string name="chat_retry">Try again</string>
     <string name="chat_stopped">Stopped</string>
     <string name="chat_read_aloud">Read aloud</string>
+    <string name="chat_delivery_sending">Sending…</string>
+    <string name="chat_delivery_unknown">Delivery not confirmed — check before sending again</string>
+    <string name="chat_delivery_failed">Not sent</string>
     <string name="chat_regenerate">Answer again</string>
     <string name="chat_reasoning_live">Reasoning…</string>
     <string name="chat_reasoning">Reasoning</string>

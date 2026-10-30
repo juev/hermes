@@ -75,6 +75,7 @@ import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.ConnectionOp
+import org.evsyukov.hermes.chat.Delivery
 import org.evsyukov.hermes.chat.Invocation
 import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.chat.ToolRun
@@ -133,6 +134,20 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.common_share)) }, leadingIcon = { Icon(Icons.Outlined.Share, null) }, onClick = { menu = false; actions.share(item.text) })
                 }
             }
+        }
+        if (item.delivery != Delivery.SENT) {
+            Spacer(Modifier.size(4.dp))
+            val note = when (item.delivery) {
+                Delivery.SENDING -> R.string.chat_delivery_sending
+                Delivery.UNKNOWN -> R.string.chat_delivery_unknown
+                else -> R.string.chat_delivery_failed
+            }
+            Text(
+                stringResource(note),
+                color = if (item.delivery == Delivery.FAILED) colors.danger else colors.faintText,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(end = 4.dp),
+            )
         }
     }
 }

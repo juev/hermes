@@ -37,6 +37,9 @@ sealed interface Part {
     data class Tool(val run: ToolRun) : Part
 }
 
+/** How far a message of the user got; only a confirmed one needs no note under the bubble. */
+enum class Delivery { SENDING, SENT, UNKNOWN, FAILED }
+
 sealed interface ChatItem {
     val key: String
 
@@ -53,6 +56,11 @@ sealed interface ChatItem {
         val quote: String? = null,
         val invocation: Invocation? = null,
         val sent: String = text,
+        /**
+         * [Delivery.SENT] once the server took the prompt; [Delivery.UNKNOWN] when the answer was
+         * lost after it may have been sent, so the message is kept and no retry is made on its own.
+         */
+        val delivery: Delivery = Delivery.SENT,
     ) : ChatItem {
         /**
          * The message as it goes again under [key]: regenerate sends what the server got, with the
