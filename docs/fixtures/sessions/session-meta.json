@@ -1,0 +1,31 @@
+{
+  "message" : {
+    "absorbed_message_uids" : null,
+    "active" : 1,
+    "api_content" : null,
+    "codex_message_items" : null,
+    "codex_reasoning_items" : null,
+    "compacted" : 0,
+    "content" : null,
+    "display_kind" : null,
+    "display_metadata" : null,
+    "effect_disposition" : null,
+    "finish_reason" : null,
+    "id" : 5147,
+    "message_uid" : "<id>",
+    "observed" : 0,
+    "platform_message_id" : null,
+    "reasoning" : null,
+    "reasoning_content" : null,
+    "reasoning_details" : null,
+    "role" : "session_meta",
+    "session_id" : "<id>",
+    "timestamp" : 1792442116.8998439,
+    "token_count" : null,
+    "tool_call_id" : null,
+    "tool_call_uid" : null,
+    "tool_call_uids" : null,
+    "tool_calls" : null,
+    "tool_name" : null
+  }
+}
