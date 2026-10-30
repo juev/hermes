@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -69,6 +70,9 @@ class GatewaySocket(
     /** Emits after every (re)connection once the gateway said it is ready; carries `replay_epoch`. */
     private val _ready = MutableSharedFlow<String?>(replay = 1, extraBufferCapacity = 4)
     override val ready: SharedFlow<String?> = _ready.asSharedFlow()
+
+    private val _connections = MutableStateFlow(0)
+    override val connections: StateFlow<Int> = _connections.asStateFlow()
 
     @Volatile
     var sessionAuthority: Boolean = false
@@ -410,7 +414,10 @@ class GatewaySocket(
                 Log.w(TAG, "client.capabilities failed: ${e.message}")
             }
             if (pings) startHeartbeat(number, via)
-            if (current(number)) _ready.emit(epoch)
+            if (current(number)) {
+                _connections.update { it + 1 }
+                _ready.emit(epoch)
+            }
         }
     }
 

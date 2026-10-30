@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
@@ -237,6 +238,21 @@ class ConnectionChatTest {
     }
 
     @Test
+    fun `a connection whose ready the chat never heard still makes it join again`() = runBlocking<Unit> {
+        val chat = openChat()
+        // What the chat asked on the connection it started on is behind us; what comes next is the
+        // join of the connection it never heard.
+        while (gateway.calls.tryReceive().isSuccess) Unit
+
+        // The socket is up again, but its ready went out before the chat was listening: the one
+        // replayed value is that missed connection, and dropping the first ready dropped it.
+        gateway.connectedWithoutSaying()
+
+        step("the chat joins its session again after the connection it did not hear") { next("session.resume") }
+        chat.close()
+    }
+
+    @Test
     fun `a chat joins its session even when its history cannot be read`() = runBlocking<Unit> {
         historyFails = true
 
@@ -310,6 +326,10 @@ private class FakeGateway : GatewayChannel {
 
     override val ready: SharedFlow<String?> = _ready
 
+    private val _connections = MutableStateFlow(0)
+
+    override val connections: StateFlow<Int> = _connections
+
     val calls = Channel<Pair<String, JsonObject>>(Channel.UNLIMITED)
     private val seen = ConcurrentLinkedQueue<String>()
 
@@ -330,7 +350,17 @@ private class FakeGateway : GatewayChannel {
     /** The connection comes up, for the first time or again after a drop. */
     suspend fun connect(epoch: String = "epoch1") {
         _state.value = SocketState.READY
+        _connections.update { it + 1 }
         _ready.emit(epoch)
+    }
+
+    /**
+     * The connection came up again and no ready reached a collector, as when the chat had not started
+     * listening yet: only the count of connections tells that it happened.
+     */
+    fun connectedWithoutSaying() {
+        _state.value = SocketState.READY
+        _connections.update { it + 1 }
     }
 
     /** The connection is gone, as after the server closed it. */
