@@ -1,0 +1,38 @@
+{
+  "captured": "2026-10-30",
+  "server_version": "0.22.5",
+  "request": "GET /auth/native/authorize?code_challenge=…&code_challenge_method=S256&redirect_uri=<redirect>&state=…&provider=self-hosted",
+  "answers": [
+    {
+      "redirect_uri": "http://127.0.0.1:52341/callback",
+      "status": 302,
+      "location": "https://id.evsyukov.org/authorize?response_type=code&client_id=…&redirect_uri=https%3A%2F%2Fhermes.evsyukov.org%2Fauth%2Fcallback&scope=openid+profile+email&state=…&code_challenge=…&code_challenge_method=S256",
+      "note": "The dashboard sends the browser on to the identity provider and keeps the client's state and challenge. Its own /auth/callback is the OIDC redirect_uri, not the loopback one."
+    },
+    {
+      "redirect_uri": "https://example.test/callback",
+      "status": 400,
+      "body": { "detail": "native redirect_uri must be http:// on the loopback interface" }
+    },
+    {
+      "redirect_uri": "org.evsyukov.hermes://callback",
+      "status": 400,
+      "body": { "detail": "native redirect_uri must be http:// on the loopback interface" }
+    },
+    {
+      "redirect_uri": "http://localhost:52341/callback",
+      "status": 400,
+      "body": { "detail": "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)" }
+    }
+  ],
+  "cookie_on_authorize": "hermes_session_pkce",
+  "auth_callback_without_cookie": {
+    "status": 400,
+    "body": { "detail": "OAuth state mismatch (CSRF check failed)" }
+  },
+  "auth_callback_with_error": {
+    "request": "GET /auth/callback?error=access_denied&error_description=probe",
+    "status": 400,
+    "body": { "detail": "OAuth error from provider: access_denied (probe)" }
+  }
+}

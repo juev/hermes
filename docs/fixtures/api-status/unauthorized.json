@@ -1,0 +1,6 @@
+{
+  "error": "unauthenticated",
+  "detail": "Unauthorized",
+  "reason": "no_cookie",
+  "login_url": "/login"
+}

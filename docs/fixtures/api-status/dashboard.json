@@ -1,0 +1,115 @@
+{
+  "active_agents": 1,
+  "active_sessions": 0,
+  "auth_flows": [
+    "cookie",
+    "native_pkce"
+  ],
+  "auth_providers": [
+    "self-hosted"
+  ],
+  "auth_required": true,
+  "can_update_hermes": false,
+  "components": {
+    "dashboard": {
+      "last_error_at": null,
+      "recent_unhandled_errors": 0,
+      "selftest": "unknown",
+      "status": "ok"
+    },
+    "gateway": {
+      "state": "running",
+      "status": "ok"
+    },
+    "platforms": {
+      "configured": 3,
+      "connected": 3,
+      "status": "ok"
+    },
+    "storage": {
+      "status": "ok"
+    }
+  },
+  "config_version": 51,
+  "disk": {
+    "free_mb": 247154,
+    "pressure": "ok",
+    "total_mb": 442782,
+    "used_percent": 39.1
+  },
+  "gateway_busy": true,
+  "gateway_drainable": true,
+  "gateway_exit_reason": null,
+  "gateway_heartbeat_stale_s": null,
+  "gateway_mode": "single",
+  "gateway_platforms": {
+    "api_server": {
+      "error_code": null,
+      "error_message": null,
+      "listener_base": "http://127.0.0.1:8642",
+      "metrics": {
+        "active_runs": 0,
+        "host": "127.0.0.1",
+        "last_heartbeat": "2026-10-30T08:41:13.556874+00:00",
+        "last_request_at": null,
+        "metrics_today": {
+          "day": "2026-10-30",
+          "latency_p95_ms": null,
+          "messages": 0,
+          "requests": 0,
+          "tokens": 0
+        },
+        "port": 8642,
+        "stored_runs": 0
+      },
+      "needs_attention": false,
+      "retrying_since": null,
+      "state": "connected",
+      "updated_at": "2026-10-30T08:41:13.557840+00:00"
+    },
+    "matrix": {
+      "error_code": null,
+      "error_message": null,
+      "needs_attention": false,
+      "retrying_since": null,
+      "state": "connected",
+      "updated_at": "2026-10-29T13:30:18.544006+00:00"
+    },
+    "telegram": {
+      "error_code": null,
+      "error_message": null,
+      "needs_attention": false,
+      "retrying_since": null,
+      "state": "connected",
+      "updated_at": "2026-10-30T02:32:33.213432+00:00"
+    }
+  },
+  "gateway_running": true,
+  "gateway_shared_with": [],
+  "gateway_state": "running",
+  "gateway_updated_at": "2026-10-30T08:41:26.683325+00:00",
+  "install_id": "REDACTED",
+  "latest_config_version": 51,
+  "memory": {
+    "boot_id": "2026-10-29T13:30:04.457319+00:00",
+    "gateway_rss_mb": 557,
+    "last_boot_suspected_oom": false,
+    "last_boot_unclean": false,
+    "pressure": "ok",
+    "sampled_at": "2026-10-30T08:41:29.824662+00:00",
+    "swap_used_mb": 1625,
+    "system_available_mb": 23157,
+    "system_total_mb": 31886
+  },
+  "multiplex_standalone_reason": null,
+  "nous_session_valid": "unknown",
+  "overall": "ok",
+  "parked_profiles": [],
+  "profiles": [
+    "default"
+  ],
+  "release_date": "2026.9.24",
+  "restart_drain_timeout": 0.0,
+  "shared_profile_warning": false,
+  "version": "0.22.5"
+}
