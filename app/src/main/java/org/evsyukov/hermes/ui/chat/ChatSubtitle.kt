@@ -27,12 +27,12 @@ private const val SEPARATOR = " · "
 internal fun spentBesideModel(modelWidth: Int, spentWidth: Int, separatorWidth: Int, available: Int): Boolean =
     modelWidth + separatorWidth + spentWidth <= available
 
-/** What the chat spent, as the header prints it: 12.4 K in · 8.2 K out · $0.12. */
+/** What the chat spent, as the header prints it: Chat: 12.4 K in · 8.2 K out · $0.12. */
 @Composable
 internal fun usageText(usage: SessionUsage): String {
     val tokens = stringResource(R.string.chat_usage, tokenCount(usage.input), tokenCount(usage.output))
     val cost = usage.costUsd?.let(::dollars) ?: if (usage.included) stringResource(R.string.chat_usage_included) else null
-    return listOfNotNull(tokens, cost).joinToString(SEPARATOR)
+    return stringResource(R.string.chat_usage_scope, listOfNotNull(tokens, cost).joinToString(SEPARATOR))
 }
 
 /**
@@ -41,25 +41,30 @@ internal fun usageText(usage: SessionUsage): String {
  * Codex models have, then keeps every number readable instead of running off the screen. Each of
  * the two lines is one line at most, so a name too long even for its own line gives way, not the
  * numbers.
+ *
+ * The totals are the chat's, not the model's: the server keeps one running total for the session,
+ * and it keeps growing when the chat switches model. [pending] marks a model picked while a turn
+ * runs, which the server applies at the next turn.
  */
 @Composable
-internal fun ChatSubtitle(model: String?, usage: SessionUsage?, modifier: Modifier = Modifier) {
+internal fun ChatSubtitle(model: String?, usage: SessionUsage?, pending: Boolean = false, modifier: Modifier = Modifier) {
     if (model == null && usage == null) return
     val style = TextStyle(color = ChatTheme.colors.faintText, fontSize = 12.sp)
     val spent = usage?.let { usageText(it) }
+    val shownModel = model?.let { if (pending) it + SEPARATOR + stringResource(R.string.chat_model_next_turn) else it }
     val measurer = rememberTextMeasurer()
     BoxWithConstraints(modifier) {
-        val beside = model == null || spent == null || !constraints.hasBoundedWidth || spentBesideModel(
-            measurer.measure(model, style, maxLines = 1).size.width,
+        val beside = shownModel == null || spent == null || !constraints.hasBoundedWidth || spentBesideModel(
+            measurer.measure(shownModel, style, maxLines = 1).size.width,
             measurer.measure(spent, style, maxLines = 1).size.width,
             measurer.measure(SEPARATOR, style, maxLines = 1).size.width,
             constraints.maxWidth,
         )
         when {
-            model == null -> Line(spent.orEmpty(), style)
-            spent == null || beside -> Line(if (spent == null) model else model + SEPARATOR + spent, style)
+            shownModel == null -> Line(spent.orEmpty(), style)
+            spent == null || beside -> Line(if (spent == null) shownModel else shownModel + SEPARATOR + spent, style)
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Line(model, style)
+                Line(shownModel, style)
                 Line(spent, style)
             }
         }
