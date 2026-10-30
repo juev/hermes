@@ -166,6 +166,17 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
 - Heartbeat: when `gateway.ready` says `heartbeat`, the client sends `gateway.ping` every 15 seconds
   with a 10 second timeout and treats 45 seconds without a frame as a lost connection. A gateway
   without the flag is not pinged.
+- A chat is joined, not opened: `session.resume {session_id, close_on_disconnect, omit_messages,
+  inline_images}` answers with the live session under `session_id` — **not** the stored id the client
+  holds, which comes back as `session_key` — and with `running`, `status`, `info`, `inflight`,
+  `message_count`, `started_at` and `todo_state` beside it. Observed on v0.22.5 on 2026-10-30; the
+  answer's keys and the opening events are in `docs/fixtures/socket/resume.json`.
+- `running` arrives as `0` or `1`, not as a boolean. A client that reads only `true` sees every joined
+  chat as idle.
+- A prompt goes into the live session: `prompt.submit {session_id, text}`. A turn is ended with
+  `session.interrupt {session_id}`, and the live session is released with `session.close {session_id}`.
+- Events that follow a join are not all turn events: `session.info` and `platforms.changed` arrive
+  for the session itself and say what the chat is doing, not what the answer says.
 - A handshake the dashboard will not accept — no ticket on a dashboard that wants one, an expired
   ticket — is answered `403` with an empty body, before any JSON-RPC frame is exchanged. The client
   cannot tell an expired ticket from a missing one by the answer; it fetches a fresh ticket and, when
@@ -221,7 +232,14 @@ parameters a client sends; the shapes were observed on v0.22.5 against the dashb
   `tool_call_id` on a tool row. Reasoning comes twice, in `reasoning` and `reasoning_content`, with the
   same text. `display_kind` was seen as `steer` and `process_complete`; a `user` row with any other kind
   is what the dashboard wrote for the model and is not shown.
-- The events of a running turn and their order: assistant text, reasoning, tool calls and results.
+- The events of a running turn, as the Android client reads them: `message.start` opens the answer,
+  `message.delta {text}` and `message.interim {text, already_streamed}` grow it, `reasoning.delta
+  {text}` and `reasoning.available {text}` carry the model's reasoning, `tool.start {tool_id, name,
+  context, preview, args_text, args}` and `tool.complete {tool_id, duration_s, summary, result,
+  result_text}` open and close a tool run, and `message.complete {status, text, rendered, error,
+  failure_reason}` says how the turn ended. `status.update {text}` and `thinking.delta` are what the
+  chat shows while it waits, not part of the answer. These payloads are read from the client and were
+  not yet observed on a live turn.
 - How a tool run is identified and folded into a line, and why reasoning between two tool calls belongs
   to the group.
 - Usage and cost totals, cached input, and when they settle.
