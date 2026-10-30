@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -85,10 +86,7 @@ import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LocalAttachment
 import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.data.remote.ModelChoices
-import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.settings.Settings
-import org.evsyukov.hermes.ui.common.dollars
-import org.evsyukov.hermes.ui.common.tokenCount
 import org.evsyukov.hermes.ui.sidebar.RenameDialog
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
@@ -227,7 +225,7 @@ fun ChatScreen(
 
     Column(Modifier.fillMaxSize().background(colors.background).statusBarsPadding().imePadding()) {
         // The bar of the ChatGPT app: menu, the model in the middle, a new chat on the right.
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onMenu) { Icon(Icons.AutoMirrored.Outlined.Sort, stringResource(R.string.chat_chats), tint = colors.text) }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 Row(
@@ -241,16 +239,8 @@ fun ChatScreen(
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clickable(enabled = state.storedId != null) { renaming = true },
                         )
-                        // The model gives way to what the chat has spent when the line runs short.
-                        val spent = state.usage?.let { usageText(it) }
-                        if (state.model != null || spent != null) {
-                            Row {
-                                state.model?.let {
-                                    Text(it, color = colors.faintText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                                }
-                                spent?.let { Text(if (state.model != null) " · $it" else it, color = colors.faintText, fontSize = 12.sp, maxLines = 1) }
-                            }
-                        }
+                        // The model and what the chat has spent sit on one line, or the spent line moves under it.
+                        ChatSubtitle(state.model, state.usage)
                     }
                     Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
                 }
@@ -389,13 +379,6 @@ fun ChatScreen(
             dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
-}
-
-@Composable
-private fun usageText(usage: SessionUsage): String {
-    val tokens = stringResource(R.string.chat_usage, tokenCount(usage.input), tokenCount(usage.output))
-    val cost = usage.costUsd?.let(::dollars) ?: if (usage.included) stringResource(R.string.chat_usage_included) else null
-    return listOfNotNull(tokens, cost).joinToString(" · ")
 }
 
 @Composable
