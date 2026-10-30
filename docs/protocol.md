@@ -183,16 +183,41 @@ The observation that settles the join question is a reconnect whose previous joi
 
 ## 6. Sessions, the sidebar and search
 
-- Listing and paging, the sources a chat can come from, pinned and archived chats.
-- Search over the server's index.
-- Renaming, archiving and deleting over the socket where REST refuses; pinning when the server has no
-  method for it.
+- `GET /api/sessions` lists chats, newest activity first, as
+  `{limit, offset, total, storage, sessions}`. The parameters a client sends: `limit`, `offset`,
+  `order=recent`, `archived` (`exclude`, `only` or neither), `min_messages` — `1` hides the chats that
+  only hold a greeting — and `sources` / `exclude_sources`. Observed on v0.22.5 on 2026-10-30;
+  `docs/fixtures/sessions/list.json` is a capture of five.
+- A session object carries about seventy fields. The ones a sidebar needs: `id`, `title` (null until
+  the dashboard names the chat — the clients then show `preview`), `preview`, `source`, `model`,
+  `message_count`, `started_at`, `last_active`, `pinned`, `archived`, `is_active`, `unread`. A source is
+  what the chat came in through — `android`, `cron`, `matrix`, `telegram` were all in one capture.
+- Spending travels with the session, not with a turn: `input_tokens`, `output_tokens`,
+  `cache_read_tokens`, `cache_write_tokens`, `actual_cost_usd`, `estimated_cost_usd` and `cost_status`
+  (`included` when the plan bills by subscription, `estimated` when the dashboard priced it itself, and
+  a price of zero means it knows no price).
+- `GET /api/sessions/{id}/messages?limit=&order=oldest|latest&inline_images=false` answers
+  `{session_id, profile, pagination, messages}`; see §7 for a row.
+- `GET /api/sessions/search?q=&limit=` answers `{results: [{session_id, snippet, role, …}]}`, with the
+  session fields beside the snippet.
+- Flags arrive as SQLite wrote them: `true` and `1` both mean yes.
+- Search, renaming, archiving and deleting over the socket where REST refuses, and pinning when the
+  server has no method for it — still to fill, from the Android client.
 
-Source: `../app/src/main/java/org/evsyukov/hermes/chat/` (`ChatMutations.kt`, `LocalPins.kt`),
-`../app/src/main/java/org/evsyukov/hermes/ui/sidebar/`, `../app/src/main/java/org/evsyukov/hermes/ui/search/`.
+Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/ChatApi.kt` (`list`, `messages`) for the
+parameters a client sends; the shapes were observed on v0.22.5 against the dashboard on loffe on
+2026-10-30 and captured in `docs/fixtures/sessions/`.
 
 ## 7. Streaming a turn
 
+- A stored row of `GET /api/sessions/{id}/messages` carries `role` (`user`, `assistant`, `tool`, and a
+  `session_meta` row that is empty and skipped), `content` (a plain string in all 773 rows sampled; the
+  multi-part list with `image_url` is what the Android client also handles but was not seen here),
+  `timestamp` in unix seconds and, by role: `tool_calls` on an assistant row as
+  `{call_id, id, response_item_id, type: "function", function: {name, arguments}}`, and `tool_name` and
+  `tool_call_id` on a tool row. Reasoning comes twice, in `reasoning` and `reasoning_content`, with the
+  same text. `display_kind` was seen as `steer` and `process_complete`; a `user` row with any other kind
+  is what the dashboard wrote for the model and is not shown.
 - The events of a running turn and their order: assistant text, reasoning, tool calls and results.
 - How a tool run is identified and folded into a line, and why reasoning between two tool calls belongs
   to the group.
