@@ -5,6 +5,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,7 +28,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.TIMING_TAG
 import org.evsyukov.hermes.background.TurnHold
 import org.evsyukov.hermes.data.remote.GatewayEvent
-import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.GatewayChannel
 import org.evsyukov.hermes.data.remote.RpcException
 import org.evsyukov.hermes.data.remote.ServerRequest
 import org.evsyukov.hermes.data.remote.SessionUsage
@@ -90,7 +92,7 @@ data class ChatState(
  */
 class ChatController(
     private val session: ServerSession,
-    private val socket: GatewaySocket,
+    private val socket: GatewayChannel,
     private val scope: CoroutineScope,
     private val strings: AppStrings,
     storedId: String?,
@@ -140,7 +142,6 @@ class ChatController(
         // After a reconnect the old live id may be gone: join the session again.
         jobs += scope.launch {
             socket.ready.drop(1).collect {
-                Log.i(TAG, "${System.currentTimeMillis()} ready again: liveId=$liveId storedId=${_state.value.storedId}")
                 if (liveId != null) {
                     liveId = null
                     reload()
@@ -199,24 +200,64 @@ class ChatController(
     /**
      * Reads the stored history, then joins the live session to pick up a turn in progress. A chat
      * opened afresh first shows the history the phone keeps, so it does not wait for the server.
+     *
+     * The head and the history are on their way together, and the session joins as soon as the chat
+     * is known to be active, so a reconnect does not wait for the transcript: a history that is slow
+     * or cannot be read takes nothing away from a live chat. The answer of the join is applied once
+     * the history is on the screen, so a turn that streams lands on top of it.
      */
     fun reload() {
         val id = _state.value.storedId ?: return
-        Log.i(TAG, "${System.currentTimeMillis()} reload $id starts")
         _state.update { it.copy(loading = true, error = null) }
         scope.launch {
             if (_state.value.items.isEmpty()) showCached(id)
             try {
-                val summary = session.chat.get(id)
-                Log.i(TAG, "${System.currentTimeMillis()} reload $id: summary read, active=${summary?.active}")
-                val history = transcriptOf(session.chat.messages(id))
-                _state.update { it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage, loading = false) }
-                if (summary?.active == true) ensureLive()
-                Log.i(TAG, "${System.currentTimeMillis()} reload $id: done, connections=" + _state.value.connections.map { it.opId + ":" + it.settled })
+                coroutineScope {
+                    val head = async { runCatching { session.chat.get(id) } }
+                    val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
+                    val summary = head.await().getOrNull()
+                    summary?.let { read ->
+                        _state.update { it.copy(title = read.title, model = read.model, usage = read.usage) }
+                    }
+                    // The session joins while the history is still on its way: the live id is what a
+                    // message and a card need, and a transcript that is slow or fails must not hold
+                    // the chat back. The answer is put on the screen below, under the history.
+                    val joined = if (summary?.active == true) {
+                        runCatching {
+                            joining.withLock {
+                                if (liveId != null) null else resume(id).also { liveId = it.string("session_id") }
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                    val read = history.await()
+                    if (read.isSuccess) {
+                        showHistory(read.getOrDefault(emptyList()))
+                    } else {
+                        _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                    }
+                    joined?.getOrNull()?.let { adopt(it, id, starting = false) }
+                    joined?.exceptionOrNull()?.let { throw it }
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.w(TAG, "reload $id failed: $e", e)
                 _state.update { it.copy(loading = false, error = e.message) }
             }
+        }
+    }
+
+    /**
+     * Puts [history] on the screen, keeping a message the server has not stored yet: one the user
+     * sent while the history was on its way must not vanish from under them. An answer that streams
+     * comes back with the join, which is applied after this.
+     */
+    private fun showHistory(history: List<ChatItem>) {
+        _state.update { state ->
+            val known = history.mapTo(HashSet()) { it.key }
+            val unsent = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
+            state.copy(items = if (unsent.isEmpty()) history else history + unsent, loading = false)
         }
     }
 
@@ -241,21 +282,32 @@ class ChatController(
 
     private suspend fun join(starting: Boolean): String {
         val stored = _state.value.storedId
-        Log.i(TAG, "${System.currentTimeMillis()} join: stored=$stored")
         val result = if (stored == null) {
             draft?.also { draft = null } ?: create()
         } else {
-            socket.call(
-                "session.resume",
-                buildJsonObject {
-                    put("session_id", stored)
-                    put("close_on_disconnect", false)
-                    put("omit_messages", true)
-                    put("inline_images", false)
-                },
-                timeoutMillis = 120_000,
-            ) as JsonObject
+            resume(stored)
         }
+        return adopt(result, stored, starting)
+    }
+
+    /** Asks the server to join the session of [stored]; [adopt] puts the answer on the screen. */
+    private suspend fun resume(stored: String): JsonObject = socket.call(
+        "session.resume",
+        buildJsonObject {
+            put("session_id", stored)
+            put("close_on_disconnect", false)
+            put("omit_messages", true)
+            put("inline_images", false)
+        },
+        timeoutMillis = 120_000,
+    ) as JsonObject
+
+    /**
+     * Applies the answer of a join: the live id, the turn that runs, its card and the questions the
+     * server holds. Separately from [resume] so a chat that reconnects can ask at once and apply
+     * once its history is on the screen, the turn streaming on top of it.
+     */
+    private fun adopt(result: JsonObject, stored: String?, starting: Boolean): String {
         val live = result.string("session_id") ?: error("No session_id in the answer")
         liveId = live
         val storedId = result.string("stored_session_id") ?: stored
@@ -277,7 +329,6 @@ class ChatController(
         // A card left open while the chat was away comes back with the server's deadline; one the
         // server no longer has open ended while the socket was down and takes no answers.
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
-        Log.i(TAG, "${System.currentTimeMillis()} joined $live, pending=" + pending?.opId + ", settled=" + _state.value.connections.map { it.opId + ":" + it.settled })
         _state.update { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->

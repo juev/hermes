@@ -56,19 +56,19 @@ class GatewaySocket(
     private val strings: AppStrings,
     private val firstPause: Long = 1_000L,
     private val probeMillis: Long = 5_000L,
-) {
+) : GatewayChannel {
     private val _state = MutableStateFlow(SocketState.DISCONNECTED)
-    val state: StateFlow<SocketState> = _state.asStateFlow()
+    override val state: StateFlow<SocketState> = _state.asStateFlow()
 
     private val _events = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 1024, onBufferOverflow = BufferOverflow.SUSPEND)
-    val events: SharedFlow<GatewayEvent> = _events.asSharedFlow()
+    override val events: SharedFlow<GatewayEvent> = _events.asSharedFlow()
 
     private val _requests = MutableSharedFlow<ServerRequest>(extraBufferCapacity = 64)
-    val requests: SharedFlow<ServerRequest> = _requests.asSharedFlow()
+    override val requests: SharedFlow<ServerRequest> = _requests.asSharedFlow()
 
     /** Emits after every (re)connection once the gateway said it is ready; carries `replay_epoch`. */
     private val _ready = MutableSharedFlow<String?>(replay = 1, extraBufferCapacity = 4)
-    val ready: SharedFlow<String?> = _ready.asSharedFlow()
+    override val ready: SharedFlow<String?> = _ready.asSharedFlow()
 
     @Volatile
     var sessionAuthority: Boolean = false
@@ -303,7 +303,7 @@ class GatewaySocket(
     }
 
     /** Calls [method] and waits for its result; errors come back as [RpcException]. */
-    suspend fun call(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement {
+    override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
         awaitReady()
         val open = socket ?: throw IOException(strings.get(R.string.error_no_connection))
         return request(open, method, params, timeoutMillis)
@@ -335,7 +335,7 @@ class GatewaySocket(
     }
 
     /** Answers a [ServerRequest]; [error] rejects it instead. */
-    fun respond(id: String, result: JsonElement?, error: String? = null) {
+    override fun respond(id: String, result: JsonElement?, error: String?) {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", id)
@@ -349,7 +349,7 @@ class GatewaySocket(
     }
 
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
-    suspend fun awaitReady() {
+    override suspend fun awaitReady() {
         start()
         withTimeout(30_000) {
             while (true) {

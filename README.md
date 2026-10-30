@@ -9,7 +9,8 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
 - Chats stream over the dashboard's JSON-RPC socket (`/api/ws`): Markdown, reasoning, tool runs
   folded into one line, files the agent delivers (`MEDIA:` lines), approvals and questions of
   the agent. Under the chat title, next to the model, the chat shows the tokens it has spent
-  (cached input included) and their cost, as the server totals them after each turn. Answers,
+  (cached input included) and their cost, as the server totals them after each turn; a name too
+  long to leave room beside it moves the totals to a second line rather than off the screen. Answers,
   reasoning and the prose tools return (subagent summaries, skills, pages) render as Markdown; terminal output and diffs stay as printed. What the server writes to the
   model on its own, such as a finished background process, is not shown. Notifications carry
   the text without Markdown syntax. The socket connects while the app checks the server at start,
