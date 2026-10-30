@@ -121,7 +121,11 @@ private fun MainScreen(vm: MainViewModel) {
         }
         is Screen.Admin -> {
             val c = connection ?: return
-            AdminScreen(c.session.admin, remember(c) { ConnectorsApi(c.socket) }, top.section, onOpen = { vm.push(Screen.Admin(it)) }, onBack = { vm.pop() })
+            AdminScreen(
+                c.session.admin, remember(c) { ConnectorsApi(c.socket) }, top.section,
+                onOpen = { vm.push(Screen.Admin(it)) }, onBack = { vm.pop() },
+                onMainModelChanged = vm::mainModelChanged,
+            )
             return
         }
         is Screen.Settings -> {

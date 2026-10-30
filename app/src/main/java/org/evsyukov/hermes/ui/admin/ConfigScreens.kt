@@ -61,12 +61,13 @@ import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 @Composable
-fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
+fun ModelScreen(api: AdminApi, onBack: () -> Unit, onMainModelChanged: () -> Unit = {}) {
     val colors = ChatTheme.colors
     val snackbar = rememberSnackbar()
     val scope = rememberCoroutineScope()
     val info = rememberCached(api) { it.modelInfo() }
     val options = rememberCached(api) { it.modelOptions() }
+    val ordered = remember(options.value) { options.value?.stableOrder() }
     var confirm by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     val resources = LocalResources.current
 
@@ -78,6 +79,7 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
             snackbar.showSnackbar(result.string("notice") ?: resources.getString(R.string.admin_model_new_chats, model))
             info.reload()
             options.reload()
+            onMainModelChanged()
         }
     }
 
@@ -97,7 +99,7 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit) {
                 )
                 ErrorText(info.error ?: options.error)
             }
-            options.value?.providers?.forEach { provider ->
+            ordered?.providers?.forEach { provider ->
                 item(key = "p:${provider.slug}") {
                     SectionTitle(provider.name + if (provider.current) stringResource(R.string.admin_model_current) else "")
                     provider.warning?.let { Text(it, color = colors.warning, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp)) }

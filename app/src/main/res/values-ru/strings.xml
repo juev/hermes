@@ -332,10 +332,10 @@
     <string name="admin_model_now">Сейчас</string>
     <string name="admin_model_provider">Провайдер</string>
     <string name="admin_model_context">Контекст</string>
-    <string name="admin_model_info">Выбор меняет config.yaml и действует на новые чаты. Модель одного чата меняется в самом чате, нажатием на заголовок.</string>
+    <string name="admin_model_info">Сохраняется в config.yaml, перезапуск не нужен: чат, начатый после, использует выбор; открытый чат, не выбравший свою модель, возьмёт его со следующего хода; чат со своей моделью её сохраняет (она меняется в самом чате, нажатием на заголовок).</string>
     <string name="admin_model_current"> · текущий</string>
     <string name="admin_model_expensive">Модель дорогая.</string>
-    <string name="admin_model_new_chats">Новые чаты пойдут на %1$s</string>
+    <string name="admin_model_new_chats">Сохранено: новые чаты используют %1$s</string>
     <string name="admin_model_expensive_title">Дорогая модель</string>
     <string name="admin_config_raw">config.yaml целиком</string>
     <string name="admin_config_search">Поиск по ключам и описаниям</string>

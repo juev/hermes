@@ -332,10 +332,10 @@
     <string name="admin_model_now">Now</string>
     <string name="admin_model_provider">Provider</string>
     <string name="admin_model_context">Context</string>
-    <string name="admin_model_info">The choice changes config.yaml and applies to new chats. A chat\'s own model is changed in the chat, by tapping the title.</string>
+    <string name="admin_model_info">Saved in config.yaml, no restart needed: a chat started afterwards uses the choice; an open chat that has not picked its own model takes it at its next turn; a chat with its own model keeps it (change that in the chat by tapping the title).</string>
     <string name="admin_model_current"> · current</string>
     <string name="admin_model_expensive">The model is expensive.</string>
-    <string name="admin_model_new_chats">New chats will use %1$s</string>
+    <string name="admin_model_new_chats">Saved: new chats use %1$s</string>
     <string name="admin_model_expensive_title">Expensive model</string>
     <string name="admin_config_raw">The whole config.yaml</string>
     <string name="admin_config_search">Search keys and descriptions</string>
