@@ -43,6 +43,11 @@ import org.robolectric.shadows.ShadowLog
  * The drop and rejoin of `ConnectionChatTest > a card the server closed while the socket was down…`
  * (#56) over and over in one JVM, a fresh chat every round: a rare race needs more attempts than a
  * suite run offers.
+ *
+ * `STRESS_ROUNDS` sets how many times the chat is dropped and joined again: ten by default, so a
+ * normal run pays about a minute, and a hundred in the stress job, which is where a rare race is
+ * looked for. A round that times out says which step it was in, the calls the gateway got and the
+ * socket log.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
@@ -58,7 +63,7 @@ class ConnectionDropStressTest {
 
     @Test
     fun `a chat joins its session again after a drop, many times`() = runBlocking<Unit> {
-        val rounds = System.getenv("STRESS_ROUNDS")?.toIntOrNull() ?: 100
+        val rounds = System.getenv("STRESS_ROUNDS")?.toIntOrNull() ?: 10
         // One client, as in the app: a client per round would leave threads behind.
         val client = OkHttpClient()
         for (round in 1..rounds) {

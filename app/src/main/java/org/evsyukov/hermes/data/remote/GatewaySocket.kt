@@ -209,7 +209,6 @@ class GatewaySocket(
             val (number, gate) = begin() ?: return
             val closed = CompletableDeferred<Unit>()
             val attemptAt = System.currentTimeMillis()
-            Log.i(TAG, "${System.currentTimeMillis()} attempt $number: connecting")
             try {
                 val request = Request.Builder().url(socketUrl()).build()
                 val ticketMillis = System.currentTimeMillis() - attemptAt
@@ -228,7 +227,6 @@ class GatewaySocket(
                 if (e is SignInRequiredException || (e as? HermesException)?.status == 401) giveUp(number)
             }
             if (!finish(number, gate)) return
-            Log.i(TAG, "${System.currentTimeMillis()} attempt $number: over after ${System.currentTimeMillis() - attemptAt} ms, pausing $pause ms")
             withTimeoutOrNull(pause) { wakeup.receive() }
             pause = (pause * 2).coerceAtMost(30_000L)
         }
@@ -425,7 +423,6 @@ class GatewaySocket(
         if (attempt != number || gate.isCompleted) return false
         sessionAuthority = payload.bool("session_authority") ?: false
         pings = payload.bool("heartbeat") == true
-        Log.i(TAG, "${System.currentTimeMillis()} attempt $number ready")
         pending.open(via)
         _state.value = SocketState.READY
         gate.complete(Unit)

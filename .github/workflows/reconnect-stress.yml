@@ -1,17 +1,24 @@
-name: Flaky repro
+name: Reconnect stress
 
-# Runs the unit suite again and again on the runner where the flaky
-# ConnectionChatTest fails (#56), and keeps the log of the run that failed.
+# The drop and rejoin of a chat with a card left open (#56), many times over, on
+# the runner where the flaky test used to fail. Not on a push or a schedule: a
+# hundred rounds take about ten minutes, so it is asked for by hand when the
+# reconnect path changes or a flake is suspected again.
 on:
-  push:
-    branches: [hermes/flaky-connection-chat-repro]
   workflow_dispatch:
+    inputs:
+      runs:
+        description: How many times to repeat the run
+        default: "1"
+      rounds:
+        description: Rounds of the drop and rejoin in each run
+        default: "100"
 
 permissions:
   contents: read
 
 jobs:
-  repeat:
+  stress:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -26,14 +33,15 @@ jobs:
           cache-dependency-path: tailnet/go.sum
       - uses: gradle/actions/setup-gradle@v6
       - run: ./scripts/build-tailnet.sh
-      - name: Repeat the unit suite until one run fails
+      - name: Repeat the stress test until one run fails
         run: |
           set -u
           echo "nproc: $(nproc)"
-          runs="${RUNS:-6}"
-          for i in $(seq 1 "$runs"); do
-            echo "=== run $i of $runs ==="
-            if ./gradlew --console=plain --no-build-cache --no-configuration-cache :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests "*ConnectionDropStressTest*" > "run-$i.log" 2>&1; then
+          for i in $(seq 1 "${RUNS}"); do
+            echo "=== run $i of $RUNS ==="
+            if ./gradlew --console=plain --no-build-cache --no-configuration-cache \
+                 :app:cleanTestDebugUnitTest :app:testDebugUnitTest --tests "*ConnectionDropStressTest*" \
+                 > "run-$i.log" 2>&1; then
               echo "run $i: passed"
             else
               echo "run $i: FAILED"
@@ -45,12 +53,12 @@ jobs:
             fi
           done
         env:
-          RUNS: "3"
-          STRESS_ROUNDS: "100"
+          RUNS: ${{ inputs.runs }}
+          STRESS_ROUNDS: ${{ inputs.rounds }}
       - if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: flaky-repro
+          name: reconnect-stress
           path: |
             run-*.log
             failed/
