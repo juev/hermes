@@ -145,6 +145,10 @@ class ChatController(
     @Volatile
     private var sentAt = 0L
 
+    /** The stored history is in the phone's cache, so closing the chat has nothing to warm. */
+    @Volatile
+    private var warmed = false
+
     /**
      * A turn was sent and has not started. The server may report the session idle meanwhile: a new
      * session announces its agent once built, and that can happen before the prompt reaches it.
@@ -185,6 +189,9 @@ class ChatController(
     fun close() {
         closed = true
         jobs.forEach { it.cancel() }
+        // Keep what the chat shows on the phone: opening it again puts that on the screen at once
+        // and refreshes it under the surface, rather than waiting for the server with an empty chat.
+        _state.value.storedId?.let { id -> scope.launch { runCatching { session.chat.messages(id) } } }
         scope.launch { renewDraft() }
     }
 
@@ -812,6 +819,9 @@ class ChatController(
             "message.complete" -> {
                 _state.update { it.copy(running = false, status = null) }
                 refreshUsage()
+                // A new chat has no stored history on the phone until one is read; the first finished
+                // turn writes it so switching away and back does not redraw the chat from nothing.
+                if (!warmed) warmHistory()
             }
             "session.info" -> _state.update { state ->
                 // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
@@ -828,6 +838,17 @@ class ChatController(
             "connection.update" -> _state.update { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
         }
         _state.update { it.copy(items = reduce(it.items, event) { "a${keys.incrementAndGet()}" }) }
+    }
+
+    /**
+     * Reads the stored history into the phone's cache. A failure leaves the cache as it was; the
+     * next finished turn or [close] tries again.
+     */
+    private fun warmHistory() {
+        val id = _state.value.storedId ?: return
+        scope.launch {
+            runCatching { session.chat.messages(id) }.onSuccess { warmed = true }
+        }
     }
 
     /**
