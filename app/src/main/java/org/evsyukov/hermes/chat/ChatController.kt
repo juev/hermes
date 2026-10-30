@@ -107,6 +107,8 @@ class ChatController(
      * the session of the turn and is released when the submission fails.
      */
     private val onTurnStart: () -> TurnHold = { TurnHold.NONE },
+    /** The messages of the chat are on the screen up to the server's `last_active`; tells the read mark. */
+    private val onRead: (storedId: String, lastActive: Double) -> Unit = { _, _ -> },
 ) {
     private val _state = MutableStateFlow(ChatState(storedId = storedId))
     val state: StateFlow<ChatState> = _state.asStateFlow()
@@ -301,6 +303,9 @@ class ChatController(
                 val read = history.await()
                 if (read.isSuccess) {
                     showHistory(read.getOrDefault(emptyList()))
+                    // What is on the screen now is read: a mark in the sidebar clears, and a new
+                    // answer after this will mark it again.
+                    summary?.let { onRead(id, it.lastActive) }
                 } else {
                     _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
                 }
@@ -333,6 +338,7 @@ class ChatController(
             val history = transcriptOf(cached.messages(id))
             val summary = runCatching { cached.get(id) }.getOrNull()
             _state.update { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
+            summary?.let { onRead(id, it.lastActive) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -882,7 +888,11 @@ class ChatController(
         val id = _state.value.storedId ?: return
         scope.launch {
             try {
-                session.chat.get(id)?.usage?.let { usage -> _state.update { it.copy(usage = usage) } }
+                session.chat.get(id)?.let { read ->
+                    read.usage?.let { usage -> _state.update { it.copy(usage = usage) } }
+                    // The turn that just ended is on the screen: its answer is read.
+                    onRead(id, read.lastActive)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

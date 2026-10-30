@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // The chat on the screen is in front of the user again, even when the app was opened from
         // the launcher rather than from its notification: what was posted about it is read.
+
         vm.appForeground()
     }
 

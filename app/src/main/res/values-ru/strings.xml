@@ -50,6 +50,7 @@
     <string name="setup_page_failed">Вход не удался</string>
     <string name="setup_page_back">Вернуться в Hermes</string>
     <string name="error_link_unreadable">Ссылка на сервер не разобрана</string>
+    <string name="sidebar_unread">Непрочитано</string>
     <string name="sidebar_search">Поиск</string>
     <string name="sidebar_server">Управление сервером</string>
     <string name="sidebar_cron">Задачи cron</string>

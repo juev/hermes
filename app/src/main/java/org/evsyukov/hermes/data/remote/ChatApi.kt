@@ -26,6 +26,8 @@ data class ChatSummary(
     val pinned: Boolean,
     val archived: Boolean,
     val active: Boolean,
+    /** Messages the user has not read yet, as the server's read watermark says. */
+    val unread: Boolean = false,
     /** What the chat has spent so far; null while it has spent nothing. */
     val usage: SessionUsage? = null,
 ) {
@@ -110,8 +112,8 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
             ?.text
     }
 
-    /** Renames, pins or archives; the server takes such a change only with the revision it was made on. */
-    suspend fun mutate(id: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null) {
+    /** Renames, pins, archives or marks read; the server takes such a change only with the revision it was made on. */
+    suspend fun mutate(id: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null, unread: Boolean? = null) {
         val fence = fence(id)
         http.patchJson(
             "api/sessions/$id",
@@ -122,6 +124,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 title?.let { put("title", it) }
                 pinned?.let { put("pinned", it) }
                 archived?.let { put("archived", it) }
+                unread?.let { put("unread", it) }
             },
         )
     }
@@ -195,6 +198,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 pinned = obj.flag("pinned"),
                 archived = obj.flag("archived"),
                 active = obj.flag("is_active"),
+                unread = obj.flag("unread"),
                 usage = usage(obj),
             )
         }
