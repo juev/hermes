@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.channels.Channel
@@ -71,6 +72,8 @@ class ConnectionDropStressTest {
             val server = MockWebServer()
             val gateway = StressGateway()
             var step = "the card of the first connection"
+            var chat: ChatController? = null
+            val changes = java.util.concurrent.CopyOnWriteArrayList<String>()
             try {
                 server.dispatcher = object : Dispatcher() {
                     override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
@@ -89,18 +92,26 @@ class ConnectionDropStressTest {
                 val profile = ServerProfile("home", "Home", server.url("/").toString())
                 val session = ServerSession(profile, client, ServerStore(context, StressCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
                 val socket = GatewaySocket(session.http, scope, strings)
-                val chat = ChatController(session, socket, scope, strings, "s1")
+                val opened = ChatController(session, socket, scope, strings, "s1")
+                chat = opened
+                val watcher = scope.launch {
+                    opened.state.collect { state ->
+                        val now = snapshot(state)
+                        if (changes.lastOrNull() != now) changes += now
+                    }
+                }
                 try {
-                    withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
+                    withTimeout(10_000) { opened.state.first { it.connections.isNotEmpty() } }
                     next(gateway, "session.resume")
                     gateway.pending = false
                     gateway.drop()
                     step = "the chat joins its session again after the drop"
                     next(gateway, "session.resume")
                     step = "the card settles once the session has it no longer"
-                    withTimeout(5_000) { chat.state.first { it.connections.single().settled } }
+                    withTimeout(5_000) { opened.state.first { it.connections.single().settled } }
                 } finally {
-                    chat.close()
+                    watcher.cancel()
+                    opened.close()
                     socket.stop()
                     // The upgrade of the dropped connection is still closing; a server closed over it
                     // gives up on the queue and would fail a round for nothing.
@@ -108,7 +119,12 @@ class ConnectionDropStressTest {
                 }
             } catch (e: TimeoutCancellationException) {
                 val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat")).joinToString("\n") { "${it.tag}: ${it.msg}" }
-                throw AssertionError("Round $round of $rounds timed out: $step\nCalls the gateway got: ${gateway.methods()}\n$log", e)
+                val state = chat?.state?.value?.let(::snapshot) ?: "no chat"
+                val trail = changes.takeLast(12).joinToString("\n  ")
+                throw AssertionError(
+                    "Round $round of $rounds timed out: $step\nChat state: $state\nChat went:\n  $trail\nCalls the gateway got: ${gateway.methods()}\n$log",
+                    e,
+                )
             } finally {
                 runCatching { server.close() }
                 db.close()
@@ -116,6 +132,10 @@ class ConnectionDropStressTest {
             if (round % 10 == 0) println("stress: round $round of $rounds passed")
         }
     }
+
+    private fun snapshot(state: ChatState): String =
+        "connections=[" + state.connections.joinToString { c -> c.opId + " settled=" + c.settled + " targets=" + c.targets.map { it.name + ":" + it.state } } + "]" +
+            " running=" + state.running + " loading=" + state.loading + " error=" + state.error + " items=" + state.items.size
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
