@@ -252,7 +252,24 @@ Source: `../app/src/main/java/org/evsyukov/hermes/chat/` (`Transcript.kt`, `Tool
 
 - Lines the server writes into the conversation for the model, and how they differ from what a person
   wrote: the expanded attachment context, finished background work, cron deliveries.
-- Which of them a client shows, and in what shape.
+- A cron report is a `user` row that opens `[Cron delivery: <job>]` and then the report; the job is
+  speaking, not the person, and the report is what a client shows.
+- A cron run's own prompt is a `user` row that opens `[IMPORTANT: You are running as a scheduled cron
+  job.` — the directions to the agent, with the previous run's output in it. It has no words of the
+  person in it at all.
+- A skill the person invoked is one `user` row: `[IMPORTANT: The user has invoked the "<name>" skill,
+  indicating they want you to follow its instructions. The full skill content is loaded below.]`, then
+  the skill itself, then `The user has provided the following instruction alongside the skill
+  invocation: <what they wrote>`, sometimes with a `\n\n[Runtime note: …]` after it. A bundle opens the
+  same way with `"<skill> <skill>" skill bundle,` and keeps its instruction after `User instruction: `;
+  a skill loaded for a new session starts `[IMPORTANT: The "<name>" skill is auto-loaded.` and leaves
+  the person's words after `then run them with the terminal tool using the absolute path.`.
+- A reply carried over from a chat platform starts `[Replying to: "<the earlier message>"]`.
+- What a client does about it: the report is drawn as the job's own card, the cron prompt as a chip
+  with no text, the skill invocation as a chip naming the skills plus the instruction the person
+  wrote, and the reply as a quote over the message. The shapes are the Android client's own tests in
+  `../app/src/test/java/org/evsyukov/hermes/chat/ServiceMessagesTest.kt`, which the macOS client
+  reproduces case by case; they were not captured from a live row here.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/chat/` (`PlainText.kt`, `Transcript.kt`),
 test `../app/src/test/java/org/evsyukov/hermes/chat/ServiceMessagesTest.kt`.
