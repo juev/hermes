@@ -268,12 +268,28 @@ Source: `../app/src/main/java/org/evsyukov/hermes/chat/Approval.kt`,
 
 ## 10. Attachments and files
 
-- Uploading an attachment and the reference a message carries for it.
-- Files the agent delivers, the `MEDIA:` lines and how a client resolves and shows them.
-- `Unknown —` size and type limits.
+- Files the agent delivers are named in its answer by `MEDIA:` lines, one file per line, as an absolute
+  path on the dashboard: `MEDIA: /opt/hermes/reports/build.md`. The line is not part of the words a
+  person reads — a client cuts it out and draws the file instead.
+- The directive can appear in prose that talks about it, so a client has to check that what follows is
+  a path and not a sentence: a value with a line break in it, or one longer than a few hundred
+  characters, is text.
+- `GET /api/files/download?path=<absolute path>` answers the bytes. Observed on v0.22.5 on 2026-10-30:
+  with `Authorization: Bearer …` it answers `200` and the file's bytes (15 609 for a Markdown file); a
+  path the dashboard does not have answers `404 {"detail":"Path not found"}`, and a path it cannot read
+  answers `400`. A client that opens the file in a browser instead of fetching it puts the token in the
+  query, `?path=…&token=…`, as the Android client does — the header is what an app should use.
+- Uploading: `POST /api/files/upload-stream` takes a multipart body with `path`, `overwrite` and
+  `file`, and answers the path it wrote. Read from the Android client; not yet observed.
+- Images: a row's `content` can carry parts of type `image_url` with a `data:` URL, and a user message
+  names its pictures with `@image:` and its files with `@file:` lines, which the dashboard follows with
+  the content it read in `--- Attached Context ---`. No such row appeared in the captures of
+  `docs/fixtures/sessions/`, so that form is read from the client and not from the server.
+- `Unknown —` size and type limits, and what a download of a directory does.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/data/files/AttachmentCache.kt`,
-`../app/src/main/java/org/evsyukov/hermes/ui/viewer/`.
+`../app/src/main/java/org/evsyukov/hermes/ui/viewer/` for the client side; the download route was
+observed on v0.22.5 against the dashboard on loffe, 2026-10-30.
 
 ## 11. Integrations
 
