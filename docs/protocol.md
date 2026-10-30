@@ -383,6 +383,15 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/Integrations.kt`,
   protocol is a push service the client can read: on this deployment ntfy refuses to serve a topic to
   an anonymous reader (`403 forbidden`), so the client needs a user with read access to the `up*`
   topics.
+- What the push service hands back is not the body as it was posted. Published to ntfy as base64
+  (`?base64=1`), the encrypted body comes back in the stream as `message`, base64 again, with **no**
+  `encoding` field to say so; read as text it is 348 bytes of base64 where the body was 260 bytes of
+  ciphertext. A client has to try both readings and take the one that opens. Observed on 2026-10-30
+  against `ntfy.evsyukov.org`.
+- The other half was held against this plugin on the same day: a body encrypted by `webpush.py` for a
+  subscription's own keys, posted to an ntfy topic, read from the topic's JSON stream as a user with
+  `read-only` on `up*`, and opened by the macOS client — `{"type": "turn", "session_id": …,
+  "platform": "cron", …}` came out as it went in.
 - The plugin drops a subscription when the push service answers `404` or `410`, which is its answer to
   a phone that was wiped; ntfy does not, so a client that stops reading should delete its subscription
   on the way out.
