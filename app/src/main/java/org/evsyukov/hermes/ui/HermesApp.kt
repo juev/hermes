@@ -132,6 +132,7 @@ private fun MainScreen(vm: MainViewModel) {
             SettingsScreen(container, onBack = { vm.pop() }, onLicenses = { vm.push(Screen.Licenses) }, onSignOut = {
                 scope.launch {
                     connection?.session?.signOut()
+                    connection?.session?.profile?.id?.let { container.reads.clear(it) }
                     vm.pop()
                     vm.checkAccess()
                 }

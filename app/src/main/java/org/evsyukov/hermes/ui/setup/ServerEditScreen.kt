@@ -109,7 +109,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                 },
                 actions = {
                     if (existing != null && servers.servers.size > 1) {
-                        IconButton(onClick = { scope.launch { container.servers.remove(existing.id); container.responses.forget(existing.id); onBack?.invoke() } }) {
+                        IconButton(onClick = { scope.launch { container.servers.remove(existing.id); container.responses.forget(existing.id); container.reads.clear(existing.id); onBack?.invoke() } }) {
                             Icon(Icons.Outlined.Delete, stringResource(R.string.setup_delete_server))
                         }
                     }

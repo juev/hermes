@@ -29,6 +29,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatMutations
 import org.evsyukov.hermes.chat.withLocalPins
+import org.evsyukov.hermes.chat.withUnread
 import org.evsyukov.hermes.data.auth.CallbackPageText
 import org.evsyukov.hermes.data.remote.ChatApi
 import org.evsyukov.hermes.data.remote.ChatSummary
@@ -267,7 +268,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 val mode = _sidebar.value.mode
                 val chat = connection.session.chat
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val chats = withPins(connection, chat, page.chats, mode, forgetGone = true)
+                val chats = withReads(connection, withPins(connection, chat, page.chats, mode, forgetGone = true))
                 _sidebar.update { it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) }
                 listedByServer = true
             } catch (e: Exception) {
@@ -295,6 +296,16 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
+    /**
+     * [chats] with the unread mark: the server's own flag, and what the phone remembers of the read
+     * state for a chat whose server route refuses the write.
+     */
+    private suspend fun withReads(connection: Connection, chats: List<ChatSummary>): List<ChatSummary> {
+        val server = connection.session.profile.id
+        container.reads.baseline(server, chats)
+        return withUnread(chats, container.reads.of(server))
+    }
+
     /** Shows the first page the phone keeps until the server answers, or when it cannot. */
     private fun showCachedChats(connection: Connection) {
         val cached = connection.session.chat.cached ?: return
@@ -303,7 +314,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             val page = runCatching {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
-            val chats = withPins(connection, cached, page.chats, mode, forgetGone = false)
+            val chats = withReads(connection, withPins(connection, cached, page.chats, mode, forgetGone = false))
             if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
         }
     }
@@ -317,8 +328,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             try {
                 val mode = state.mode
                 val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+                val more = withReads(connection, page.chats)
                 // The first page already brought every pinned chat, so the ones met again are left out.
-                _sidebar.update { s -> s.copy(chats = (s.chats + page.chats).distinctBy { it.id }, total = page.total, listed = s.listed + page.chats.size, loading = false) }
+                _sidebar.update { s -> s.copy(chats = (s.chats + more).distinctBy { it.id }, total = page.total, listed = s.listed + page.chats.size, loading = false) }
             } catch (e: Exception) {
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
@@ -339,8 +351,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             pendingChat = id
             return
         }
-        // Reading the chat, also one already open, leaves no notification of it in the shade.
-        container.turns.read(id)
+        markRead(id)
         if (_chat.value?.state?.value?.storedId == id) return
         _chat.value?.close()
         _chat.value = controller(connection, id)
@@ -348,12 +359,25 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     }
 
     /**
-     * The app came back to the front: the chat on the screen is read now, so what the watcher or a
-     * push posted about it while the app was away leaves the shade. It also lets a later message
-     * notify again, which the push dedup would otherwise hold back for minutes.
+     * The chat is read now: its row loses the mark, the notification of its answer goes, and the
+     * phone remembers the activity it showed. The server is told too, where its route accepts a
+     * chat of its own process; a refusal leaves the phone's mark in charge.
      */
+    private fun markRead(id: String, lastActive: Double? = null) {
+        val connection = container.connection.value ?: return
+        container.turns.read(id)
+        _sidebar.update { state -> state.copy(chats = state.chats.map { if (it.id == id) it.copy(unread = false) else it }) }
+        val at = lastActive ?: _sidebar.value.chats.firstOrNull { it.id == id }?.lastActive ?: return
+        viewModelScope.launch {
+            container.reads.markRead(connection.session.profile.id, id, at)
+            runCatching { connection.session.chat.mutate(id, unread = false) }
+                .onFailure { e -> if (e !is CancellationException) Log.d(TAG, "Read state of $id not sent", e) }
+        }
+    }
+
+    /** The app came back to the front: the chat on the screen is read, and its notification goes. */
     fun appForeground() {
-        _chat.value?.state?.value?.storedId?.let(container.turns::read)
+        _chat.value?.state?.value?.storedId?.let { markRead(it) }
     }
 
     /** An empty chat, as the pencil button and the pull past the end give; the server lists it from the first message. */
@@ -411,6 +435,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             },
             onLive = container.turns::bind,
             onTurnStart = container.turns::turnStarting,
+            onRead = { id, at -> markRead(id, at) },
         )
     }
 
@@ -422,6 +447,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     fun deleteChat(id: String) = mutate(id) {
         it.delete(id)
+        container.connection.value?.let { c -> container.reads.forget(c.session.profile.id, id) }
         container.connection.value?.session?.forgetChat(id)
         if (_chat.value?.state?.value?.storedId == id) newChat()
     }

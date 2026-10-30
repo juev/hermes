@@ -31,6 +31,7 @@ import org.evsyukov.hermes.background.ActivityCheck
 import org.evsyukov.hermes.background.Notifications
 import org.evsyukov.hermes.background.TurnWatcher
 import org.evsyukov.hermes.chat.LocalPins
+import org.evsyukov.hermes.chat.LocalReads
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
@@ -65,6 +66,7 @@ class AppContainer(context: Context) {
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
     val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })
     val pins = LocalPins(context)
+    val reads = LocalReads(context)
 
     /**
      * Rebuilt when the active server, its address or its proxy changes; tokens alone do not

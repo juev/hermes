@@ -59,6 +59,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -206,9 +208,10 @@ private fun NavRow(icon: ImageVector, label: String, onClick: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarActions) {
+internal fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarActions) {
     val colors = ChatTheme.colors
     val haptics = LocalHapticFeedback.current
+    val unreadMark = stringResource(R.string.sidebar_unread)
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
@@ -234,7 +237,16 @@ private fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarAction
                 Box(Modifier.size(7.dp).clip(CircleShape).background(colors.success))
                 Spacer(Modifier.width(8.dp))
             }
-            Text(label, color = colors.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(
+                label,
+                color = colors.text, fontSize = 15.sp,
+                fontWeight = if (chat.unread) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            if (chat.unread) {
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.size(8.dp).clip(CircleShape).background(colors.contrast).semantics { contentDescription = unreadMark })
+            }
             if (chat.source.isNotEmpty() && chat.source !in LOCAL_SOURCES) {
                 Spacer(Modifier.width(6.dp))
                 Text(chat.source, color = colors.faintText, fontSize = 11.sp)

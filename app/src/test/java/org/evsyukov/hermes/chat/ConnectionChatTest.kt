@@ -81,6 +81,7 @@ class ConnectionChatTest {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
                 // The real detail route has no is_active; only the list and the live-session list know.
                 "/api/sessions/s1" -> json("""{"id":"s1","title":"Mail","last_active":123.0}""")
+
                 "/api/sessions/s1/messages" -> when {
                     historyFails -> MockResponse.Builder().code(500).build()
                     historyEndsWithUser -> json("""{"messages":[{"id":1,"role":"user","content":"send the report"}]}""")
@@ -107,11 +108,11 @@ class ConnectionChatTest {
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
     /** A chat with its turn waiting on the card of `op1`, opened afresh on a connected gateway. */
-    private suspend fun openChat(): ChatController {
+    private suspend fun openChat(onRead: (String, Double) -> Unit = { _, _ -> }): ChatController {
         gateway.connect()
         val profile = ServerProfile("home", "Home", server.url("/").toString())
         val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        val chat = ChatController(session, gateway, scope, strings, "s1")
+        val chat = ChatController(session, gateway, scope, strings, "s1", onRead = onRead)
         withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
         return chat
     }
@@ -303,6 +304,18 @@ class ConnectionChatTest {
 
         assertThat(live.running).isTrue()
         assertThat(done.running).isFalse()
+    }
+
+    @Test
+    fun `opening a chat tells the read mark the activity it shows`() = runBlocking<Unit> {
+        val seen = kotlinx.coroutines.CompletableDeferred<Pair<String, Double>>()
+
+        val chat = openChat { id, at -> seen.complete(id to at) }
+        val (id, at) = withTimeout(5_000) { seen.await() }
+        chat.close()
+
+        assertThat(id).isEqualTo("s1")
+        assertThat(at).isEqualTo(123.0)
     }
 
     @Test

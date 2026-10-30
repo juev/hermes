@@ -50,6 +50,7 @@
     <string name="setup_page_failed">Sign-in failed</string>
     <string name="setup_page_back">Back to Hermes</string>
     <string name="error_link_unreadable">The server link could not be read</string>
+    <string name="sidebar_unread">Unread</string>
     <string name="sidebar_search">Search</string>
     <string name="sidebar_server">Server</string>
     <string name="sidebar_cron">Cron jobs</string>
