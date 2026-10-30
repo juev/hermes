@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +37,8 @@ import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.server.ServerSession
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /** A file picked on the phone and not sent yet. */
@@ -116,6 +119,20 @@ class ChatController(
     /** One join at a time, so a message sent while the draft is being created does not create a second session. */
     private val joining = Mutex()
 
+    /**
+     * The connection the live session was joined on; 0 until the first join. A later connection
+     * means the card or the turn may have moved while the socket was down, so the session is joined
+     * again. A count, not the last `ready`: a chat made while a reconnect is under way gets one
+     * replayed ready and would take it for the connection it started on.
+     */
+    private val joinedGeneration = AtomicInteger(0)
+
+    /** A connection came while a load ran: it is joined once that load is over. */
+    private val rejoinPending = AtomicBoolean(false)
+
+    /** Loads asked for while one runs; the newest request wins. */
+    private val reloadRequests = Channel<Unit>(Channel.CONFLATED)
+
     /** The answer of `session.create` for a new chat that has not been sent; guarded by [joining]. */
     private var draft: JsonObject? = null
 
@@ -138,21 +155,25 @@ class ChatController(
     init {
         jobs += scope.launch { socket.events.collect(::onEvent) }
         jobs += scope.launch { socket.requests.collect(::onRequest) }
-        // After a reconnect the old live id may be gone: join the session again.
-        // The count of connections, not the last ready: a chat made while the socket was already
-        // connecting again gets one replayed ready and used to drop it as the first.
+        // After a reconnect the old live id may be gone: join the session again. The count of
+        // connections says whether this chat has already joined the one under way, also for a
+        // collector that starts after the connection came.
         val connectedWhenMade = socket.connections.value
         jobs += scope.launch {
-            var seen = connectedWhenMade
-            socket.connections.collect { connections ->
-                if (connections == seen) return@collect
-                seen = connections
-                if (liveId != null) {
-                    liveId = null
-                    reload()
+            socket.connections.collect { generation ->
+                if (closed || _state.value.storedId == null) return@collect
+                if (generation == joinedGeneration.get()) return@collect
+                // The load that opens a chat joins the connection it finds; only a later one needs it again.
+                if (joinedGeneration.get() == 0 && generation <= connectedWhenMade) return@collect
+                if (_state.value.loading) {
+                    rejoinPending.set(true)
+                    return@collect
                 }
+                liveId = null
+                reload()
             }
         }
+        jobs += scope.launch { for (requested in reloadRequests) runLoads() }
         if (storedId != null) {
             reload()
         } else {
@@ -212,44 +233,70 @@ class ChatController(
      * the history is on the screen, so a turn that streams lands on top of it.
      */
     fun reload() {
+        if (!closed) reloadRequests.trySend(Unit)
+    }
+
+    /**
+     * Runs one load at a time. A connection that came while a load ran is joined by another load
+     * once the first is over: the load may have sent its resume on the lost connection and failed,
+     * and no further connection would tell the chat about it.
+     */
+    private suspend fun runLoads() {
+        while (true) {
+            rejoinPending.set(false)
+            performLoad()
+            val queued = reloadRequests.tryReceive().isSuccess
+            val rejoin = rejoinPending.getAndSet(false)
+            if (rejoin && socket.connections.value != joinedGeneration.get()) continue
+            if (queued) continue
+            return
+        }
+    }
+
+    private suspend fun performLoad() {
         val id = _state.value.storedId ?: return
         _state.update { it.copy(loading = true, error = null) }
-        scope.launch {
-            if (_state.value.items.isEmpty()) showCached(id)
-            try {
-                coroutineScope {
-                    val head = async { runCatching { session.chat.get(id) } }
-                    val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
-                    val summary = head.await().getOrNull()
-                    summary?.let { read ->
-                        _state.update { it.copy(title = read.title, model = read.model, usage = read.usage) }
-                    }
-                    // The session joins while the history is still on its way: the live id is what a
-                    // message and a card need, and a transcript that is slow or fails must not hold
-                    // the chat back. The answer is put on the screen below, under the history.
-                    val joined = if (summary?.active == true) {
-                        runCatching {
-                            joining.withLock {
-                                if (liveId != null) null else resume(id).also { liveId = it.string("session_id") }
+        if (_state.value.items.isEmpty()) showCached(id)
+        try {
+            coroutineScope {
+                val head = async { runCatching { session.chat.get(id) } }
+                val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
+                val summary = head.await().getOrNull()
+                summary?.let { read ->
+                    _state.update { it.copy(title = read.title, model = read.model, usage = read.usage) }
+                }
+                // The session joins while the history is still on its way: the live id is what a
+                // message and a card need, and a transcript that is slow or fails must not hold
+                // the chat back. The answer is put on the screen below, under the history.
+                val joined = if (summary?.active == true) {
+                    runCatching {
+                        joining.withLock {
+                            if (liveId != null) {
+                                null
+                            } else {
+                                val generationAtStart = socket.connections.value
+                                val answer = resume(id)
+                                val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
+                                answer.also { liveId = it.string("session_id") } to generation
                             }
                         }
-                    } else {
-                        null
                     }
-                    val read = history.await()
-                    if (read.isSuccess) {
-                        showHistory(read.getOrDefault(emptyList()))
-                    } else {
-                        _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
-                    }
-                    joined?.getOrNull()?.let { adopt(it, id, starting = false) }
-                    joined?.exceptionOrNull()?.let { throw it }
+                } else {
+                    null
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = e.message) }
+                val read = history.await()
+                if (read.isSuccess) {
+                    showHistory(read.getOrDefault(emptyList()))
+                } else {
+                    _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                }
+                joined?.getOrNull()?.let { (answer, generation) -> adopt(answer, id, starting = false, generation) }
+                joined?.exceptionOrNull()?.let { throw it }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.update { it.copy(loading = false, error = e.message) }
         }
     }
 
@@ -287,12 +334,16 @@ class ChatController(
 
     private suspend fun join(starting: Boolean): String {
         val stored = _state.value.storedId
+        // The connection the answer comes over: a call made before the socket is up opens it, so the
+        // number is read again after the call when there was none.
+        val generationAtStart = socket.connections.value
         val result = if (stored == null) {
             draft?.also { draft = null } ?: create()
         } else {
             resume(stored)
         }
-        return adopt(result, stored, starting)
+        val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
+        return adopt(result, stored, starting, generation)
     }
 
     /** Asks the server to join the session of [stored]; [adopt] puts the answer on the screen. */
@@ -312,9 +363,13 @@ class ChatController(
      * server holds. Separately from [resume] so a chat that reconnects can ask at once and apply
      * once its history is on the screen, the turn streaming on top of it.
      */
-    private fun adopt(result: JsonObject, stored: String?, starting: Boolean): String {
+    private fun adopt(result: JsonObject, stored: String?, starting: Boolean, generation: Int): String {
         val live = result.string("session_id") ?: error("No session_id in the answer")
         liveId = live
+        joinedGeneration.set(generation)
+        // The answer came over `generation`; a connection that came meanwhile may have moved the
+        // card or the turn, so that one is joined as well.
+        if (socket.connections.value != generation) rejoinPending.set(true)
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
         val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
