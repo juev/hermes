@@ -222,7 +222,13 @@ class ChatController(
                     // The session joins while the history is still on its way: the live id is what a
                     // message and a card need, and a transcript that is slow or fails must not hold
                     // the chat back. The answer is put on the screen below, under the history.
-                    val joined = if (summary?.active == true) {
+                    val read = history.await()
+                    if (read.isSuccess) {
+                        showHistory(read.getOrDefault(emptyList()))
+                    } else {
+                        _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                    }
+                    val joined = if (summary?.active == true && read.isSuccess) {
                         runCatching {
                             joining.withLock {
                                 if (liveId != null) null else resume(id).also { liveId = it.string("session_id") }
@@ -230,12 +236,6 @@ class ChatController(
                         }
                     } else {
                         null
-                    }
-                    val read = history.await()
-                    if (read.isSuccess) {
-                        showHistory(read.getOrDefault(emptyList()))
-                    } else {
-                        _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
                     }
                     joined?.getOrNull()?.let { adopt(it, id, starting = false) }
                     joined?.exceptionOrNull()?.let { throw it }
