@@ -118,6 +118,21 @@ class GatewaySocketTest {
     }
 
     @Test
+    fun `a socket the server closed comes back by itself and runs its heartbeat again`() = runBlocking {
+        repeat(2) { server.enqueue(upgrade()) }
+        val socket = socket(firstPause = 50)
+        settled(socket)
+        assertThat(socket.heartbeatRunning).isTrue()
+
+        // The server closes the connection, the way a restart of the dashboard does.
+        gateway.sockets.single().close(1012, "restart")
+
+        // The heartbeat of the first connection is gone with it; the one of the second is started in
+        // its ready, so it says the chat has a connection to join its sessions on.
+        withTimeout(5_000) { until { gateway.sockets.size == 2 && socket.state.value == SocketState.READY && socket.heartbeatRunning } }
+    }
+
+    @Test
     fun `a gateway without the heartbeat is not pinged, its socket stays`() = runBlocking {
         gateway.heartbeat = false
         repeat(2) { server.enqueue(upgrade()) }

@@ -26,7 +26,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.TIMING_TAG
 import org.evsyukov.hermes.background.TurnHold
 import org.evsyukov.hermes.data.remote.GatewayEvent
-import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.GatewayChannel
 import org.evsyukov.hermes.data.remote.RpcException
 import org.evsyukov.hermes.data.remote.ServerRequest
 import org.evsyukov.hermes.data.remote.SessionUsage
@@ -90,7 +90,7 @@ data class ChatState(
  */
 class ChatController(
     private val session: ServerSession,
-    private val socket: GatewaySocket,
+    private val socket: GatewayChannel,
     private val scope: CoroutineScope,
     private val strings: AppStrings,
     storedId: String?,
