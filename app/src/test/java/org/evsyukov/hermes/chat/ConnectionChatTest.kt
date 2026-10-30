@@ -64,6 +64,14 @@ class ConnectionChatTest {
     /** What the failing step prints beside the calls: the state of the chat under test. */
     private var stateOf: (() -> String)? = null
 
+    /** On: the stored history cannot be read, the way a slow or broken server leaves it. */
+    @Volatile
+    private var historyFails = false
+
+    /** On: the stored chat ends with the message of the user, so no stored answer closes the turn. */
+    @Volatile
+    private var historyEndsWithUser = false
+
     @Before
     fun setUp() {
         // The history of a chat comes over plain HTTP. What the cards do is the chat's own business
@@ -71,12 +79,16 @@ class ConnectionChatTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
                 "/api/sessions/s1" -> json("""{"id":"s1","title":"Mail","is_active":true}""")
-                "/api/sessions/s1/messages" -> json(
-                    """{"messages":[
-                        {"id":1,"role":"user","content":"send the report"},
-                        {"id":2,"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"manage_connections","arguments":"{}"}}]}
-                    ]}""",
-                )
+                "/api/sessions/s1/messages" -> when {
+                    historyFails -> MockResponse.Builder().code(500).build()
+                    historyEndsWithUser -> json("""{"messages":[{"id":1,"role":"user","content":"send the report"}]}""")
+                    else -> json(
+                        """{"messages":[
+                            {"id":1,"role":"user","content":"send the report"},
+                            {"id":2,"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"manage_connections","arguments":"{}"}}]}
+                        ]}""",
+                    )
+                }
                 else -> MockResponse.Builder().code(404).build()
             }
         }
@@ -225,6 +237,34 @@ class ConnectionChatTest {
     }
 
     @Test
+    fun `a chat joins its session even when its history cannot be read`() = runBlocking<Unit> {
+        historyFails = true
+
+        val chat = openChat()
+        val card = chat.state.value.connections.single()
+        chat.close()
+
+        // The resume went out before the transcript came back, so the card is here although the
+        // history failed: a chat that cannot read its past is still live.
+        assertThat(card.opId).isEqualTo("op1")
+    }
+
+    @Test
+    fun `an answer that streams when the chat joins stays under the history`() = runBlocking<Unit> {
+        historyEndsWithUser = true
+        gateway.inflight = "half"
+
+        val chat = openChat()
+        val items = withTimeout(5_000) { chat.state.first { it.items.size == 2 }.items }
+        chat.close()
+
+        assertThat(items.first()).isInstanceOf(ChatItem.User::class.java)
+        val answer = items.last() as ChatItem.Assistant
+        assertThat(answer.streaming).isTrue()
+        assertThat(answer.text).isEqualTo("half")
+    }
+
+    @Test
     fun `a request of another session opens no card here`() = runBlocking<Unit> {
         val chat = openChat()
 
@@ -246,8 +286,6 @@ private const val REQUEST = """{"op_id":"op1","seq":1,"deadline_at":1800000000,"
     {"name":"gmail","kind":"connector","action":"connect","state":"initiated","connect_url":"https://connect.example/gmail"},
     {"name":"github","kind":"mcp","action":"install","state":"pending","required_env":[{"name":"GITHUB_TOKEN","required":true,"secret":true,"default":""}]}]}"""
 
-private const val RESUMED_WITH_CARD = """{"session_id":"live1","stored_session_id":"s1","running":true,"pending_connection":$REQUEST}"""
-private const val RESUMED = """{"session_id":"live1","stored_session_id":"s1","running":true}"""
 private const val STATUS = """{"op_id":"op1","seq":3,"deadline_at":1800000000,"settled":false,"targets":[{"name":"gmail","kind":"connector","action":"connect","state":"connected","alias":"work"}]}"""
 
 /**
@@ -279,6 +317,14 @@ private class FakeGateway : GatewayChannel {
     @Volatile
     var pending = true
 
+    /** Whether the session runs a turn the chat joins. */
+    @Volatile
+    var running = true
+
+    /** What streamed of the answer under way while the chat was away; null when nothing did. */
+    @Volatile
+    var inflight: String? = null
+
     fun methods(): List<String> = seen.toList()
 
     /** The connection comes up, for the first time or again after a drop. */
@@ -305,7 +351,11 @@ private class FakeGateway : GatewayChannel {
         seen += method
         calls.trySend(method to params)
         val result = when (method) {
-            "session.resume" -> if (pending) RESUMED_WITH_CARD else RESUMED
+            "session.resume" -> {
+                val streamed = inflight?.let { ""","inflight":{"assistant":"$it"}""" }.orEmpty()
+                val card = if (pending) ""","pending_connection":$REQUEST""" else ""
+                """{"session_id":"live1","stored_session_id":"s1","running":$running$streamed$card}"""
+            }
             "connection.respond" -> """{"status":"ok","settled":false}"""
             "connectors.operation.wake" -> """{"status":"ok"}"""
             "connectors.operation.status" -> STATUS
