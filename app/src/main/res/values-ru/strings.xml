@@ -248,6 +248,8 @@
     <string name="chat_submit">Передать</string>
     <string name="chat_refuse">Отказать</string>
     <string name="chat_models_failed">Список моделей не загрузился: %1$s</string>
+    <string name="chat_models_filter">Фильтр моделей</string>
+    <string name="chat_models_no_match">Ни одна модель не подходит под «%1$s»</string>
     <string name="chat_edit">Изменить</string>
     <string name="chat_cron_run">Запуск cron</string>
     <string name="chat_cron_report">Задача cron</string>

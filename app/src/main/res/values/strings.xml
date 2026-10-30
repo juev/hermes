@@ -248,6 +248,8 @@
     <string name="chat_submit">Submit</string>
     <string name="chat_refuse">Refuse</string>
     <string name="chat_models_failed">Couldn\'t load the model list: %1$s</string>
+    <string name="chat_models_filter">Filter models</string>
+    <string name="chat_models_no_match">No model matches “%1$s”</string>
     <string name="chat_edit">Edit</string>
     <string name="chat_cron_run">Cron run</string>
     <string name="chat_cron_report">Cron job</string>
