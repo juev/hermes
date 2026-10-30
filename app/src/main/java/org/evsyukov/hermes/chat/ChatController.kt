@@ -10,7 +10,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -140,8 +139,14 @@ class ChatController(
         jobs += scope.launch { socket.events.collect(::onEvent) }
         jobs += scope.launch { socket.requests.collect(::onRequest) }
         // After a reconnect the old live id may be gone: join the session again.
+        // The count of connections, not the last ready: a chat made while the socket was already
+        // connecting again gets one replayed ready and used to drop it as the first.
+        val connectedWhenMade = socket.connections.value
         jobs += scope.launch {
-            socket.ready.drop(1).collect {
+            var seen = connectedWhenMade
+            socket.connections.collect { connections ->
+                if (connections == seen) return@collect
+                seen = connections
                 if (liveId != null) {
                     liveId = null
                     reload()

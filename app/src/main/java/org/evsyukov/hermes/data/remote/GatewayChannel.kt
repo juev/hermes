@@ -25,6 +25,13 @@ interface GatewayChannel {
     /** Emits after every (re)connection once the gateway said it is ready; carries `replay_epoch`. */
     val ready: SharedFlow<String?>
 
+    /**
+     * How many times the gateway has been ready since the socket was made: it only grows, so a chat
+     * that starts listening late still learns a connection came, which [ready] with its single
+     * replayed value cannot tell it.
+     */
+    val connections: StateFlow<Int>
+
     /** Calls [method] and waits for its result; errors come back as [RpcException]. */
     suspend fun call(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement
 
