@@ -198,8 +198,11 @@ The observation that settles the join question is a reconnect whose previous joi
   a price of zero means it knows no price).
 - `GET /api/sessions/{id}/messages?limit=&order=oldest|latest&inline_images=false` answers
   `{session_id, profile, pagination, messages}`; see §7 for a row.
-- `GET /api/sessions/search?q=&limit=` answers `{results: [{session_id, snippet, role, …}]}`, with the
-  session fields beside the snippet.
+- `GET /api/sessions/search?q=&limit=` answers `{results: [...]}` — no `total`, so a client asks for a
+  limit and shows what came back. A hit repeats the session fields beside the match, under both `id`
+  and `session_id`, and adds `snippet` — the text around the match as it was, newlines included — and
+  `role`, the role of the message the match was found in. Unlike the list, a hit carries no `pinned`
+  and no `unread`. Observed on v0.22.5 on 2026-10-30; `docs/fixtures/search/results.json`.
 - Flags arrive as SQLite wrote them: `true` and `1` both mean yes.
 - Search, renaming, archiving and deleting over the socket where REST refuses, and pinning when the
   server has no method for it — still to fill, from the Android client.
