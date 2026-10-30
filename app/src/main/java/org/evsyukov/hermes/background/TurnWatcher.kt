@@ -92,6 +92,15 @@ class TurnWatcher(
     fun notifiedRecently(storedId: String): Boolean =
         notified[storedId]?.let { System.currentTimeMillis() - it < 5 * 60_000 } ?: false
 
+    /**
+     * The chat is read now: its message notification leaves the shade, and the next message may
+     * notify again rather than being taken for the one already announced.
+     */
+    fun read(storedId: String) {
+        notifications.cancelChat(storedId)
+        notified.remove(storedId)
+    }
+
     /** The live id under which the app has [storedId] open, if it has. */
     fun liveOf(storedId: String): String? = chats.entries.firstOrNull { it.value == storedId }?.key
 
@@ -209,6 +218,10 @@ class TurnWatcher(
                         notifications.answer(stored, titles[stored] ?: "Hermes", shown, failed)
                         notified[stored] = System.currentTimeMillis()
                     }
+                } else {
+                    // The answer is on the screen as it arrives: whatever an earlier one left in the
+                    // shade is read now, and the push of this turn is already accounted for.
+                    read(stored)
                 }
                 settle()
             }

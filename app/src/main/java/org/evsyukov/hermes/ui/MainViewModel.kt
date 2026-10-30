@@ -339,11 +339,21 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             pendingChat = id
             return
         }
+        // Reading the chat, also one already open, leaves no notification of it in the shade.
+        container.turns.read(id)
         if (_chat.value?.state?.value?.storedId == id) return
         _chat.value?.close()
         _chat.value = controller(connection, id)
-        container.notifications.cancelChat(id)
         stack.clear()
+    }
+
+    /**
+     * The app came back to the front: the chat on the screen is read now, so what the watcher or a
+     * push posted about it while the app was away leaves the shade. It also lets a later message
+     * notify again, which the push dedup would otherwise hold back for minutes.
+     */
+    fun appForeground() {
+        _chat.value?.state?.value?.storedId?.let(container.turns::read)
     }
 
     /** An empty chat, as the pencil button and the pull past the end give; the server lists it from the first message. */
