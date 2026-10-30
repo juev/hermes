@@ -242,13 +242,47 @@ class ConnectionChatTest {
         val chat = openChat()
         // What the chat asked on the connection it started on is behind us; what comes next is the
         // join of the connection it never heard.
-        while (gateway.calls.tryReceive().isSuccess) Unit
+        while (gateway.calls.tryReceive().isSuccess) {
+            // Drain the calls of the connection behind us.
+        }
 
         // The socket is up again, but its ready went out before the chat was listening: the one
         // replayed value is that missed connection, and dropping the first ready dropped it.
         gateway.connectedWithoutSaying()
 
         step("the chat joins its session again after the connection it did not hear") { next("session.resume") }
+        chat.close()
+    }
+
+    @Test
+    fun `a join whose answer is lost is tried again on the next connection`() = runBlocking<Unit> {
+        val chat = openChat()
+        stateOf = {
+            val state = chat.state.value
+            "connections=" + state.connections.map { it.opId + ":" + it.settled } + " loading=" + state.loading + " error=" + state.error
+        }
+        while (gateway.calls.tryReceive().isSuccess) {
+            // Drain the calls of the connection behind us.
+        }
+
+        // The socket comes back and the chat joins again, but the answer never reaches it: the
+        // connection dropped between the call and its result. The live id is gone with it.
+        gateway.pending = false
+        gateway.failResume = true
+        gateway.drop()
+        gateway.connect("epoch2")
+        step("the lost join fails") { withTimeout(5_000) { chat.state.first { it.error != null } } }
+        // The failed call is in the channel; the join that matters is the next one.
+        while (gateway.calls.tryReceive().isSuccess) {
+            // Drain the call whose answer was lost.
+        }
+
+        // Another connection comes up. The chat has no live id, but it must join again all the same.
+        gateway.failResume = false
+        gateway.drop()
+        gateway.connect("epoch3")
+        step("the chat joins at the next connection") { next("session.resume") }
+        step("the card settles once the session has it no longer") { withTimeout(5_000) { chat.state.first { it.connections.single().settled } } }
         chat.close()
     }
 
@@ -345,6 +379,10 @@ private class FakeGateway : GatewayChannel {
     @Volatile
     var inflight: String? = null
 
+    /** Whether the next join's answer is lost, as when the connection drops before the result arrives. */
+    @Volatile
+    var failResume = false
+
     fun methods(): List<String> = seen.toList()
 
     /** The connection comes up, for the first time or again after a drop. */
@@ -380,6 +418,7 @@ private class FakeGateway : GatewayChannel {
         if (_state.value != SocketState.READY) throw IOException("no connection")
         seen += method
         calls.trySend(method to params)
+        if (method == "session.resume" && failResume) throw IOException("the answer was lost")
         val result = when (method) {
             "session.resume" -> {
                 val streamed = inflight?.let { ""","inflight":{"assistant":"$it"}""" }.orEmpty()

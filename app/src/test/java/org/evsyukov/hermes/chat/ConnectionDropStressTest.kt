@@ -67,10 +67,13 @@ class ConnectionDropStressTest {
         // One client, as in the app: a client per round would leave threads behind.
         val client = OkHttpClient()
         for (round in 1..rounds) {
+            // Only this round's socket log: the log of the whole JVM says nothing about the failing round.
+            ShadowLog.clear()
             val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
             val server = MockWebServer()
             val gateway = StressGateway()
             var step = "the card of the first connection"
+            var chatForLog: ChatController? = null
             try {
                 server.dispatcher = object : Dispatcher() {
                     override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
@@ -90,6 +93,7 @@ class ConnectionDropStressTest {
                 val session = ServerSession(profile, client, ServerStore(context, StressCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
                 val socket = GatewaySocket(session.http, scope, strings)
                 val chat = ChatController(session, socket, scope, strings, "s1")
+                chatForLog = chat
                 try {
                     withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
                     next(gateway, "session.resume")
@@ -108,7 +112,13 @@ class ConnectionDropStressTest {
                 }
             } catch (e: TimeoutCancellationException) {
                 val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat")).joinToString("\n") { "${it.tag}: ${it.msg}" }
-                throw AssertionError("Round $round of $rounds timed out: $step\nCalls the gateway got: ${gateway.methods()}\n$log", e)
+                val state = chatForLog?.state?.value
+                val cards = state?.connections?.joinToString(", ") { "${it.opId}: settled=${it.settled}" }
+                throw AssertionError(
+                    "Round $round of $rounds timed out: $step\nCalls the gateway got: ${gateway.methods()}\n" +
+                        "Chat state: cards=[$cards] loading=${state?.loading} error=${state?.error}\n$log",
+                    e,
+                )
             } finally {
                 runCatching { server.close() }
                 db.close()
@@ -140,6 +150,7 @@ private const val STRESS_REQUEST = """{"op_id":"op1","seq":1,"deadline_at":18000
 internal class StressGateway : WebSocketListener() {
     val calls = Channel<Pair<String, JsonObject>>(Channel.UNLIMITED)
     private val seen = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private val opened = java.util.concurrent.atomic.AtomicInteger()
 
     @Volatile
     private var socket: WebSocket? = null
@@ -148,6 +159,7 @@ internal class StressGateway : WebSocketListener() {
     @Volatile
     var pending = true
 
+    /** Every call with the number of the connection it came over and whether a card was still open. */
     fun methods(): List<String> = seen.toList()
 
     fun drop() {
@@ -155,6 +167,7 @@ internal class StressGateway : WebSocketListener() {
     }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
+        opened.incrementAndGet()
         socket = webSocket
         webSocket.send("""{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}""")
     }
@@ -171,7 +184,7 @@ internal class StressGateway : WebSocketListener() {
             else -> "{}"
         }
         webSocket.send("""{"jsonrpc":"2.0","id":"$id","result":$result}""")
-        seen += method
+        seen += "$method@${opened.get()}${if (pending) " card" else ""}"
         calls.trySend(method to (frame["params"]?.jsonObject ?: JsonObject(emptyMap())))
     }
 }
