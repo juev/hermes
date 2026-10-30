@@ -215,8 +215,24 @@ The observation that settles the join question is a reconnect whose previous joi
   `role`, the role of the message the match was found in. Unlike the list, a hit carries no `pinned`
   and no `unread`. Observed on v0.22.5 on 2026-10-30; `docs/fixtures/search/results.json`.
 - Flags arrive as SQLite wrote them: `true` and `1` both mean yes.
-- Search, renaming, archiving and deleting over the socket where REST refuses, and pinning when the
-  server has no method for it — still to fill, from the Android client.
+- Renaming, archiving and deleting a chat go over the socket on a plain dashboard, where the session
+  lives in the dashboard's own process and `PATCH`/`DELETE /api/sessions/{id}` answer `404 not_found`.
+  The calls, read from the Android client and not yet observed here:
+  - `session.title {session_id: <live id>, title}` — a live id, so a chat that is not open is joined
+    first with `session.resume {session_id: <stored id>, lazy: true, omit_messages: true}` and closed
+    again with `session.close {session_id: <live id>}`;
+  - `session.archive {session_key: <stored id>, archived: bool}` — the **stored** id, under
+    `session_key`, and no join is needed;
+  - `session.delete {session_id: <stored id>}` — also the **stored** id, but under `session_id`, with
+    the live session closed first if the chat is open.
+  Two names for the same id in two calls is the kind of thing to get wrong once and remember: what
+  `session_id` means depends on the method.
+- The REST route takes the change with a fence: `GET /api/sessions/{id}/mutation-snapshot` answers
+  `runtime_revision` and `runtime_generation`, and `PATCH /api/sessions/{id}` carries `request_id` and
+  both of them; the fields a client may set are `title`, `pinned`, `archived` and `unread`.
+- A pin has no socket call. The Android client tries the route and, on `404`, keeps the pin on the
+  phone; whether a macOS client should do the same is `Unknown —` until a pinned chat is met on a plain
+  dashboard.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/ChatApi.kt` (`list`, `messages`) for the
 parameters a client sends; the shapes were observed on v0.22.5 against the dashboard on loffe on
