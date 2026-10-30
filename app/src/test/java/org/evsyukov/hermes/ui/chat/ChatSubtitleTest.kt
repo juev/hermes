@@ -36,7 +36,7 @@ class ChatSubtitleTest {
     fun `a short model and its totals share one line`() {
         show(300.dp, "gpt-5.2", SessionUsage(12_400, 8_200, 0.12, false))
 
-        compose.onNodeWithText("gpt-5.2 · 12.4 K in · 8.2 K out · $0.12").assertExists()
+        compose.onNodeWithText("gpt-5.2 · Chat: 12.4 K in · 8.2 K out · $0.12").assertExists()
     }
 
     @Test
@@ -44,17 +44,17 @@ class ChatSubtitleTest {
         show(240.dp, codex, priced)
 
         compose.onNodeWithText(codex).assertExists()
-        compose.onNodeWithText("1.2 M in · 987.0 K out · $12.34").assertExists()
-        assertThat(topOf("1.2 M in")).isAtLeast(bottomOf(codex))
+        compose.onNodeWithText("Chat: 1.2 M in · 987.0 K out · $12.34").assertExists()
+        assertThat(topOf("Chat: 1.2 M in")).isAtLeast(bottomOf(codex))
         assertThat(rightOf(codex)).isAtMost(width)
-        assertThat(rightOf("1.2 M in")).isAtMost(width)
+        assertThat(rightOf("Chat: 1.2 M in")).isAtMost(width)
     }
 
     @Test
     fun `a line included in the plan also says so under a long model`() {
         show(240.dp, codex, SessionUsage(2_000, 300, costUsd = null, included = true))
 
-        compose.onNodeWithText("2.0 K in · 300 out · included in the plan").assertExists()
+        compose.onNodeWithText("Chat: 2.0 K in · 300 out · included in the plan").assertExists()
         assertThat(topOf("2.0 K in")).isAtLeast(bottomOf(codex))
     }
 
@@ -62,9 +62,16 @@ class ChatSubtitleTest {
     fun `a name too long even for its own line gives way to the numbers`() {
         show(120.dp, "openrouter/anthropic/claude-sonnet-4.5-thinking", priced)
 
-        compose.onNodeWithText("1.2 M in · 987.0 K out · $12.34").assertExists()
-        assertThat(topOf("1.2 M in")).isAtLeast(bottomOf("openrouter/"))
-        assertThat(rightOf("1.2 M in")).isAtMost(width)
+        compose.onNodeWithText("Chat: 1.2 M in · 987.0 K out · $12.34").assertExists()
+        assertThat(topOf("Chat: 1.2 M in")).isAtLeast(bottomOf("openrouter/"))
+        assertThat(rightOf("Chat: 1.2 M in")).isAtMost(width)
+    }
+
+    @Test
+    fun `a model picked for the next turn says so and keeps the chat totals`() {
+        show(600.dp, "gpt-5.2", SessionUsage(12_400, 8_200, 0.12, false), pending = true)
+
+        compose.onNodeWithText("gpt-5.2 · next turn · Chat: 12.4 K in · 8.2 K out · $0.12").assertExists()
     }
 
     @Test
@@ -75,11 +82,11 @@ class ChatSubtitleTest {
     }
 
     /** The subtitle in a box [width] wide, the room a header of a narrow phone gives it. */
-    private fun show(width: Dp, model: String?, usage: SessionUsage?) {
+    private fun show(width: Dp, model: String?, usage: SessionUsage?, pending: Boolean = false) {
         shown = width
         compose.setContent {
             HermesTheme {
-                Box(Modifier.width(width)) { ChatSubtitle(model, usage) }
+                Box(Modifier.width(width)) { ChatSubtitle(model, usage, pending) }
             }
         }
     }

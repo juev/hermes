@@ -240,7 +240,7 @@ fun ChatScreen(
                             modifier = Modifier.clickable(enabled = state.storedId != null) { renaming = true },
                         )
                         // The model and what the chat has spent sit on one line, or the spent line moves under it.
-                        ChatSubtitle(state.model, state.usage)
+                        ChatSubtitle(state.model, state.usage, pending = state.modelPending)
                     }
                     Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
                 }

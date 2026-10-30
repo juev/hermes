@@ -73,6 +73,11 @@ data class ChatState(
     val prompt: Prompt? = null,
     val error: String? = null,
     val model: String? = null,
+    /**
+     * The model was picked while a turn ran and the server applies it at the next turn; the turn
+     * under way still runs on the previous one.
+     */
+    val modelPending: Boolean = false,
     val status: String? = null,
     /** A message waits for the socket to connect. */
     val connecting: Boolean = false,
@@ -273,7 +278,15 @@ class ChatController(
                 val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
                 val summary = head.await().getOrNull()
                 summary?.let { read ->
-                    _state.update { it.copy(title = read.title, model = read.model, usage = read.usage) }
+                    _state.update { state ->
+                        state.copy(
+                            title = read.title,
+                            // The live session knows its model better than the stored row: after a
+                            // pick the row may still carry the previous one until the next turn.
+                            model = if (liveId != null && state.model != null) state.model else read.model,
+                            usage = read.usage,
+                        )
+                    }
                 }
                 // The session joins while the history is still on its way: the live id is what a
                 // message and a card need, and a transcript that is slow or fails must not hold
@@ -294,6 +307,7 @@ class ChatController(
                                 val answer = resume(id)
                                 val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
                                 answer.also { liveId = it.string("session_id") } to generation
+
                             }
                         }
                     }
@@ -579,7 +593,7 @@ class ChatController(
         _state.update { it.copy(modelConfirm = null) }
         if (liveId == null && _state.value.storedId == null) {
             draftModel = provider to model
-            _state.update { it.copy(model = model) }
+            _state.update { it.copy(model = model, modelPending = false) }
             // The draft session was built for the model before; a new one is created with the pick.
             jobs += scope.launch { renewDraft() }
             return
@@ -600,7 +614,15 @@ class ChatController(
                 if (result?.bool("confirm_required") == true) {
                     _state.update { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: strings.get(R.string.chat_model_expensive))) }
                 } else {
-                    _state.update { it.copy(model = model, error = result?.string("warning")?.takeIf { w -> w.isNotBlank() }) }
+                    // A turn already runs: the server switches at the next turn, so the pick is shown
+                    // with that caveat instead of claiming the running turn already uses it.
+                    _state.update {
+                        it.copy(
+                            model = model,
+                            modelPending = result?.bool("deferred") == true,
+                            error = result?.string("warning")?.takeIf { w -> w.isNotBlank() },
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message) }
@@ -844,7 +866,8 @@ class ChatController(
             "message.start", "message.complete", "error" -> awaitingStart = false
         }
         when (event.type) {
-            "message.start" -> _state.update { it.copy(running = true, status = null) }
+            // A turn starts only after a queued model switch has been applied, so the pick is the model now.
+            "message.start" -> _state.update { it.copy(running = true, status = null, modelPending = false) }
             "message.complete" -> {
                 _state.update { it.copy(running = false, status = null) }
                 refreshUsage()
@@ -855,7 +878,11 @@ class ChatController(
             "session.info" -> _state.update { state ->
                 // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
                 val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
-                state.copy(running = running ?: state.running, model = event.payload.string("model") ?: state.model)
+                val model = event.payload.string("model")
+                // A pick the server dropped (an unconfirmed expensive model, a failed switch) reports
+                // the old model; one still queued reports the pick. Only the former ends the pending state.
+                val pending = state.modelPending && (model == null || model == state.model)
+                state.copy(running = running ?: state.running, model = model ?: state.model, modelPending = pending)
             }
             "status.update" -> _state.update { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }
             "thinking.delta" -> _state.update { it.copy(status = strings.get(R.string.chat_thinking)) }

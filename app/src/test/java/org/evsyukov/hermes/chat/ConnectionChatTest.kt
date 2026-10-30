@@ -38,6 +38,7 @@ import org.evsyukov.hermes.data.remote.GatewayChannel
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.HermesJson
 import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
@@ -73,6 +74,9 @@ class ConnectionChatTest {
     @Volatile
     private var historyEndsWithUser = false
 
+    /** How many times the stored head of the chat was read, to wait for a reload to reach it. */
+    private val summaryGets = java.util.concurrent.atomic.AtomicInteger()
+
     @Before
     fun setUp() {
         // The history of a chat comes over plain HTTP. What the cards do is the chat's own business
@@ -80,7 +84,12 @@ class ConnectionChatTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
                 // The real detail route has no is_active; only the list and the live-session list know.
-                "/api/sessions/s1" -> json("""{"id":"s1","title":"Mail","last_active":123.0}""")
+                "/api/sessions/s1" -> {
+                    summaryGets.incrementAndGet()
+                    json("""{"id":"s1","title":"Mail","model":"stored-model","last_active":123.0,"input_tokens":100,"output_tokens":10}""")
+                }
+                "/api/sessions/s2" -> json("""{"id":"s2","title":"Other","model":"other-stored","input_tokens":7,"output_tokens":3,"is_active":true}""")
+                "/api/sessions/s2/messages" -> json("""{"messages":[{"id":10,"role":"user","content":"hello"}]}""")
 
                 "/api/sessions/s1/messages" -> when {
                     historyFails -> MockResponse.Builder().code(500).build()
@@ -110,11 +119,23 @@ class ConnectionChatTest {
     /** A chat with its turn waiting on the card of `op1`, opened afresh on a connected gateway. */
     private suspend fun openChat(onRead: (String, Double) -> Unit = { _, _ -> }): ChatController {
         gateway.connect()
-        val profile = ServerProfile("home", "Home", server.url("/").toString())
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        val chat = ChatController(session, gateway, scope, strings, "s1", onRead = onRead)
+        val chat = chatFor("s1", onRead)
         withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
         return chat
+    }
+
+    /** Another stored chat on the same gateway, opened while the connection is already up. */
+    private suspend fun openChatFor(id: String): ChatController {
+        if (gateway.state.value != SocketState.READY) gateway.connect()
+        val chat = chatFor(id)
+        withTimeout(10_000) { chat.state.first { it.storedId == id && it.model != null && !it.loading } }
+        return chat
+    }
+
+    private fun chatFor(id: String, onRead: (String, Double) -> Unit = { _, _ -> }): ChatController {
+        val profile = ServerProfile("home", "Home", server.url("/").toString())
+        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        return ChatController(session, gateway, scope, strings, id, onRead = onRead)
     }
 
     /** The params of the next call of [method]; other calls before it are skipped. */
@@ -347,6 +368,91 @@ class ConnectionChatTest {
     }
 
     @Test
+    fun `the live model stays when a reload reads the stored row`() = runBlocking<Unit> {
+        val chat = openChat()
+        assertThat(chat.state.value.model).isEqualTo("live-model")
+
+        // The stored row still carries another model (a switch queued for the next turn does that);
+        // a reload must not put it over the model the live session reports.
+        val before = summaryGets.get()
+        chat.reload()
+        withTimeout(5_000) {
+            while (summaryGets.get() <= before || chat.state.value.loading) delay(10)
+        }
+        val shown = chat.state.value.model
+        chat.close()
+
+        assertThat(shown).isEqualTo("live-model")
+    }
+
+    @Test
+    fun `chats keep their own model and totals when another chat is opened`() = runBlocking<Unit> {
+        val mail = openChat()
+        val mailModel = mail.state.value.model
+        val mailUsage = mail.state.value.usage
+        mail.close()
+
+        val other = openChatFor("s2")
+        val otherModel = other.state.value.model
+        val otherUsage = other.state.value.usage
+        other.close()
+
+        val mailAgain = openChat()
+        val backModel = mailAgain.state.value.model
+        val backUsage = mailAgain.state.value.usage
+        mailAgain.close()
+
+        assertThat(mailModel).isEqualTo("live-model")
+        assertThat(otherModel).isEqualTo("other-live-model")
+        assertThat(backModel).isEqualTo("live-model")
+        assertThat(mailUsage).isEqualTo(SessionUsage(100, 10, null, false))
+        assertThat(otherUsage).isEqualTo(SessionUsage(7, 3, null, false))
+        assertThat(backUsage).isEqualTo(SessionUsage(100, 10, null, false))
+    }
+
+    @Test
+    fun `a pick made while a turn runs says it applies at the next turn, which clears it`() = runBlocking<Unit> {
+        val chat = openChat()
+        gateway.configSetResult = """{"value":"m2","deferred":true}"""
+
+        chat.chooseModel("p", "m2")
+        val pending = withTimeout(5_000) { chat.state.first { it.model == "m2" && it.modelPending } }
+        gateway.send("message.start", "live1", "{}")
+        val started = withTimeout(5_000) { chat.state.first { !it.modelPending } }
+        chat.close()
+
+        assertThat(pending.modelPending).isTrue()
+        assertThat(started.model).isEqualTo("m2")
+    }
+
+    @Test
+    fun `a live pick is not marked for the next turn`() = runBlocking<Unit> {
+        val chat = openChat()
+        gateway.configSetResult = """{"value":"m3"}"""
+
+        chat.chooseModel("p", "m3")
+        val picked = withTimeout(5_000) { chat.state.first { it.model == "m3" } }
+        chat.close()
+
+        assertThat(picked.modelPending).isFalse()
+    }
+
+    @Test
+    fun `a queued pick the server dropped leaves the old model without the pending mark`() = runBlocking<Unit> {
+        val chat = openChat()
+        gateway.configSetResult = """{"value":"m2","deferred":true}"""
+        chat.chooseModel("p", "m2")
+        withTimeout(5_000) { chat.state.first { it.model == "m2" && it.modelPending } }
+
+        // The server refused the queued switch at turn start and reports the model still in use.
+        gateway.send("session.info", "live1", """{"model":"live-model","running":true}""")
+        val back = withTimeout(5_000) { chat.state.first { it.model == "live-model" && !it.modelPending } }
+        chat.close()
+
+        assertThat(back.modelPending).isFalse()
+    }
+
+    @Test
     fun `a request of another session opens no card here`() = runBlocking<Unit> {
         val chat = openChat()
 
@@ -414,6 +520,10 @@ private class FakeGateway : GatewayChannel {
     /** Whether the next join's answer is lost, as when the connection drops before the result arrives. */
     @Volatile
     var failResume = false
+    /** What `config.set` answers: a live switch, a pick queued for the next turn, a refusal. */
+    @Volatile
+    var configSetResult = "{}"
+
 
     fun methods(): List<String> = seen.toList()
 
@@ -453,11 +563,17 @@ private class FakeGateway : GatewayChannel {
         if (method == "session.resume" && failResume) throw IOException("the answer was lost")
         val result = when (method) {
             "session.resume" -> {
-                val streamed = inflight?.let { ""","inflight":{"assistant":"$it"}""" }.orEmpty()
-                val card = if (pending) ""","pending_connection":$REQUEST""" else ""
-                """{"session_id":"live1","stored_session_id":"s1","running":$running$streamed$card}"""
+                if (params.string("session_id") == "s2") {
+                    """{"session_id":"live2","stored_session_id":"s2","running":false,"info":{"model":"other-live-model"}}"""
+                } else {
+                    val streamed = inflight?.let { ""","inflight":{"assistant":"$it"}""" }.orEmpty()
+                    val card = if (pending) ""","pending_connection":$REQUEST""" else ""
+                    """{"session_id":"live1","stored_session_id":"s1","running":$running$streamed$card,"info":{"model":"live-model"}}"""
+                }
             }
             "session.active_list" -> """{"sessions":[{"id":"live1","session_key":"s1","status":"working"}]}"""
+            "config.set" -> configSetResult
+
             "connection.respond" -> """{"status":"ok","settled":false}"""
             "connectors.operation.wake" -> """{"status":"ok"}"""
             "connectors.operation.status" -> STATUS
