@@ -1,6 +1,8 @@
 package org.evsyukov.hermes.background
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
@@ -154,6 +156,21 @@ class TurnWatcherTest {
         } finally {
             early.cancel()
         }
+    }
+
+    @Test
+    fun `reading a chat clears its answer and lets the next one notify`() {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        watcher.bind("live-1", "stored-1", "Chat")
+        watcher.onEvent(GatewayEvent("message.complete", "live-1", 2, buildJsonObject { put("text", "Done") }))
+        val manager = context.getSystemService(NotificationManager::class.java)
+        assertThat(shadowOf(manager).getNotification("chat", "stored-1".hashCode())).isNotNull()
+        assertThat(watcher.notifiedRecently("stored-1")).isTrue()
+
+        watcher.read("stored-1")
+
+        assertThat(shadowOf(manager).getNotification("chat", "stored-1".hashCode())).isNull()
+        assertThat(watcher.notifiedRecently("stored-1")).isFalse()
     }
 
     @Test
