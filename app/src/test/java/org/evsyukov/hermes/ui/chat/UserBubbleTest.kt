@@ -12,6 +12,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.Delivery
 import org.evsyukov.hermes.ui.theme.HermesTheme
 import org.junit.Rule
 import org.junit.Test
@@ -55,6 +56,28 @@ class UserBubbleTest {
         show("первая строка\nвторая строка")
 
         compose.onNodeWithText("первая строка\nвторая строка", substring = true).assertExists()
+    }
+
+    @Test
+    fun `a message whose delivery is not confirmed says so`() {
+        deliver(Delivery.UNKNOWN)
+
+        compose.onNodeWithText(ApplicationProvider.getApplicationContext<Application>().getString(R.string.chat_delivery_unknown)).assertExists()
+    }
+
+    @Test
+    fun `a message the server took carries no delivery note`() {
+        deliver(Delivery.SENT)
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        assertThat(compose.onAllNodes(hasText(app.getString(R.string.chat_delivery_unknown), substring = true)).fetchSemanticsNodes()).isEmpty()
+    }
+
+    private fun deliver(delivery: Delivery) {
+        val actions = MessageActions({}, {}, {}, {}, {}, {}, { null })
+        compose.setContent {
+            HermesTheme { UserBubble(ChatItem.User("u1", "hello", emptyList(), delivery = delivery), last = false, actions = actions) }
+        }
     }
 
     /** The renderer parses off the main thread, so idle is not enough: wait for the text to show. */

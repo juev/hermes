@@ -28,6 +28,7 @@
     <string name="chat_describe_image">Что на этом изображении?</string>
     <string name="chat_look_files">Посмотри файлы</string>
     <string name="error_send_failed">Сообщение не отправлено</string>
+    <string name="error_send_unknown">Доставка не подтверждена: сообщение могло дойти до сервера. Проверьте чат, прежде чем отправлять его снова.</string>
     <string name="error_failed">Не получилось</string>
     <string name="chat_thinking">Думает…</string>
     <string name="chat_connecting">Подключение к серверу…</string>
@@ -256,6 +257,9 @@
     <string name="chat_retry">Повторить</string>
     <string name="chat_stopped">Остановлено</string>
     <string name="chat_read_aloud">Прочитать вслух</string>
+    <string name="chat_delivery_sending">Отправляется…</string>
+    <string name="chat_delivery_unknown">Доставка не подтверждена — проверьте, прежде чем отправлять снова</string>
+    <string name="chat_delivery_failed">Не отправлено</string>
     <string name="chat_regenerate">Ответить заново</string>
     <string name="chat_reasoning_live">Размышляет…</string>
     <string name="chat_reasoning">Размышления</string>

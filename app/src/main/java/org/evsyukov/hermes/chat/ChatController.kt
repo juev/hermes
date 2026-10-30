@@ -3,6 +3,7 @@ package org.evsyukov.hermes.chat
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -37,6 +38,7 @@ import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.server.ServerSession
+import java.io.IOException
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -440,12 +442,16 @@ class ChatController(
 
     fun send(text: String, attachments: List<LocalAttachment>) {
         if (text.isBlank() && attachments.isEmpty()) return
+        val key = "local${keys.incrementAndGet()}"
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
-        _state.update { it.copy(items = it.items + ChatItem.User("local${keys.incrementAndGet()}", text, shown), running = true, error = null) }
+        _state.update { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING), running = true, error = null) }
         awaitingStart = true
         val hold = onTurnStart()
         val started = System.currentTimeMillis().also { sentAt = it }
         scope.launch {
+            // The prompt may have reached the server even when its answer does not come back: an
+            // unknown outcome is reported, never retried on its own, and the message stays visible.
+            var submitted = false
             try {
                 // A message sent before the socket is up says so instead of waiting in silence.
                 if (socket.state.value != SocketState.READY) _state.update { it.copy(connecting = true) }
@@ -464,7 +470,9 @@ class ChatController(
                         append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
                         if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                     }
+                    submitted = true
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                    markDelivery(key, Delivery.SENT)
                     hold.submitted()
                     Log.i(
                         TIMING_TAG,
@@ -473,12 +481,35 @@ class ChatController(
                     )
                 }
             } catch (e: Exception) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
                 hold.release()
                 awaitingStart = false
                 Log.w(TAG, "Send failed", e)
-                _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_send_failed)) }
+                val delivery = deliveryFor(e, submitted)
+                val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_send_failed)
+                failDelivery(key, delivery, error)
             }
         }.invokeOnCompletion { cause -> if (cause != null) hold.release() }
+    }
+
+    /**
+     * Whether the server may have taken the prompt: an answer that never came (a timeout or a lost
+     * connection) after the submit went out is unknown; a refusal or a failure before it is sent.
+     */
+    private fun deliveryFor(e: Exception, submitted: Boolean): Delivery =
+        if (!submitted || e is RpcException) Delivery.FAILED else if (e is IOException || e is TimeoutCancellationException) Delivery.UNKNOWN else Delivery.FAILED
+
+    private fun markDelivery(key: String, delivery: Delivery) = _state.update { state ->
+        state.copy(items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item })
+    }
+
+    /** The submission did not go through: the message keeps its place with the outcome, in one update. */
+    private fun failDelivery(key: String, delivery: Delivery, error: String) = _state.update { state ->
+        state.copy(
+            items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
+            running = false,
+            error = error,
+        )
     }
 
     /** Pictures go to the vision queue of the next turn; other files land in the workspace and are named in the prompt. */
@@ -530,10 +561,11 @@ class ChatController(
 
     private fun rewriteLast(replacement: String?) {
         val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
-        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}")
+        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING)
         val text = again.sent
         var hold: TurnHold? = null
         scope.launch {
+            var submitted = false
             try {
                 val live = ensureLive()
                 if (_state.value.running) socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
@@ -543,12 +575,17 @@ class ChatController(
                 _state.update { it.copy(items = kept + again, running = true, error = null) }
                 awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
+                submitted = true
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+                markDelivery(again.key, Delivery.SENT)
                 hold?.submitted()
             } catch (e: Exception) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
                 hold?.release()
                 awaitingStart = false
-                _state.update { it.copy(running = false, error = e.message ?: strings.get(R.string.error_failed)) }
+                val delivery = deliveryFor(e, submitted)
+                val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_failed)
+                failDelivery(again.key, delivery, error)
             }
         }.invokeOnCompletion { cause -> if (cause != null) hold?.release() }
     }

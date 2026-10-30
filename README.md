@@ -122,6 +122,10 @@ sees every release as new. A tag of any other shape fails the build.
   method, so such a chat is pinned on the phone only: other devices and the desktop do not see
   that pin.
 - The dashboard in gateway mode (`session_authority`) is handled for the common calls only.
+- A message whose submission answer is lost is kept and marked "Delivery not confirmed". The
+  dashboard's `prompt.submit` has no client message id and no idempotency key, so the app never
+  resends it on its own; what that means for retries and history is in
+  [docs/delivery.md](docs/delivery.md).
 
 ## License
 
