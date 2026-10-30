@@ -19,12 +19,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -40,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -50,6 +53,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ApprovalKind
 import org.evsyukov.hermes.chat.Prompt
 import org.evsyukov.hermes.data.remote.ModelChoices
+import org.evsyukov.hermes.data.remote.ModelProvider
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 @Composable
@@ -144,19 +148,47 @@ fun PromptSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The providers and models whose name contains [query], in the order the server gave. A provider
+ * with no matching model is left out, so its heading never sits over an empty list; an empty query
+ * gives the whole list back.
+ */
+internal fun matchingProviders(choices: ModelChoices, query: String): List<ModelProvider> {
+    val needle = query.trim()
+    if (needle.isEmpty()) return choices.providers
+    return choices.providers.mapNotNull { provider ->
+        val models = provider.models.filter { it.contains(needle, ignoreCase = true) }
+        if (models.isEmpty()) null else provider.copy(models = models)
+    }
+}
+
+/** The providers, models and their filter; apart from the sheet so it can be tested on its own. */
 @Composable
-fun ModelSheet(current: String?, load: suspend () -> ModelChoices, onPick: (String, String) -> Unit, onDismiss: () -> Unit) {
+internal fun ModelList(choices: ModelChoices, current: String?, onPick: (String, String) -> Unit) {
     val colors = ChatTheme.colors
-    val choices by produceState<Result<ModelChoices>?>(null) { value = runCatching { load() } }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.background) {
-        Text(stringResource(R.string.common_model), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
-        val result = choices
-        when {
-            result == null -> CircularProgressIndicator(Modifier.padding(32.dp).align(Alignment.CenterHorizontally))
-            result.isFailure -> Text(stringResource(R.string.chat_models_failed, result.exceptionOrNull()?.message.orEmpty()), color = colors.danger, modifier = Modifier.padding(20.dp))
-            else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp).navigationBarsPadding()) {
-                result.getOrThrow().providers.forEach { provider ->
+    var query by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = { Text(stringResource(R.string.chat_models_filter)) },
+            singleLine = true,
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, stringResource(R.string.search_clear)) }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("model-filter"),
+        )
+        val shown = matchingProviders(choices, query)
+        if (shown.isEmpty()) {
+            Text(
+                stringResource(R.string.chat_models_no_match, query.trim()),
+                color = colors.faintText, fontSize = 15.sp, modifier = Modifier.padding(20.dp),
+            )
+        } else {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+                shown.forEach { provider ->
                     item(key = "p:${provider.slug}") {
                         Text(
                             provider.name,
@@ -176,6 +208,22 @@ fun ModelSheet(current: String?, load: suspend () -> ModelChoices, onPick: (Stri
                 }
                 item { Spacer(Modifier.size(24.dp)) }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModelSheet(current: String?, load: suspend () -> ModelChoices, onPick: (String, String) -> Unit, onDismiss: () -> Unit) {
+    val colors = ChatTheme.colors
+    val choices by produceState<Result<ModelChoices>?>(null) { value = runCatching { load() } }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.background) {
+        Text(stringResource(R.string.common_model), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        val result = choices
+        when {
+            result == null -> CircularProgressIndicator(Modifier.padding(32.dp).align(Alignment.CenterHorizontally))
+            result.isFailure -> Text(stringResource(R.string.chat_models_failed, result.exceptionOrNull()?.message.orEmpty()), color = colors.danger, modifier = Modifier.padding(20.dp))
+            else -> ModelList(result.getOrThrow(), current, onPick)
         }
     }
 }
