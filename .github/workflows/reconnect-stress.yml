@@ -49,7 +49,8 @@ jobs:
               mkdir -p failed
               cp "run-$i.log" failed/
               cp -r app/build/test-results/testDebugUnitTest failed/ 2>/dev/null || true
-              break
+              # The artifact above is uploaded either way; the job itself must not look green.
+              exit 1
             fi
           done
         env:
