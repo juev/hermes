@@ -287,11 +287,34 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/Integrations.kt`,
 
 ## 12. Push
 
-- The `server/hermes-push` plugin and the UnifiedPush distributor on the phone: subscription, the device
-  identity, the encryption envelope.
-- What a platform without UnifiedPush needs instead, and what of this is the server's job.
+- The plugin sends after every finished turn, from the process that ran it: the dashboard for its own
+  chats, the gateway for Telegram, Matrix and cron. A turn of a `subagent` platform sends nothing; the
+  turn that started it does.
+- Its routes sit under `/api/plugins/hermes-push`, behind the dashboard sign-in: `GET /key` answers the
+  VAPID public key (`{"key": "<base64url, uncompressed P-256>"}`), `POST /subscriptions` takes
+  `{endpoint, p256dh, auth, name, device}`, `DELETE /subscriptions` takes `{endpoint}`, and
+  `POST /test` pushes to every subscription. Observed on v0.22.5 on 2026-10-30: the plugin is loaded on
+  the dashboard and `/key` answers.
+- `endpoint` must be `https`. A subscription is RFC 8291 Web Push: the client's P-256 public key
+  (`p256dh`, uncompressed, base64url) and a 16-byte `auth` secret; the body is aes128gcm for one record
+  under VAPID (RFC 8292). `device` is a stable id of the client, and a new subscription of the same
+  device replaces the older ones, so a reinstalled client does not get each push twice.
+- What arrives is `{"type": "turn", "session_id": …, "platform": …, "job": …, "preview": …}`, the
+  preview shortened to 600 characters.
+- Nothing in the envelope is UnifiedPush's own: the plugin only posts to the endpoint it was given, so a
+  platform without a distributor can be a subscriber too, as long as it can read that endpoint. A
+  macOS client registers an ntfy topic as its endpoint, keeps the private half of its P-256 pair and
+  the auth secret, reads the topic and opens the body itself — the receiving half of RFC 8291 in
+  CryptoKit was held against this plugin's own ciphertext and opens it. What that needs beyond the
+  protocol is a push service the client can read: on this deployment ntfy refuses to serve a topic to
+  an anonymous reader (`403 forbidden`), so the client needs a user with read access to the `up*`
+  topics.
+- The plugin drops a subscription when the push service answers `404` or `410`, which is its answer to
+  a phone that was wiped; ntfy does not, so a client that stops reading should delete its subscription
+  on the way out.
 
-Source: `../server/hermes-push/`, `../app/src/main/java/org/evsyukov/hermes/push/`.
+Source: `../server/hermes-push/` (`plugin_api.py`, `webpush.py`, `store.py`), observed on v0.22.5 against
+the dashboard on loffe, 2026-10-30.
 
 ## 13. Failure modes
 
