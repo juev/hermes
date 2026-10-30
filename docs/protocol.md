@@ -259,9 +259,25 @@ test `../app/src/test/java/org/evsyukov/hermes/chat/ServiceMessagesTest.kt`.
 
 ## 9. Approvals and questions
 
-- The approval request: its fields, how the kind of request is told apart, how an answer is sent.
-- Questions the agent asks, and how their answers travel.
-- `Unknown —` how a request is withdrawn when the turn ends elsewhere.
+- A question comes as a request of the gateway, not as an event: a frame with an `id` and a `method`,
+  answered with `socket.respond(id, result)` — the same id back — or refused with an error. The methods
+  a chat client answers: `approval`, `clarify`, `sudo` and `secret`. Anything else is a question of
+  another client (a window, a picker) and has to be refused at once, or the agent waits for an answer
+  that will never come. Read from the Android client; not yet observed, because observing it means
+  letting the agent run a command a person would have to approve.
+- `approval {session_id, command, description, pattern_key, tool_name?, choices?}`. The kind is in
+  `pattern_key`: `mcp_elicitation` is an MCP server confirming one action, the dashboard takes only
+  `once` and `deny` for it; a key that starts with `plugin_rule:` is a plugin rule holding a tool, whose
+  name is in `tool_name` or written into `command` as `<name> (plugin approval rule)`; anything else is
+  a command the dashboard flagged as dangerous. `choices` lists what the dashboard offers, `["once",
+  "deny"]` when it does not. The answer is `{"choice": "once"}` — one of the offered values.
+- `clarify {session_id, questions: [{qid, question, choices?}]}` asks a person for words or for one of
+  some choices. The answer is `{"answers": {qid: "…" | null}, "outcome": "submitted"}`, or
+  `{"outcome": "cancelled"}` when the person gives up.
+- `secret {prompt, env_var?}` and `sudo {command}` ask for a value the agent cannot read for itself;
+  the answer is `{"value": "…"}`, and a refusal is an error answer.
+- `Unknown —` how a request is withdrawn when the turn ends elsewhere: no event seen so far takes a
+  question back, so a client keeps showing one until it answers or the socket drops.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/chat/Approval.kt`,
 `../app/src/main/java/org/evsyukov/hermes/background/Notifications.kt`.
