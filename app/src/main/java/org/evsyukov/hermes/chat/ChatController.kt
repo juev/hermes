@@ -268,11 +268,8 @@ class ChatController(
         }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
-        // A card left open while the chat was away comes back with the server's deadline; one the
-        // server no longer has open ended while the socket was down and takes no answers.
-        val pending = connectionOf(result["pending_connection"] as? JsonObject)
-        _state.update { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
-        pending?.let(::showConnection)
+        // MUTANT: the old behaviour, before 9068471, for one CI run of the card test.
+        connectionOf(result["pending_connection"] as? JsonObject)?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
             val obj = request as? JsonObject ?: return@forEach
             val id = obj.string("id") ?: return@forEach
