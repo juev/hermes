@@ -25,12 +25,13 @@ import java.util.concurrent.TimeUnit
 private val Context.seenStore by preferencesDataStore(name = "seen")
 
 /**
- * Chats with activity the user has not seen: newer than the mark of the last check and not started
- * from this phone, whose answers [TurnWatcher] reports itself. The first check only sets the mark.
+ * Chats with activity the user has not seen: newer than the mark of the last check. The first check
+ * only sets the mark. A chat the phone started is reported like any other: the answer of one that is
+ * not open in the app is not announced by anyone else when push is off.
  */
-fun unseenChats(chats: List<ChatSummary>, mark: Double?, ownSource: String = "android"): List<ChatSummary> {
+fun unseenChats(chats: List<ChatSummary>, mark: Double?): List<ChatSummary> {
     if (mark == null) return emptyList()
-    return chats.filter { it.lastActive > mark && it.messageCount > 0 && it.source != ownSource && !it.archived }
+    return chats.filter { it.lastActive > mark && it.messageCount > 0 && !it.archived }
 }
 
 /**
@@ -45,7 +46,11 @@ class ActivityCheck(private val context: Context) {
         context.seenStore.edit { it[key(session)] = now }
     }
 
-    suspend fun run(session: ServerSession, notifications: Notifications, visibleChat: String?) = lock.withLock {
+    suspend fun run(
+        session: ServerSession,
+        announce: (chatId: String, title: String, text: String, own: Boolean) -> Unit,
+        visibleChat: String?,
+    ) = lock.withLock {
         val prefs = context.seenStore.data.first()
         val mark = prefs[key(session)]
         val chats = session.chat.list(limit = 30).chats
@@ -56,10 +61,11 @@ class ActivityCheck(private val context: Context) {
             } catch (e: Exception) {
                 null
             }
-            notifications.activity(
+            announce(
                 chat.id,
                 chat.label.ifBlank { context.getString(R.string.common_new_chat) },
                 stripMedia(reply ?: chat.preview).take(400).ifBlank { context.getString(R.string.notify_new_message) },
+                chat.source == ANDROID,
             )
         }
         val newest = chats.maxOfOrNull { it.lastActive } ?: mark ?: System.currentTimeMillis() / 1000.0
@@ -71,6 +77,9 @@ class ActivityCheck(private val context: Context) {
     companion object {
         private const val WORK = "activity-check"
         private const val MAX_NOTIFICATIONS = 5
+
+        /** The source the gateway records for a chat this app started. */
+        private const val ANDROID = "android"
 
         fun schedule(context: Context, minutes: Int) {
             val request = PeriodicWorkRequestBuilder<ActivityWorker>(minutes.toLong().coerceAtLeast(15), TimeUnit.MINUTES)
@@ -92,7 +101,7 @@ class ActivityWorker(context: Context, params: WorkerParameters) : CoroutineWork
         if (container.turns.inForeground || container.push.active) return Result.success()
         val session = container.connection.value?.session ?: return Result.success()
         return try {
-            container.activity.run(session, container.notifications, null)
+            container.activity.run(session, { id, title, text, own -> container.turns.announce(id, title, text, own = own) }, null)
             Result.success()
         } catch (e: Exception) {
             Log.w("HermesActivity", "Check failed", e)

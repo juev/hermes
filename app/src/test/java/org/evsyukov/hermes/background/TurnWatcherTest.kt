@@ -162,15 +162,74 @@ class TurnWatcherTest {
     fun `reading a chat clears its answer and lets the next one notify`() {
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         watcher.bind("live-1", "stored-1", "Chat")
-        watcher.onEvent(GatewayEvent("message.complete", "live-1", 2, buildJsonObject { put("text", "Done") }))
-        val manager = context.getSystemService(NotificationManager::class.java)
-        assertThat(shadowOf(manager).getNotification("chat", "stored-1".hashCode())).isNotNull()
-        assertThat(watcher.notifiedRecently("stored-1")).isTrue()
+        watcher.onEvent(complete("live-1"))
+        assertThat(posted("stored-1")).isNotNull()
 
         watcher.read("stored-1")
 
-        assertThat(shadowOf(manager).getNotification("chat", "stored-1".hashCode())).isNull()
-        assertThat(watcher.notifiedRecently("stored-1")).isFalse()
+        assertThat(posted("stored-1")).isNull()
+        // The next answer notifies again, even with the same words.
+        watcher.onEvent(start("live-1"))
+        watcher.onEvent(complete("live-1"))
+        assertThat(posted("stored-1")).isNotNull()
+    }
+
+    @Test
+    fun `the chat on the screen of the app in front is the one answer that is not announced`() {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val front = TurnWatcher(context, scope, MutableStateFlow<Connection?>(null), Notifications(context), keep, inFront = { true })
+        front.visibleChat = "stored-1"
+        front.bind("live-1", "stored-1", "Chat")
+
+        front.onEvent(complete("live-1"))
+
+        assertThat(posted("stored-1")).isNull()
+    }
+
+    @Test
+    fun `an answer of another chat is announced while the app is in front`() {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val front = TurnWatcher(context, scope, MutableStateFlow<Connection?>(null), Notifications(context), keep, inFront = { true })
+        // The list, the settings or another chat is on the screen; this chat is not.
+        front.visibleChat = "stored-2"
+        front.bind("live-1", "stored-1", "Chat")
+
+        front.onEvent(complete("live-1"))
+
+        val shown = posted("stored-1")
+        assertThat(shown).isNotNull()
+        assertThat(shown!!.channelId).isEqualTo(Notifications.ANSWERS)
+    }
+
+    @Test
+    fun `the foreground service that keeps the app alive is not the app in front`() {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        keep.value = true
+        assertThat(watcher.inForeground).isFalse()
+
+        watcher.bind("live-1", "stored-1", "Chat")
+        watcher.onEvent(complete("live-1"))
+
+        assertThat(posted("stored-1")).isNotNull()
+    }
+
+    @Test
+    fun `a push of the answer the socket announced is that same answer, and another answer notifies again`() {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        watcher.bind("live-1", "stored-1", "Chat")
+        watcher.onEvent(complete("live-1"))
+        val answer = capturedAnswer("stored-1")
+
+        // The push of that turn follows the socket event seconds later, cut to its first 600 characters.
+        watcher.announce("stored-1", "Chat", "Done", own = false)
+
+        assertThat(capturedAnswer("stored-1")).isEqualTo(answer)
+        assertThat(posted("stored-1")!!.channelId).isEqualTo(Notifications.ANSWERS)
+
+        // A new answer of the same chat minutes later is a notification of its own.
+        watcher.onEvent(start("live-1"))
+        watcher.onEvent(complete("live-1", "Second answer"))
+        assertThat(capturedAnswer("stored-1")).isEqualTo("Second answer")
     }
 
     @Test
@@ -272,7 +331,14 @@ class TurnWatcherTest {
 
     private fun start(live: String) = GatewayEvent("message.start", live, 1, JsonObject(emptyMap()))
 
-    private fun complete(live: String) = GatewayEvent("message.complete", live, 2, buildJsonObject { put("text", "Done") })
+    private fun complete(live: String, text: String = "Done") = GatewayEvent("message.complete", live, 2, buildJsonObject { put("text", text) })
+
+    /** The notification the shade holds for [chatId], or null when it holds none. */
+    private fun posted(chatId: String) =
+        shadowOf(context.getSystemService(NotificationManager::class.java)).getNotification("chat", chatId.hashCode())
+
+    /** The line the notification of [chatId] shows. */
+    private fun capturedAnswer(chatId: String) = posted(chatId)?.let { shadowOf(it).contentText?.toString() }
 
     @Test
     fun `the service stays sticky unless the switch is read as off`() {

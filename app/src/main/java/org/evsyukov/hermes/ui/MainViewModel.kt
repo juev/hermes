@@ -494,11 +494,15 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     fun push(screen: Screen) {
         stack.add(screen)
+        // The screen covers the chat: its answers are not being read, so they are announced.
+        container.turns.visibleChat = null
     }
 
     fun pop(): Boolean {
         if (stack.isEmpty()) return false
         stack.removeAt(stack.lastIndex)
+        // Back on the chat, the screen is the chat itself again.
+        if (stack.isEmpty()) container.turns.visibleChat = _chat.value?.state?.value?.storedId
         return true
     }
 

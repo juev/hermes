@@ -3,7 +3,7 @@
     <string name="app_name">Hermes</string>
     <string name="common_new_chat">Новый чат</string>
     <string name="notify_channel_answers">Ответы</string>
-    <string name="notify_channel_answers_desc">Агент закончил отвечать, пока приложение было свёрнуто</string>
+    <string name="notify_channel_answers_desc">Агент закончил отвечать в чате, который вы не читали</string>
     <string name="notify_channel_requests">Запросы агента</string>
     <string name="notify_channel_requests_desc">Разрешить команду, ответить на вопрос</string>
     <string name="notify_channel_activity">Новые события</string>

@@ -30,8 +30,9 @@ data class PushMessage(
 }
 
 /**
- * Turns a push into a notification, unless the app shows the chat itself: in front the list and
- * the chat update by their own, and an answer the app followed was announced by the watcher.
+ * Turns a push into a notification, unless the chat is on the screen of the app in front. The rule and
+ * the repeat it drops are the watcher's (`TurnWatcher.announce`): a push of the turn the socket of the
+ * app already announced is that same answer, not a second message.
  */
 class PushMessages(private val container: AppContainer) {
     suspend fun handle(content: ByteArray) {
@@ -42,12 +43,23 @@ class PushMessages(private val container: AppContainer) {
             return
         }
         val chatId = message.sessionId ?: return
-        if (container.turns.inForeground || container.turns.notifiedRecently(chatId)) return
         val session = container.connection.value?.session
         val title = withTimeoutOrNull(5_000) { runCatching { session?.chat?.get(chatId)?.title }.getOrNull() }
             ?.takeIf { it.isNotBlank() }
             ?: message.job
             ?: container.strings.get(R.string.common_new_chat)
-        notifications.activity(chatId, title, stripMedia(message.preview).ifBlank { container.strings.get(R.string.notify_new_message) })
+        container.turns.announce(
+            chatId,
+            title,
+            stripMedia(message.preview).ifBlank { container.strings.get(R.string.notify_new_message) },
+            // A chat of this app keeps the answers channel; cron, Telegram, Matrix and the other
+            // devices keep theirs.
+            own = message.platform == ANDROID,
+        )
+    }
+
+    private companion object {
+        /** The platform the gateway records for a turn the app submitted over its socket. */
+        const val ANDROID = "android"
     }
 }
