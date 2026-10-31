@@ -63,6 +63,14 @@ class TurnWatcher(
     private val notifications: Notifications,
     /** The permanent-connection switch as read from disk; null until it is. */
     private val keepConnected: StateFlow<Boolean?>,
+    /**
+     * Whether the app is in front, as the activity lifecycle says. A foreground service that keeps the
+     * process and its socket alive does not make the app front: an answer of a chat nobody is looking at
+     * must be announced, not taken for a read one.
+     */
+    private val inFront: () -> Boolean = {
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** Live session id to the stored id the notification opens. */
@@ -78,7 +86,10 @@ class TurnWatcher(
     var visibleChat: String? = null
 
     val inForeground: Boolean
-        get() = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        get() = inFront()
+
+    /** True when [storedId] is the chat on the screen of an app that is in front: its answer is read as it arrives. */
+    fun showing(storedId: String): Boolean = inForeground && visibleChat == storedId
 
     /** Called when a chat of the app joins its live session. */
     fun bind(liveId: String, storedId: String, title: String) {
@@ -86,11 +97,31 @@ class TurnWatcher(
         if (title.isNotBlank()) titles[storedId] = title
     }
 
-    private val notified = ConcurrentHashMap<String, Long>()
+    /** The words of the answer last announced for a chat, and when: a push of those words is that same answer. */
+    private val announced = ConcurrentHashMap<String, Pair<String, Long>>()
 
-    /** True when the watcher announced an answer of [storedId] within the last minutes; push then stays quiet. */
-    fun notifiedRecently(storedId: String): Boolean =
-        notified[storedId]?.let { System.currentTimeMillis() - it < 5 * 60_000 } ?: false
+    /**
+     * Announces a finished turn of [storedId], unless its chat is on the screen of the app in front.
+     * The same answer arrives twice — the socket of the app says the turn ended, the push of that turn
+     * follows seconds later — and is one notification; another answer is a new notification however
+     * recently this chat was announced. [own] tells a chat the phone opened from one of another channel
+     * or device, which keeps its own notification channel.
+     */
+    fun announce(storedId: String, title: String, text: String, failed: Boolean = false, own: Boolean = true) {
+        if (showing(storedId)) {
+            read(storedId)
+            return
+        }
+        val words = words(text) ?: return
+        val previous = announced[storedId]
+        if (previous != null && previous.first == words && now() - previous.second < DUPLICATE_MS) return
+        announced[storedId] = words to now()
+        if (own) notifications.answer(storedId, title, text, failed) else notifications.activity(storedId, title, text)
+    }
+
+    /** The first words of an answer, whitespace folded, to tell it from the next one. */
+    private fun words(text: String): String? =
+        text.split(' ', '\n', '\r', '\t').filter { it.isNotBlank() }.joinToString(" ").take(WORDS).ifBlank { null }
 
     /**
      * The chat is read now: its message notification leaves the shade, and the next message may
@@ -98,7 +129,7 @@ class TurnWatcher(
      */
     fun read(storedId: String) {
         notifications.cancelChat(storedId)
-        notified.remove(storedId)
+        announced.remove(storedId)
     }
 
     /** The live id under which the app has [storedId] open, if it has. */
@@ -212,17 +243,9 @@ class TurnWatcher(
                 streamed.remove(live)
                 _running.update { it - live }
                 val failed = event.payload.string("status") == "error"
-                if (!inForeground || visibleChat != stored) {
-                    val shown = if (failed) event.payload.string("error") ?: context.getString(R.string.notify_model_error) else stripMedia(text).take(400)
-                    if (shown.isNotBlank()) {
-                        notifications.answer(stored, titles[stored] ?: "Hermes", shown, failed)
-                        notified[stored] = System.currentTimeMillis()
-                    }
-                } else {
-                    // The answer is on the screen as it arrives: whatever an earlier one left in the
-                    // shade is read now, and the push of this turn is already accounted for.
-                    read(stored)
-                }
+                val shown = if (failed) event.payload.string("error") ?: context.getString(R.string.notify_model_error) else stripMedia(text).take(400)
+                // Every finished turn is announced, unless its chat is the one on the screen of the app in front.
+                if (showing(stored)) read(stored) else announce(stored, titles[stored] ?: "Hermes", shown, failed)
                 settle()
             }
             "request.cancel" -> event.payload.string("id")?.let(notifications::cancelRequest)
@@ -333,5 +356,11 @@ class TurnWatcher(
 
     private companion object {
         const val TAG = "HermesTurns"
+
+        /** How long a push of an answer the socket already announced is taken for that same answer. */
+        const val DUPLICATE_MS = 10 * 60_000L
+
+        /** How much of an answer tells it from the next one; a push carries only its beginning. */
+        const val WORDS = 200
     }
 }

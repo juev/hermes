@@ -20,11 +20,11 @@ class UnseenChatsTest {
     }
 
     @Test
-    fun `chats of this phone, empty and archived chats are left out`() {
+    fun `chats of this phone are reported too, while empty and archived ones are not`() {
         val result = unseenChats(
             listOf(chat("mine", 110.0, source = "android"), chat("empty", 110.0, messages = 0), chat("archived", 110.0, archived = true), chat("cron", 110.0, source = "cron")),
             mark = 100.0,
         )
-        assertThat(result.map { it.id }).containsExactly("cron")
+        assertThat(result.map { it.id }).containsExactly("mine", "cron")
     }
 }

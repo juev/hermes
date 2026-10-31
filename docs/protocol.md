@@ -401,9 +401,18 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/Integrations.kt`,
 - The plugin drops a subscription when the push service answers `404` or `410`, which is its answer to
   a phone that was wiped; ntfy does not, so a client that stops reading should delete its subscription
   on the way out.
+- The phone announces every finished turn and suppresses one case only: the chat whose screen is open
+  with the app in the foreground. The foreground service that keeps the process and the socket alive is
+  not the app in front, nor is the list, the settings or another chat — a push is not dropped because
+  the process is merely running. The same answer reaches the phone twice, as the socket's
+  `message.complete` and as the push of that turn, and the client tells them apart by the answer's own
+  words (the push carries its first 600 characters), never by a time window of the chat.
 
 Source: `../server/hermes-push/` (`plugin_api.py`, `webpush.py`, `store.py`), observed on v0.22.5 against
 the dashboard on loffe, 2026-10-30.
+
+Source of the client rule: `../app/src/main/java/org/evsyukov/hermes/background/TurnWatcher.kt`
+(`announce`, `showing`), `../app/src/main/java/org/evsyukov/hermes/push/PushMessages.kt`.
 
 ## 13. Failure modes
 

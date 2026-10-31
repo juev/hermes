@@ -3,7 +3,7 @@
     <string name="app_name">Hermes</string>
     <string name="common_new_chat">New chat</string>
     <string name="notify_channel_answers">Answers</string>
-    <string name="notify_channel_answers_desc">The agent finished replying while the app was in the background</string>
+    <string name="notify_channel_answers_desc">The agent finished replying in a chat you were not reading</string>
     <string name="notify_channel_requests">Agent requests</string>
     <string name="notify_channel_requests_desc">Allow a command, answer a question</string>
     <string name="notify_channel_activity">New activity</string>

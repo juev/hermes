@@ -44,7 +44,11 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   catalog Nous approved install with the keys they ask for, after the app shows what they clone,
   build and start.
 - A turn keeps running after the app is left: a foreground service holds the socket, and the
-  answer arrives as a notification. Approvals can be answered from the notification.
+  answer arrives as a notification. Every finished turn of every chat is announced, and the one
+  exception is the chat whose screen is open in front of the user: the list, the settings and another
+  chat do not count, and neither does the service that keeps the app alive. The same answer comes
+  twice — over the socket and then as the push of that turn — and is one notification; a later answer
+  is always a new one. Approvals can be answered from the notification.
 - Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
   ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
   encrypted. A self-hosted ntfy server works too; how to connect it is in

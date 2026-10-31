@@ -130,7 +130,7 @@ class AppContainer(context: Context) {
                 .collect { (c, _) ->
                     val current = settings.current.value
                     if (current.keepConnected && current.notifyActivity && !turns.inForeground) {
-                        runCatching { activity.run(c.session, notifications, turns.visibleChat) }
+                        runCatching { activity.run(c.session, { id, title, text, own -> turns.announce(id, title, text, own = own) }, turns.visibleChat) }
                     }
                 }
         }
