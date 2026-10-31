@@ -177,6 +177,24 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
   `session.interrupt {session_id}`, and the live session is released with `session.close {session_id}`.
 - Events that follow a join are not all turn events: `session.info` and `platforms.changed` arrive
   for the session itself and say what the chat is doing, not what the answer says.
+- A reconnect has two things to catch up on, and they are different questions. The **events** a client
+  missed are asked for with `session.events.since {session_id, last_seen}` — the live id and the last
+  `seq` it drew — which answers `{events, latest_seq, truncated, count, epoch, open_requests}`. `events`
+  are the event objects as they were sent (`{type, session_id, seq, payload}`), not JSON-RPC envelopes.
+  `truncated` is true once the frames between `last_seen` and the oldest kept one were evicted, and the
+  history is then the only truth. `epoch` is the dashboard process's numbering: when it differs from
+  `gateway.ready`'s `replay_epoch`, the process restarted and every `seq` began again, so a client has
+  to drop its watermark instead of trusting `events_since` to say nothing is new. The ring holds 512
+  events and 4 MB per session, and a torn-down session's ring is freed.
+- A **question** still waiting is not an event and is not in that ring: `session.resume`,
+  `session.activate` and `session.events.since` carry `open_requests`, the unanswered server→client
+  requests as `{id, method, params}` — with `answers` when a batched choice already has some locked —
+  so a client that was disconnected when one was asked still shows it instead of leaving the agent
+  parked on an approval nobody can see. The key is absent when nothing waits.
+- Reading the history again after a reconnect is a client's own choice and covers the same text: the
+  dashboard writes the answer down after each round of tools, so the stored history plus `inflight`
+  resumes a turn without the ring. The ring is what covers a client that does not re-read, and the
+  questions, which history cannot carry.
 - A handshake the dashboard will not accept — no ticket on a dashboard that wants one, an expired
   ticket — is answered `403` with an empty body, before any JSON-RPC frame is exchanged. The client
   cannot tell an expired ticket from a missing one by the answer; it fetches a fresh ticket and, when
@@ -186,11 +204,13 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
   client's default.
 
 Source, read on v0.22.5 and not yet reproduced against a live server:
-`../app/src/main/java/org/evsyukov/hermes/data/remote/` (`GatewaySocket.kt`, `GatewayChannel.kt`).
+`../app/src/main/java/org/evsyukov/hermes/data/remote/` (`GatewaySocket.kt`, `GatewayChannel.kt`) for the
+join, the heartbeat and the `403`; `tui_gateway/event_replay.py`, `tui_gateway/methods_session.py` and
+`tui_gateway/session_registry.py` for `session.events.since`, the epoch and `open_requests`.
 
-Still to fill here: reconnect and join — what a client sends when a connection opens, what it gets
-back, and what happens when the join answer is lost — and ping and liveness beyond the heartbeat above.
-The observation that settles the join question is a reconnect whose previous join answer never arrived.
+Still to fill here: what happens when the join answer itself is lost — a `session.resume` whose answer
+never arrived — and which methods take a timeout of their own. The observation that settles the first is
+a reconnect whose previous join answer never arrived.
 
 ## 6. Sessions, the sidebar and search
 
