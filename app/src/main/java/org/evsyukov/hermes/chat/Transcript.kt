@@ -43,6 +43,9 @@ enum class Delivery { SENDING, SENT, UNKNOWN, FAILED }
 sealed interface ChatItem {
     val key: String
 
+    /** When the message was written, in epoch seconds as the server keeps it; null for one with no time of its own. */
+    val time: Double?
+
     /**
      * A message the user sent. [text] is what the bubble shows; [sent] is what goes again on
      * regenerate, which for a skill invocation is the whole message the server built from it.
@@ -61,6 +64,7 @@ sealed interface ChatItem {
          * lost after it may have been sent, so the message is kept and no retry is made on its own.
          */
         val delivery: Delivery = Delivery.SENT,
+        override val time: Double? = null,
     ) : ChatItem {
         /**
          * The message as it goes again under [key]: regenerate sends what the server got, with the
@@ -71,7 +75,7 @@ sealed interface ChatItem {
     }
 
     /** The report of a cron job the server filed into the chat that scheduled the job. */
-    data class CronReport(override val key: String, val job: String, val text: String) : ChatItem
+    data class CronReport(override val key: String, val job: String, val text: String, override val time: Double? = null) : ChatItem
 
     data class Assistant(
         override val key: String,
@@ -79,6 +83,7 @@ sealed interface ChatItem {
         val streaming: Boolean,
         val error: String? = null,
         val interrupted: Boolean = false,
+        override val time: Double? = null,
     ) : ChatItem {
         /** The answer without tools and reasoning: what copying and reading aloud take. */
         val text: String get() = parts.filterIsInstance<Part.Text>().joinToString("\n\n") { it.text }.trim()
@@ -207,12 +212,14 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
     }
     for (m in messages) {
         if (m.hidden) continue
+        // The parser gives 0.0 to a row the server wrote without a time.
+        val time = m.timestamp.takeIf { it != 0.0 }
         when (m.role) {
             "user" -> {
                 flush()
                 val report = cronReport(m.text)
                 if (report != null) {
-                    items += ChatItem.CronReport("c${m.rowId}", report.first, report.second)
+                    items += ChatItem.CronReport("c${m.rowId}", report.first, report.second, time)
                     continue
                 }
                 val invocation = invocationOf(m.text)
@@ -220,7 +227,7 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
                 val (text, attachments) = splitUserText(written)
                 items += ChatItem.User(
                     "u${m.rowId}", text, attachments + m.images.map { Attachment(it, "image", true) }, m.rowId,
-                    quote = quote, invocation = invocation?.first, sent = m.text,
+                    quote = quote, invocation = invocation?.first, sent = m.text, time = time,
                 )
             }
             "assistant" -> {
@@ -228,7 +235,8 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
                 m.reasoning?.takeIf { it.isNotBlank() }?.let { parts += Part.Reasoning(it) }
                 if (m.text.isNotBlank()) parts += Part.Text(m.text)
                 m.toolCalls.forEach { call -> parts += Part.Tool(ToolRun(call.id, call.name, argumentContext(call.arguments), call.arguments, done = true)) }
-                current = ChatItem.Assistant(current?.key ?: "a${m.rowId}", parts, streaming = false)
+                // A turn spans several stored rows and keeps the time of the first of them.
+                current = ChatItem.Assistant(current?.key ?: "a${m.rowId}", parts, streaming = false, time = current?.time ?: time)
             }
             "tool" -> {
                 val turn = current ?: continue
@@ -246,28 +254,29 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
 /**
  * Applies one gateway event to the transcript of a live chat, the way the desktop app builds its
  * bubbles: deltas grow the last part of the open answer, tools become parts of their own, and
- * `message.complete` closes the answer with its final text.
+ * `message.complete` closes the answer with its final text. An answer it opens takes its time from
+ * [now], the clock of the phone, in epoch seconds.
  */
-fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): List<ChatItem> {
+fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String, now: () -> Double = ::nowSeconds): List<ChatItem> {
     val payload = event.payload
     return when (event.type) {
-        "message.start" -> openAnswer(items, keyOf)
+        "message.start" -> openAnswer(items, keyOf, now)
         "message.delta" -> {
             val text = (payload["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return items
-            updateOpen(openAnswer(items, keyOf)) { appendPart(it, text) { old -> Part.Text(old + text) } }
+            updateOpen(openAnswer(items, keyOf, now)) { appendPart(it, text) { old -> Part.Text(old + text) } }
         }
         "message.interim" -> {
             val text = payload.string("text").orEmpty()
             val streamed = payload["already_streamed"]?.let { (it as? JsonPrimitive)?.content == "true" } ?: false
-            if (streamed || text.isBlank()) items else updateOpen(openAnswer(items, keyOf)) { it + Part.Text(text) }
+            if (streamed || text.isBlank()) items else updateOpen(openAnswer(items, keyOf, now)) { it + Part.Text(text) }
         }
         "reasoning.delta" -> {
             val text = payload.string("text") ?: return items
-            updateOpen(openAnswer(items, keyOf)) { parts -> appendReasoning(parts, text) }
+            updateOpen(openAnswer(items, keyOf, now)) { parts -> appendReasoning(parts, text) }
         }
         "reasoning.available" -> {
             val text = payload.string("text") ?: return items
-            updateOpen(openAnswer(items, keyOf)) { parts -> placeReasoning(parts, text) }
+            updateOpen(openAnswer(items, keyOf, now)) { parts -> placeReasoning(parts, text) }
         }
         "tool.start" -> {
             val run = ToolRun(
@@ -277,7 +286,7 @@ fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): Lis
                 args = payload.string("args_text") ?: (payload["args"] as? JsonObject)?.toString().orEmpty(),
                 done = false,
             )
-            updateOpen(openAnswer(items, keyOf)) { parts ->
+            updateOpen(openAnswer(items, keyOf, now)) { parts ->
                 if (parts.any { it is Part.Tool && it.run.id == run.id }) parts else parts + Part.Tool(run)
             }
         }
@@ -308,7 +317,7 @@ fun reduce(items: List<ChatItem>, event: GatewayEvent, keyOf: () -> String): Lis
             } else {
                 null
             }
-            val opened = openAnswer(items, keyOf)
+            val opened = openAnswer(items, keyOf, now)
             val last = opened.last() as ChatItem.Assistant
             var parts = last.parts.map { if (it is Part.Tool && !it.run.done) Part.Tool(it.run.copy(done = true)) else it }
             // The final text replaces what streamed, which may lack the rendering the server applied at the end.
@@ -345,18 +354,21 @@ fun closeOpen(items: List<ChatItem>, interrupted: Boolean): List<ChatItem> {
  * events to come. [streamed] is all the text the turn produced so far: what the stored part lacks of
  * it is added, and text that does not continue the stored part is left out rather than shown twice.
  */
-fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String): List<ChatItem> {
+fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String, now: () -> Double = ::nowSeconds): List<ChatItem> {
     val last = items.lastOrNull()
     if (last is ChatItem.Assistant && last.streaming) return items
-    val opened = if (last is ChatItem.Assistant) items.dropLast(1) + last.copy(streaming = true) else openAnswer(items, keyOf)
+    val opened = if (last is ChatItem.Assistant) items.dropLast(1) + last.copy(streaming = true) else openAnswer(items, keyOf, now)
     val stored = (opened.last() as ChatItem.Assistant).parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
     val missing = if (streamed.startsWith(stored)) streamed.substring(stored.length) else ""
     return if (missing.isBlank()) opened else updateOpen(opened) { it + Part.Text(missing) }
 }
 
-private fun openAnswer(items: List<ChatItem>, keyOf: () -> String): List<ChatItem> {
+/** The clock of the phone in epoch seconds, the unit the server keeps its times in. */
+internal fun nowSeconds(): Double = System.currentTimeMillis() / 1000.0
+
+private fun openAnswer(items: List<ChatItem>, keyOf: () -> String, now: () -> Double): List<ChatItem> {
     val last = items.lastOrNull()
-    return if (last is ChatItem.Assistant && last.streaming) items else items + ChatItem.Assistant(keyOf(), emptyList(), streaming = true)
+    return if (last is ChatItem.Assistant && last.streaming) items else items + ChatItem.Assistant(keyOf(), emptyList(), streaming = true, time = now())
 }
 
 private fun updateOpen(items: List<ChatItem>, change: (List<Part>) -> List<Part>): List<ChatItem> {

@@ -13,7 +13,7 @@ class ToolGroupsTest {
     private fun tool(id: String) = Part.Tool(ToolRun(id, "terminal", "", "", done = true))
 
     @Test
-    fun `a cron run that thinks before each call folds into one group`() {
+    fun `a cron run that thinks before each call folds into one work block`() {
         // The shape of a stored cron run: every step is an assistant message with reasoning and a call, no text.
         var row = 0L
         fun step(id: String, reasoning: String?) = listOf(
@@ -25,43 +25,63 @@ class ToolGroupsTest {
             listOf(StoredMessage(++row, "assistant", "Готово", null, emptyList(), null, null, row.toDouble(), false, emptyList()))
         val answer = transcriptOf(messages).last() as ChatItem.Assistant
 
-        val blocks = groupTools(answer.parts)
+        val blocks = blocksOf(answer.parts)
 
-        assertThat(blocks).hasSize(3)
-        assertThat(blocks[0]).isEqualTo(Block.Single(Part.Reasoning("Смотрю логи")))
-        assertThat((blocks[1] as Block.Tools).runs.map { it.id }).containsExactly("c1", "c2", "c3", "c4", "c5").inOrder()
-        assertThat(blocks[2]).isEqualTo(Block.Single(Part.Text("Готово")))
+        assertThat(blocks).hasSize(2)
+        val work = blocks[0] as Block.Work
+        assertThat(work.parts.first()).isEqualTo(Part.Reasoning("Смотрю логи"))
+        assertThat(work.runs.map { it.id }).containsExactly("c1", "c2", "c3", "c4", "c5").inOrder()
+        assertThat(work.parts.filterIsInstance<Part.Reasoning>().map { it.text }).containsExactly("Смотрю логи", "Считаю", "Проверяю").inOrder()
+        assertThat(blocks[1]).isEqualTo(Block.Text("Готово"))
     }
 
     @Test
-    fun `reasoning between tools stays in the group in its place`() {
-        val blocks = groupTools(listOf(tool("a"), Part.Reasoning("r1"), tool("b"), tool("c")))
-
-        assertThat(blocks).containsExactly(Block.Tools(listOf(tool("a"), Part.Reasoning("r1"), tool("b"), tool("c"))))
+    fun `a turn with one call folds into one work block`() {
+        assertThat(blocksOf(listOf(tool("a"), Part.Text("Готово")))).containsExactly(Block.Work(listOf(tool("a"))), Block.Text("Готово")).inOrder()
     }
 
     @Test
-    fun `reasoning after the last tool stays outside the group`() {
-        val blocks = groupTools(listOf(tool("a"), tool("b"), tool("c"), Part.Reasoning("still thinking")))
+    fun `a turn with two calls folds into one work block`() {
+        assertThat(blocksOf(listOf(tool("a"), tool("b")))).containsExactly(Block.Work(listOf(tool("a"), tool("b"))))
+    }
 
-        assertThat(blocks).containsExactly(
-            Block.Tools(listOf(tool("a"), tool("b"), tool("c"))),
-            Block.Single(Part.Reasoning("still thinking")),
+    @Test
+    fun `a lone reasoning folds into a work block`() {
+        assertThat(blocksOf(listOf(Part.Reasoning("думаю"), Part.Text("Ответ")))).containsExactly(
+            Block.Work(listOf(Part.Reasoning("думаю"))),
+            Block.Text("Ответ"),
         ).inOrder()
     }
 
     @Test
-    fun `text between tools splits the run`() {
-        val blocks = groupTools(listOf(tool("a"), tool("b"), Part.Text("Промежуточный ответ"), tool("c"), tool("d")))
+    fun `reasoning between calls stays in its place and reasoning after the last call is kept`() {
+        val parts = listOf(tool("a"), Part.Reasoning("r1"), tool("b"), Part.Reasoning("still thinking"))
 
-        assertThat(blocks.none { it is Block.Tools }).isTrue()
-        assertThat(blocks).hasSize(5)
+        assertThat(blocksOf(parts)).containsExactly(Block.Work(parts))
     }
 
     @Test
-    fun `fewer than three tools stay single with their reasoning`() {
-        val blocks = groupTools(listOf(tool("a"), Part.Reasoning("r"), tool("b")))
+    fun `a text splits the work`() {
+        val blocks = blocksOf(listOf(tool("a"), tool("b"), Part.Text("Промежуточный ответ"), tool("c"), Part.Reasoning("r")))
 
-        assertThat(blocks).containsExactly(Block.Single(tool("a")), Block.Single(Part.Reasoning("r")), Block.Single(tool("b"))).inOrder()
+        assertThat(blocks).containsExactly(
+            Block.Work(listOf(tool("a"), tool("b"))),
+            Block.Text("Промежуточный ответ"),
+            Block.Work(listOf(tool("c"), Part.Reasoning("r"))),
+        ).inOrder()
+    }
+
+    @Test
+    fun `the parts keep the order they were produced in`() {
+        val parts = listOf(Part.Reasoning("r0"), Part.Text("t1"), tool("a"), Part.Reasoning("r1"), tool("b"), Part.Text("t2"), Part.Text("t3"), tool("c"))
+
+        val flattened = blocksOf(parts).flatMap { block ->
+            when (block) {
+                is Block.Text -> listOf(Part.Text(block.text))
+                is Block.Work -> block.parts
+            }
+        }
+
+        assertThat(flattened).containsExactlyElementsIn(parts).inOrder()
     }
 }

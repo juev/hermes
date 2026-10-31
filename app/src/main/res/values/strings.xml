@@ -263,7 +263,13 @@
     <string name="chat_regenerate">Answer again</string>
     <string name="chat_reasoning_live">Reasoning…</string>
     <string name="chat_reasoning">Reasoning</string>
-    <string name="chat_tools_group">Tools: %1$d · %2$s</string>
+    <plurals name="chat_work_runs">
+        <item quantity="one">%1$d tool run</item>
+        <item quantity="other">%1$d tool runs</item>
+    </plurals>
+    <string name="chat_work_reasoning">reasoning</string>
+    <string name="chat_day_today">Today</string>
+    <string name="chat_day_yesterday">Yesterday</string>
     <string name="chat_seconds">%1$.1f s</string>
     <string name="chat_no_details">No details</string>
     <string name="chat_tool_terminal">Terminal</string>
