@@ -234,6 +234,12 @@ The observation that settles the join question is a reconnect whose previous joi
   phone; whether a macOS client should do the same is `Unknown —` until a pinned chat is met on a plain
   dashboard.
 
+The dashboard's own web client splits eight sources into its Chats and Automation categories — `cron`,
+`tool`, `oneshot`, `api_server`, `acp`, `hermes_flow`, `vulcan_delegate`, `webhook`
+(`web/src/pages/SessionsPage_sources.tsx`, `AUTOMATION_SESSION_SOURCES`). The Android and the macOS
+client send the same set without `cron` as `exclude_sources`, so a scheduled run is a row of their one
+chat list, its source named on it, and a one-shot run is not a chat at all.
+
 Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/ChatApi.kt` (`list`, `messages`) for the
 parameters a client sends; the shapes were observed on v0.22.5 against the dashboard on loffe on
 2026-10-30 and captured in `docs/fixtures/sessions/`.

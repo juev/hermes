@@ -57,11 +57,10 @@ sealed interface Screen {
     data class Viewer(val file: ViewerFile) : Screen
 }
 
-/** What the sidebar lists: conversations, the archive, or the runs of scheduled jobs. */
+/** What the sidebar lists: conversations or the archive. */
 enum class ListMode(val archived: Boolean, val sources: String?, val excludeSources: String?) {
-    CHATS(false, null, "cron"),
+    CHATS(false, null, "oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
     ARCHIVE(true, null, null),
-    CRON(false, "cron", null),
     ;
 
     /** Whether [chat] belongs to this list, as the server filters it. */

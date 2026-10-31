@@ -29,7 +29,6 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Unarchive
@@ -125,13 +124,12 @@ fun Sidebar(
             item { NavRow(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), onClick = actions.onNewChat) }
             item { NavRow(Icons.Outlined.Dns, stringResource(R.string.sidebar_server), onClick = actions.onAdmin) }
             if (state.mode == ListMode.CHATS) {
-                item { NavRow(Icons.Outlined.Schedule, stringResource(R.string.sidebar_cron), onClick = { actions.onShowList(ListMode.CRON) }) }
                 item { NavRow(Icons.Outlined.Archive, stringResource(R.string.sidebar_archive), onClick = { actions.onShowList(ListMode.ARCHIVE) }) }
             } else {
                 item { NavRow(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.sidebar_back), onClick = { actions.onShowList(ListMode.CHATS) }) }
                 item {
                     Text(
-                        if (state.mode == ListMode.CRON) stringResource(R.string.sidebar_cron_title) else stringResource(R.string.sidebar_archive),
+                        stringResource(R.string.sidebar_archive),
                         color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(start = 16.dp, top = 12.dp),
                     )
@@ -152,7 +150,6 @@ fun Sidebar(
                         when (state.mode) {
                             ListMode.CHATS -> stringResource(R.string.sidebar_empty_chats)
                             ListMode.ARCHIVE -> stringResource(R.string.sidebar_empty_archive)
-                            ListMode.CRON -> stringResource(R.string.sidebar_empty_cron)
                         },
                         color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
                     )

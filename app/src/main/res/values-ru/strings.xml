@@ -56,14 +56,11 @@
     <string name="sidebar_unread">Непрочитано</string>
     <string name="sidebar_search">Поиск</string>
     <string name="sidebar_server">Управление сервером</string>
-    <string name="sidebar_cron">Задачи cron</string>
     <string name="sidebar_archive">Архив</string>
     <string name="sidebar_back">Назад к чатам</string>
-    <string name="sidebar_cron_title">Прогоны задач по расписанию</string>
     <string name="sidebar_load_failed">Список не загрузился: %1$s</string>
     <string name="sidebar_empty_chats">Чатов пока нет</string>
     <string name="sidebar_empty_archive">В архиве пусто</string>
-    <string name="sidebar_empty_cron">Прогонов пока нет</string>
     <string name="sidebar_group_pinned">Закреплённые</string>
     <string name="sidebar_group_today">Сегодня</string>
     <string name="sidebar_group_yesterday">Вчера</string>
