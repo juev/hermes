@@ -56,14 +56,11 @@
     <string name="sidebar_unread">Unread</string>
     <string name="sidebar_search">Search</string>
     <string name="sidebar_server">Server</string>
-    <string name="sidebar_cron">Cron jobs</string>
     <string name="sidebar_archive">Archive</string>
     <string name="sidebar_back">Back to chats</string>
-    <string name="sidebar_cron_title">Scheduled runs</string>
     <string name="sidebar_load_failed">Couldn\'t load the list: %1$s</string>
     <string name="sidebar_empty_chats">No chats yet</string>
     <string name="sidebar_empty_archive">The archive is empty</string>
-    <string name="sidebar_empty_cron">No runs yet</string>
     <string name="sidebar_group_pinned">Pinned</string>
     <string name="sidebar_group_today">Today</string>
     <string name="sidebar_group_yesterday">Yesterday</string>

@@ -35,6 +35,7 @@ class ChatPinsTest {
 
     /** What the mutations asked to pin on the phone, in order. */
     private val local = mutableListOf<Pair<String, Boolean>>()
+    private lateinit var chats: ChatApi
     private lateinit var mutations: ChatMutations
 
     @Before
@@ -42,7 +43,8 @@ class ChatPinsTest {
         server.start()
         val strings = AppStrings(context.resources)
         val http = HermesHttp(server.url("/"), OkHttpClient(), tokens = { null }, saveTokens = {}, strings = strings)
-        mutations = ChatMutations(ChatApi(http), GatewaySocket(http, scope, strings), liveOf = { null }, pinLocally = { id, pinned -> local += id to pinned })
+        chats = ChatApi(http)
+        mutations = ChatMutations(chats, GatewaySocket(http, scope, strings), liveOf = { null }, pinLocally = { id, pinned -> local += id to pinned })
     }
 
     @After
@@ -133,11 +135,26 @@ class ChatPinsTest {
     @Test
     fun `a list takes the chats its filters take`() {
         assertThat(ListMode.CHATS.admits(chat("a", source = "android"))).isTrue()
-        assertThat(ListMode.CHATS.admits(chat("a", source = "cron"))).isFalse()
+        assertThat(ListMode.CHATS.admits(chat("a", source = "cron"))).isTrue()          // cron is a row of the list now
+        assertThat(ListMode.CHATS.admits(chat("a", source = "oneshot"))).isFalse()
+        assertThat(ListMode.CHATS.admits(chat("a", source = "webhook"))).isFalse()
+        assertThat(ListMode.CHATS.admits(chat("a", source = "telegram"))).isTrue()
         assertThat(ListMode.CHATS.admits(chat("a", archived = true))).isFalse()
         assertThat(ListMode.ARCHIVE.admits(chat("a", archived = true))).isTrue()
-        assertThat(ListMode.CRON.admits(chat("a", source = "cron"))).isTrue()
-        assertThat(ListMode.CRON.admits(chat("a", source = "telegram"))).isFalse()
+    }
+
+    @Test
+    fun `the chat list asks the server to leave out the service runs but cron`() = runBlocking<Unit> {
+        server.enqueue(MockResponse.Builder().addHeader("Content-Type", "application/json").body("""{"sessions": [], "total": 0}""").build())
+        val mode = ListMode.CHATS
+
+        chats.list(archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+
+        val url = server.takeRequest().url
+        assertThat(url.encodedPath).isEqualTo("/api/sessions")
+        assertThat(url.queryParameter("exclude_sources")).isEqualTo("oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook")
+        assertThat(url.queryParameter("exclude_sources")!!.split(',')).doesNotContain("cron")
+        assertThat(url.queryParameter("sources")).isNull()
     }
 
     private fun snapshot() = MockResponse.Builder().body("""{"runtime_revision": 3, "runtime_generation": 1}""").build()

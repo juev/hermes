@@ -15,8 +15,9 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   model on its own, such as a finished background process, is not shown. Notifications carry
   the text without Markdown syntax. The socket connects while the app checks the server at start,
   and a message sent before it is up says that the app is connecting.
-- The drawer lists chats by date and source (Telegram, Matrix), with pinned chats, the archive
-  and cron runs in a section of their own. Search uses the server's full-text index.
+- The drawer lists chats by date, with pinned chats and the archive. A chat that came in from
+  elsewhere names its source on its row (Telegram, Matrix, cron); cron runs have no section of
+  their own. Search uses the server's full-text index.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
 - Hermes is in the Android share sheet. A link, text, pictures or files shared from another app
