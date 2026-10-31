@@ -433,7 +433,7 @@ class ChatController(
                 storedId = storedId ?: it.storedId,
                 running = running,
                 model = info?.string("model") ?: it.model,
-                items = if (resumed) resumeTurn(it.items, streamed) { "a${keys.incrementAndGet()}" } else it.items,
+                items = if (resumed) resumeTurn(it.items, streamed, keyOf = { "a${keys.incrementAndGet()}" }) else it.items,
             )
         }
         if (stored == null && storedId != null) onSessionCreated(storedId)
@@ -464,7 +464,7 @@ class ChatController(
         if (text.isBlank() && attachments.isEmpty()) return
         val key = "local${keys.incrementAndGet()}"
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
-        _state.update { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING), running = true, error = null) }
+        _state.update { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
         awaitingStart = true
         val hold = onTurnStart()
         val started = System.currentTimeMillis().also { sentAt = it }
@@ -581,7 +581,7 @@ class ChatController(
 
     private fun rewriteLast(replacement: String?) {
         val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
-        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING)
+        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
         val text = again.sent
         var hold: TurnHold? = null
         scope.launch {
@@ -930,7 +930,7 @@ class ChatController(
             "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
             "connection.update" -> _state.update { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
         }
-        _state.update { it.copy(items = reduce(it.items, event) { "a${keys.incrementAndGet()}" }) }
+        _state.update { it.copy(items = reduce(it.items, event, keyOf = { "a${keys.incrementAndGet()}" })) }
     }
 
     /**

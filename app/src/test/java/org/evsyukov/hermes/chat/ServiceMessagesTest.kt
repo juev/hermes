@@ -20,7 +20,7 @@ class ServiceMessagesTest {
     fun `a cron report stands on its own under the name of its job`() {
         val item = only("[Cron delivery: research-daily]\n**Тема:** NixOS и Ansible.\n\n**PR:** [#10](https://github.com/juev/research/pull/10)")
 
-        assertThat(item).isEqualTo(ChatItem.CronReport("c7", "research-daily", "**Тема:** NixOS и Ansible.\n\n**PR:** [#10](https://github.com/juev/research/pull/10)"))
+        assertThat(item).isEqualTo(ChatItem.CronReport("c7", "research-daily", "**Тема:** NixOS и Ansible.\n\n**PR:** [#10](https://github.com/juev/research/pull/10)", time = 1.0))
     }
 
     @Test

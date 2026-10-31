@@ -28,7 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,6 +85,8 @@ import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LocalAttachment
 import org.evsyukov.hermes.chat.Part
+import org.evsyukov.hermes.chat.TranscriptRow
+import org.evsyukov.hermes.chat.transcriptRows
 import org.evsyukov.hermes.data.remote.ModelChoices
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.sidebar.RenameDialog
@@ -138,7 +140,11 @@ fun ChatScreen(
     // keyboard keeps the last message in view without scrolling by hand.
     val listState = remember(controller) { LazyListState() }
     val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
-    val reversed = remember(state.items) { state.items.asReversed() }
+    // The rows are reversed with their day separators, so a separator stays above the messages of its day.
+    val reversed = remember(state.items) { transcriptRows(state.items).asReversed() }
+    // Only the last message of the chat can be answered again, and only the last of the user edited.
+    val lastAnswer = (state.items.lastOrNull() as? ChatItem.Assistant)?.key
+    val lastUser = state.items.lastOrNull { it is ChatItem.User }?.key
     // A new message joins the reader who is at the end; one who scrolled up stays put.
     LaunchedEffect(state.items.size) {
         if (atBottom || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
@@ -276,14 +282,17 @@ fun ChatScreen(
                             Column(Modifier.padding(horizontal = 16.dp)) { ConnectionCard(connection, connectionActions) }
                         }
                     }
-                    itemsIndexed(reversed, key = { _, item -> item.key }) { index, item ->
-                        when (item) {
-                            is ChatItem.User -> UserBubble(item, last = reversed.indexOfFirst { it is ChatItem.User } == index, actions = actions)
-                            is ChatItem.CronReport -> CronReportMessage(item)
-                            is ChatItem.Assistant -> AssistantMessage(
-                                item, last = index == 0, showReasoning = settings.showReasoning, status = state.status, actions = actions,
-                                connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,
-                            )
+                    items(reversed, key = { row -> rowKey(row) }) { row ->
+                        when (row) {
+                            is TranscriptRow.Day -> DaySeparator(row.date)
+                            is TranscriptRow.Message -> when (val item = row.item) {
+                                is ChatItem.User -> UserBubble(item, last = item.key == lastUser, actions = actions)
+                                is ChatItem.CronReport -> CronReportMessage(item)
+                                is ChatItem.Assistant -> AssistantMessage(
+                                    item, last = item.key == lastAnswer, showReasoning = settings.showReasoning, status = state.status, actions = actions,
+                                    connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,
+                                )
+                            }
                         }
                     }
                 }
@@ -400,4 +409,9 @@ private fun EmptyChat(serverName: String, suggestions: Boolean, onSuggestion: (S
             )
         }
     }
+}
+
+private fun rowKey(row: TranscriptRow): String = when (row) {
+    is TranscriptRow.Day -> "day:${row.date}"
+    is TranscriptRow.Message -> row.item.key
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -62,7 +63,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,14 +74,17 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import org.evsyukov.hermes.R
 import java.io.File
+import java.time.LocalDate
 import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.ConnectionOp
+import org.evsyukov.hermes.chat.DayLabel
 import org.evsyukov.hermes.chat.Delivery
 import org.evsyukov.hermes.chat.Invocation
 import org.evsyukov.hermes.chat.Part
 import org.evsyukov.hermes.chat.ToolRun
+import org.evsyukov.hermes.chat.formatDay
 import org.evsyukov.hermes.chat.stripMedia
 import org.evsyukov.hermes.ui.common.MarkdownText
 import org.evsyukov.hermes.ui.common.keepLineBreaks
@@ -248,21 +254,17 @@ fun AssistantMessage(
         if (item.parts.isEmpty() && item.streaming) {
             TypingDot(status)
         }
-        val blocks = groupTools(item.parts)
+        val blocks = blocksOf(item.parts)
         blocks.forEachIndexed { index, block ->
             when (block) {
-                is Block.Single -> when (val part = block.part) {
-                    is Part.Reasoning -> ReasoningBlock(part.text, streaming = item.streaming && index == blocks.lastIndex, open = showReasoning)
-                    is Part.Tool -> ToolRow(part.run)
-                    is Part.Text -> {
-                        val text = stripMedia(part.text)
-                        if (text.isNotBlank()) SelectionContainer { MarkdownText(keepLineBreaks(text), Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
-                    }
+                is Block.Text -> {
+                    val text = stripMedia(block.text)
+                    if (text.isNotBlank()) SelectionContainer { MarkdownText(keepLineBreaks(text), Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
                 }
-                is Block.Tools -> ToolGroup(block, showReasoning)
+                is Block.Work -> WorkLine(block, streaming = item.streaming && index == blocks.lastIndex, showReasoning = showReasoning)
             }
         }
-        // The cards of the tools of this answer, outside a folded group of tools.
+        // The cards of the tools of this answer, outside a folded line of work.
         if (connectionActions != null) connections.forEach { ConnectionCard(it, connectionActions) }
         if (item.streaming && item.parts.isNotEmpty() && item.parts.last() !is Part.Text) TypingDot(status)
         val media = item.media
@@ -329,35 +331,61 @@ private fun ReasoningBlock(text: String, streaming: Boolean, open: Boolean) {
     }
 }
 
+/**
+ * One line for everything a turn did between two pieces of text: how many calls, which of them, and
+ * whether it also thought. Opening it gives the runs and the reasoning back, each where it was produced.
+ */
 @Composable
-private fun ToolGroup(group: Block.Tools, showReasoning: Boolean) {
+private fun WorkLine(work: Block.Work, streaming: Boolean, showReasoning: Boolean) {
     val colors = ChatTheme.colors
-    var expanded by remember { mutableStateOf(false) }
-    val runs = group.runs
+    var expanded by remember { mutableStateOf(showReasoning) }
+    val runs = work.runs
     val running = runs.any { !it.done }
+    val pieces = mutableListOf<String>()
+    if (runs.isNotEmpty()) {
+        pieces += pluralStringResource(R.plurals.chat_work_runs, runs.size, runs.size)
+        // The first three calls by name, as the desktop app counts them; the rest only in the number.
+        val names = runs.take(3).joinToString(", ") { it.name }
+        pieces += if (runs.size > 3) "$names +${runs.size - 3}" else names
+    }
+    if (work.reasoning) pieces += stringResource(R.string.chat_work_reasoning)
     Column(Modifier.padding(vertical = 2.dp)) {
         Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded = !expanded }.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             if (running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = colors.secondaryText)
-            else Icon(Icons.Outlined.Build, null, tint = colors.faintText, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(8.dp))
-            val names = runs.map { toolTitle(it.copy(context = "")) }.distinct().take(3).joinToString(", ")
+            else Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
-                stringResource(R.string.chat_tools_group, runs.size, names),
-                color = colors.secondaryText, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                pieces.joinToString(" · "),
+                color = colors.secondaryText, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
         }
         AnimatedVisibility(expanded) {
             Column(Modifier.padding(start = 12.dp)) {
-                group.steps.forEach { step ->
-                    when (step) {
-                        is Part.Tool -> ToolRow(step.run)
-                        is Part.Reasoning -> ReasoningBlock(step.text, streaming = false, open = showReasoning)
+                work.parts.forEachIndexed { index, part ->
+                    when (part) {
+                        is Part.Tool -> ToolRow(part.run)
+                        is Part.Reasoning -> ReasoningBlock(part.text, streaming = streaming && index == work.parts.lastIndex, open = showReasoning)
                         is Part.Text -> Unit
                     }
                 }
             }
         }
+    }
+}
+
+/** The line that opens a day: the date between two thin rules, quiet enough to read past. */
+@Composable
+fun DaySeparator(day: LocalDate) {
+    val colors = ChatTheme.colors
+    val label = when (val words = formatDay(day, LocalDate.now(), LocalConfiguration.current.locales[0])) {
+        DayLabel.Today -> stringResource(R.string.chat_day_today)
+        DayLabel.Yesterday -> stringResource(R.string.chat_day_yesterday)
+        is DayLabel.Date -> words.text
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).height(1.dp).background(colors.divider))
+        Text(label, color = colors.faintText, fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(horizontal = 10.dp))
+        Box(Modifier.weight(1f).height(1.dp).background(colors.divider))
     }
 }
 

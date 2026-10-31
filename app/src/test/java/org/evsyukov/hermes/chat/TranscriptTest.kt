@@ -199,4 +199,27 @@ class TranscriptTest {
         val items = transcriptOf(listOf(StoredMessage(1, "user", "[System: x]", null, emptyList(), null, null, 1.0, true, emptyList())))
         assertThat(items).isEmpty()
     }
+
+    @Test
+    fun `a stored turn keeps the time of its first row and a row without one has none`() {
+        val items = transcriptOf(
+            listOf(
+                StoredMessage(1, "user", "найди", null, emptyList(), null, null, 0.0, false, emptyList()),
+                StoredMessage(2, "assistant", "", null, listOf(ToolCallInfo("c1", "terminal", "{}")), null, null, 100.0, false, emptyList()),
+                StoredMessage(3, "tool", "ok", null, emptyList(), "terminal", "c1", 101.0, false, emptyList()),
+                StoredMessage(4, "assistant", "Готово", null, emptyList(), null, null, 102.0, false, emptyList()),
+            ),
+        )
+
+        assertThat(items.map { it.time }).containsExactly(null, 100.0).inOrder()
+    }
+
+    @Test
+    fun `an answer the app opens takes the clock of the phone`() {
+        val items = listOf(event("message.start"), event("message.delta", """{"text":"Привет"}""")).fold(listOf<ChatItem>()) { items, e ->
+            reduce(items, e, keys, now = { 1_700_000_000.0 })
+        }
+
+        assertThat(items.single().time).isEqualTo(1_700_000_000.0)
+    }
 }

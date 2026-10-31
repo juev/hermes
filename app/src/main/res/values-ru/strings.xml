@@ -263,7 +263,15 @@
     <string name="chat_regenerate">Ответить заново</string>
     <string name="chat_reasoning_live">Размышляет…</string>
     <string name="chat_reasoning">Размышления</string>
-    <string name="chat_tools_group">Инструменты: %1$d · %2$s</string>
+    <plurals name="chat_work_runs">
+        <item quantity="one">%1$d вызов</item>
+        <item quantity="few">%1$d вызова</item>
+        <item quantity="many">%1$d вызовов</item>
+        <item quantity="other">%1$d вызова</item>
+    </plurals>
+    <string name="chat_work_reasoning">размышления</string>
+    <string name="chat_day_today">Сегодня</string>
+    <string name="chat_day_yesterday">Вчера</string>
     <string name="chat_seconds">%1$.1f с</string>
     <string name="chat_no_details">Без подробностей</string>
     <string name="chat_tool_terminal">Терминал</string>
