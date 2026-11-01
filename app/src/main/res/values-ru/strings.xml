@@ -54,6 +54,14 @@
     <string name="setup_page_back">Вернуться в Hermes</string>
     <string name="error_link_unreadable">Ссылка на сервер не разобрана</string>
     <string name="sidebar_unread">Непрочитано</string>
+    <plurals name="sidebar_cron_runs">
+        <item quantity="one">%1$d запуск</item>
+        <item quantity="few">%1$d запуска</item>
+        <item quantity="many">%1$d запусков</item>
+        <item quantity="other">%1$d запуска</item>
+    </plurals>
+    <string name="sidebar_cron_expand">Показать прошлые запуски</string>
+    <string name="sidebar_cron_collapse">Скрыть прошлые запуски</string>
     <string name="sidebar_search">Поиск</string>
     <string name="sidebar_server">Управление сервером</string>
     <string name="sidebar_archive">Архив</string>

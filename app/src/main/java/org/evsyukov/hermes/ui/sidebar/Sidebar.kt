@@ -28,6 +28,8 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -102,6 +105,7 @@ fun Sidebar(
     val colors = ChatTheme.colors
     val zone = remember { ZoneId.systemDefault() }
     val groups = remember(state.chats) { groupChats(state.chats, LocalDate.now(zone), zone) }
+    var expanded by remember { mutableStateOf(emptySet<String>()) }
     val listState = rememberLazyListState()
     val nearEnd by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 >= listState.layoutInfo.totalItemsCount - 5 } }
     LaunchedEffect(nearEnd, state.chats.size) { if (nearEnd) actions.onLoadMore() }
@@ -163,8 +167,19 @@ fun Sidebar(
                         modifier = Modifier.padding(start = 16.dp, top = 18.dp, bottom = 6.dp),
                     )
                 }
-                items(group.chats, key = { it.id }) { chat ->
-                    ChatRow(chat, chat.id == currentChatId, actions)
+                items(group.rows, key = { it.chat.id }) { row ->
+                    val open = row.chat.id in expanded
+                    Column {
+                        ChatRow(
+                            row.chat, row.chat.id == currentChatId, actions,
+                            runs = row.runs, expanded = open,
+                            onToggleRuns = { expanded = if (open) expanded - row.chat.id else expanded + row.chat.id },
+                            jobLabel = if (row.folded) cronJobKey(row.chat) else null,
+                        )
+                        if (open) row.runs.forEach { run ->
+                            Box(Modifier.padding(start = 14.dp)) { ChatRow(run, run.id == currentChatId, actions) }
+                        }
+                    }
                 }
             }
             if (state.loading && state.chats.isNotEmpty()) {
@@ -205,14 +220,23 @@ private fun NavRow(icon: ImageVector, label: String, onClick: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarActions) {
+internal fun ChatRow(
+    chat: ChatSummary,
+    selected: Boolean,
+    actions: SidebarActions,
+    runs: List<ChatSummary> = emptyList(),
+    expanded: Boolean = false,
+    onToggleRuns: (() -> Unit)? = null,
+    jobLabel: String? = null,
+) {
     val colors = ChatTheme.colors
     val haptics = LocalHapticFeedback.current
     val unreadMark = stringResource(R.string.sidebar_unread)
+    val unread = chat.unread || runs.any { it.unread }
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
-    val label = chat.label.ifBlank { stringResource(R.string.common_new_chat) }
+    val label = jobLabel ?: chat.label.ifBlank { stringResource(R.string.common_new_chat) }
     Box {
         Row(
             Modifier
@@ -237,16 +261,32 @@ internal fun ChatRow(chat: ChatSummary, selected: Boolean, actions: SidebarActio
             Text(
                 label,
                 color = colors.text, fontSize = 15.sp,
-                fontWeight = if (chat.unread) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = if (unread) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
-            if (chat.unread) {
+            if (unread) {
                 Spacer(Modifier.width(6.dp))
                 Box(Modifier.size(8.dp).clip(CircleShape).background(colors.contrast).semantics { contentDescription = unreadMark })
             }
             if (chat.source.isNotEmpty() && chat.source !in LOCAL_SOURCES) {
                 Spacer(Modifier.width(6.dp))
                 Text(chat.source, color = colors.faintText, fontSize = 11.sp)
+            }
+            if (runs.isNotEmpty() && onToggleRuns != null) {
+                val count = runs.size + 1
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    pluralStringResource(R.plurals.sidebar_cron_runs, count, count),
+                    color = colors.secondaryText, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(colors.selected).padding(horizontal = 6.dp, vertical = 1.dp),
+                )
+                IconButton(onClick = onToggleRuns, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        stringResource(if (expanded) R.string.sidebar_cron_collapse else R.string.sidebar_cron_expand),
+                        tint = colors.faintText, modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {

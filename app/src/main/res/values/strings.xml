@@ -54,6 +54,12 @@
     <string name="setup_page_back">Back to Hermes</string>
     <string name="error_link_unreadable">The server link could not be read</string>
     <string name="sidebar_unread">Unread</string>
+    <plurals name="sidebar_cron_runs">
+        <item quantity="one">%1$d run</item>
+        <item quantity="other">%1$d runs</item>
+    </plurals>
+    <string name="sidebar_cron_expand">Show earlier runs</string>
+    <string name="sidebar_cron_collapse">Hide earlier runs</string>
     <string name="sidebar_search">Search</string>
     <string name="sidebar_server">Server</string>
     <string name="sidebar_archive">Archive</string>
