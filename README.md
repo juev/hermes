@@ -17,7 +17,9 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   and a message sent before it is up says that the app is connecting.
 - The drawer lists chats by date, with pinned chats and the archive. A chat that came in from
   elsewhere names its source on its row (Telegram, Matrix, cron); cron runs have no section of
-  their own. Search uses the server's full-text index.
+  their own, and the runs of one job under one date heading fold into a single row named by the job,
+  with a count and a chevron that opens the other runs. Search
+  uses the server's full-text index.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
 - Hermes is in the Android share sheet. A link, text, pictures or files shared from another app

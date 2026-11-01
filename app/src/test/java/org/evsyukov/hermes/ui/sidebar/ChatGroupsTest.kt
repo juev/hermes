@@ -34,13 +34,13 @@ class ChatGroupsTest {
     fun `pinned chats come first whatever their age`() {
         val groups = groupChats(listOf(chat("today", 0), chat("pinned-old", 90, pinned = true)), today, zone)
         assertThat(groups.first().key).isEqualTo(GroupKey.Pinned)
-        assertThat(groups.first().chats.map { it.id }).containsExactly("pinned-old")
-        assertThat(groups.flatMap { it.chats }.count { it.id == "pinned-old" }).isEqualTo(1)
+        assertThat(groups.first().rows.map { it.chat.id }).containsExactly("pinned-old")
+        assertThat(groups.flatMap { it.rows }.count { it.chat.id == "pinned-old" }).isEqualTo(1)
     }
 
     @Test
     fun `newest chat leads its group`() {
         val groups = groupChats(listOf(chat("morning", 0, hour = 8), chat("evening", 0, hour = 20)), today, zone)
-        assertThat(groups.single().chats.map { it.id }).containsExactly("evening", "morning").inOrder()
+        assertThat(groups.single().rows.map { it.chat.id }).containsExactly("evening", "morning").inOrder()
     }
 }

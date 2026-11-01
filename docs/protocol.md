@@ -253,6 +253,16 @@ a reconnect whose previous join answer never arrived.
 - A pin has no socket call. The Android client tries the route and, on `404`, keeps the pin on the
   phone; whether a macOS client should do the same is `Unknown —` until a pinned chat is met on a plain
   dashboard.
+- The gateway keeps one session per firing of a cron job and titles it `<job name> · Nov 01 12:28`
+  (`%b %d %H:%M`), or `cron <job_id>` and `cron <job_id> <last 6 of the id>` for a job without a name
+  (`cron/scheduler.py`, `_cron_title`, read from the source). A session carries no job field, so the
+  Android client keys on that title: the text before the stamp, or `cron <job_id>`. It folds the runs
+  of one job into one row per day group — the job's name, a run count and a chevron that opens the
+  other runs with their own titles (`ui/sidebar/ChatGroups.kt`, `groupChats`). The row is named by the
+  job, not by the newest run's full title, because a full title plus the count and the chevron
+  truncates the date at a 360 dp width; the newest run's stamp is therefore not on screen. A run
+  renamed by hand and a chat of another source are never folded. The Telegram topic that collects the
+  reports is the job's delivery `origin`, not a session.
 
 The dashboard's own web client splits eight sources into its Chats and Automation categories — `cron`,
 `tool`, `oneshot`, `api_server`, `acp`, `hermes_flow`, `vulcan_delegate`, `webhook`

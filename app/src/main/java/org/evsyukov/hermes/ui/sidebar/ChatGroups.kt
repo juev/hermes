@@ -19,12 +19,18 @@ sealed interface GroupKey {
     data class Year(val year: Int) : GroupKey
 }
 
-data class ChatGroup(val key: GroupKey, val chats: List<ChatSummary>)
+/** One line of a sidebar group: a chat, or the runs of one cron job folded into its newest run. */
+data class ChatRow(val chat: ChatSummary, val runs: List<ChatSummary> = emptyList()) {
+    val count: Int get() = runs.size + 1
+    val folded: Boolean get() = runs.isNotEmpty()
+}
+
+data class ChatGroup(val key: GroupKey, val rows: List<ChatRow>)
 
 /**
  * Splits the chats the way the ChatGPT sidebar does: pinned first, then today, yesterday, the
  * previous 7 and 30 days, then by month of this year and by year before it. Order inside a group
- * follows the last activity, newest first.
+ * follows the last activity, newest first. The runs of one cron job in a group fold into one row.
  */
 fun groupChats(chats: List<ChatSummary>, today: LocalDate, zone: ZoneId): List<ChatGroup> {
     val pinned = chats.filter { it.pinned }.sortedByDescending { it.lastActive }
@@ -43,7 +49,32 @@ fun groupChats(chats: List<ChatSummary>, today: LocalDate, zone: ZoneId): List<C
         groups.getOrPut(key) { mutableListOf() }.add(chat)
     }
     val result = mutableListOf<ChatGroup>()
-    if (pinned.isNotEmpty()) result += ChatGroup(GroupKey.Pinned, pinned)
-    groups.forEach { (key, list) -> result += ChatGroup(key, list) }
+    if (pinned.isNotEmpty()) result += ChatGroup(GroupKey.Pinned, foldRuns(pinned))
+    groups.forEach { (key, list) -> result += ChatGroup(key, foldRuns(list)) }
     return result
+}
+
+/** Chats newest first in, rows out: each job's newest run stands where it was, its older runs behind it. */
+private fun foldRuns(chats: List<ChatSummary>): List<ChatRow> {
+    val jobs = chats.groupBy(::cronJobKey)
+    return chats.mapNotNull { chat ->
+        val job = cronJobKey(chat)?.let(jobs::getValue) ?: return@mapNotNull ChatRow(chat)
+        if (job.first().id == chat.id) ChatRow(chat, job.drop(1)) else null
+    }
+}
+
+/** The gateway titles a run `<job name> · Nov 01 12:28`; `%b` may come out in another language. */
+private val RUN_STAMP = Regex("""^(.*) · \p{L}{3} \d{1,2} \d{2}:\d{2}$""")
+
+/** The fallback title of a run of a nameless job: `cron <job id>`, maybe with the end of the run id. */
+private val RUN_FALLBACK = Regex("""^cron ([0-9a-fA-F]{6,})(?: \S+)?$""")
+
+/**
+ * Which cron job a chat is a run of, read from the title the gateway wrote — the list carries no job
+ * field. Null for any other source and for a run renamed by hand.
+ */
+internal fun cronJobKey(chat: ChatSummary): String? {
+    if (chat.source != "cron") return null
+    RUN_STAMP.matchEntire(chat.title)?.let { return it.groupValues[1].trim().ifBlank { null } }
+    return RUN_FALLBACK.matchEntire(chat.title)?.let { "cron ${it.groupValues[1]}" }
 }
