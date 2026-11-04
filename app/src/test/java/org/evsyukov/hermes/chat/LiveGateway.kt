@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -35,6 +34,7 @@ import org.evsyukov.hermes.data.server.ServerStore
 import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * A gateway with one stored chat `s1` whose live session is `live1`, modelled the way the dashboard
@@ -59,7 +59,7 @@ internal class LiveGateway : GatewayChannel {
     private val _ready = MutableSharedFlow<String?>(replay = 1, extraBufferCapacity = 4)
     override val ready: SharedFlow<String?> = _ready
 
-    private val _connections = MutableStateFlow(0)
+    private val _connections = LaggingInt(0)
     override val connections: StateFlow<Int> = _connections
 
     private val _transport = LaggingFlow(0L)
@@ -143,8 +143,26 @@ internal class LiveGateway : GatewayChannel {
 
     /** The connection [establish] brought is counted and announced as ready. */
     suspend fun announce() {
-        _connections.update { it + 1 }
+        _connections.bump()
         _ready.emit(epoch)
+    }
+
+    /**
+     * The next read of [connections] finds a new READY connection, already counted, while no collector
+     * has heard of either: what a controller observes when the socket changes and is counted between
+     * two reads of one decision.
+     */
+    fun replaceOnNextCount() {
+        _connections.onNextRead {
+            _transport.quietly(synchronized(lock) { ++transports })
+            _connections.quietly(_connections.value + 1)
+        }
+    }
+
+    /** The collectors hear the connection [replaceOnNextCount] brought. */
+    fun publishReplacement() {
+        _transport.publish()
+        _connections.publish()
     }
 
     fun drop() {
@@ -431,6 +449,53 @@ internal class LaggingFlow(initial: Long) : StateFlow<Long> {
     override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Long>): Nothing = told.collect(collector)
 
     fun quietly(v: Long) {
+        current = v
+    }
+
+    fun publish() {
+        told.value = current
+    }
+}
+
+/**
+ * The count of connections with the same lag, and a one-shot [onNextRead] hook: a change that the
+ * socket makes while a decision reads the count, before any collector has been told of it.
+ */
+@OptIn(kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi::class)
+internal class LaggingInt(initial: Int) : StateFlow<Int> {
+    private val told = MutableStateFlow(initial)
+
+    @Volatile
+    private var current = initial
+
+    private val hook = AtomicReference<(() -> Unit)?>(null)
+
+    /** Runs [hook] once, before the next value is read: a change made exactly when a decision looks. */
+    fun onNextRead(hook: () -> Unit) {
+        this.hook.set(hook)
+    }
+
+    override var value: Int
+        get() {
+            hook.getAndSet(null)?.invoke()
+            return current
+        }
+        set(v) {
+            current = v
+            told.value = v
+        }
+
+    override val replayCache: List<Int> get() = listOf(current)
+
+    override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Int>): Nothing = told.collect(collector)
+
+    /** A connection was counted and announced: every collector is told now. */
+    fun bump() {
+        current += 1
+        told.value = current
+    }
+
+    fun quietly(v: Int) {
         current = v
     }
 
