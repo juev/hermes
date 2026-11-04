@@ -41,9 +41,11 @@ import org.evsyukov.hermes.data.server.parseServerLink
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
+import org.evsyukov.hermes.ui.chat.ChatDraft
 import org.evsyukov.hermes.ui.chat.Shared
 import org.evsyukov.hermes.ui.viewer.ViewerFile
 import java.io.File
+import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** Screens above the chat; the chat itself is the bottom of the stack. */
@@ -56,10 +58,14 @@ sealed interface Screen {
     data class Viewer(val file: ViewerFile) : Screen
 }
 
-/** What the sidebar lists: conversations or the archive. */
+/**
+ * What the sidebar lists: conversations, the archive, or the runs of scheduled jobs. The service runs
+ * of the dashboard (one-shot questions, tools, API and agent clients, webhooks) are in no list.
+ */
 enum class ListMode(val archived: Boolean, val sources: String?, val excludeSources: String?) {
-    CHATS(false, null, "oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
+    CHATS(false, null, "cron,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
     ARCHIVE(true, null, null),
+    CRON(false, "cron", null),
     ;
 
     /** Whether [chat] belongs to this list, as the server filters it. */
@@ -67,6 +73,9 @@ enum class ListMode(val archived: Boolean, val sources: String?, val excludeSour
         chat.archived == archived &&
             (sources == null || chat.source in sources.split(',')) &&
             (excludeSources == null || chat.source !in excludeSources.split(','))
+
+    /** The rows of a page that belong here: a server that ignores a filter puts no run among the chats. */
+    fun keep(chats: List<ChatSummary>): List<ChatSummary> = chats.filter(::admits)
 }
 
 data class SidebarState(
@@ -78,6 +87,13 @@ data class SidebarState(
     val error: String? = null,
     val mode: ListMode = ListMode.CHATS,
 )
+
+/**
+ * [more] chats of [mode] after the pages listed so far; [size] is what the server listed, so the next
+ * page starts after it. A page of a list no longer shown changes nothing.
+ */
+internal fun SidebarState.withMore(mode: ListMode, more: List<ChatSummary>, total: Int, size: Int): SidebarState =
+    if (this.mode != mode) this else copy(chats = (chats + mode.keep(more)).distinctBy { it.id }, total = total, listed = listed + size, loading = false)
 
 data class SearchState(val query: String = "", val hits: List<SearchHit> = emptyList(), val searching: Boolean = false, val error: String? = null)
 
@@ -160,6 +176,12 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     /** A chat asked for before the server connection exists, e.g. by a notification at a cold start. */
     private var pendingChat: String? = null
+
+    /** What the user prepared in each open chat; a chat no longer referenced takes its draft with it. */
+    private val drafts = WeakHashMap<ChatController, ChatDraft>()
+
+    /** The screen of the current chat is up in an app in front; a chat opened now starts shown or hidden by it. */
+    private var chatOnScreen = false
 
     init {
         viewModelScope.launch {
@@ -266,8 +288,8 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 val mode = _sidebar.value.mode
                 val chat = connection.session.chat
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val chats = withReads(connection, chat, withPins(connection, chat, page.chats, mode, forgetGone = true))
-                _sidebar.update { it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) }
+                val chats = withReads(connection, chat, withPins(connection, chat, mode.keep(page.chats), mode, forgetGone = true))
+                _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) else it }
                 listedByServer = true
             } catch (e: Exception) {
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
@@ -310,7 +332,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             val page = runCatching {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
-            val chats = withReads(connection, cached, withPins(connection, cached, page.chats, mode, forgetGone = false))
+            val chats = withReads(connection, cached, withPins(connection, cached, mode.keep(page.chats), mode, forgetGone = false))
             if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
         }
     }
@@ -324,9 +346,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             try {
                 val mode = state.mode
                 val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val more = withReads(connection, connection.session.chat, page.chats)
+                val more = withReads(connection, connection.session.chat, mode.keep(page.chats))
                 // The first page already brought every pinned chat, so the ones met again are left out.
-                _sidebar.update { s -> s.copy(chats = (s.chats + more).distinctBy { it.id }, total = page.total, listed = s.listed + page.chats.size, loading = false) }
+                _sidebar.update { s -> s.withMore(mode, more, page.total, page.chats.size) }
             } catch (e: Exception) {
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
@@ -371,9 +393,28 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
-    /** The app came back to the front: the chat on the screen is read, and its notification goes. */
+    /**
+     * The app came back to the front: the chat on the screen is read, and its notification goes. A
+     * chat under another screen is not on the screen, and stays as it was.
+     */
     fun appForeground() {
+        if (!chatOnScreen) return
         _chat.value?.state?.value?.storedId?.let { markRead(it) }
+    }
+
+    /** The words, files and place of [controller], kept here so they outlive its screen. */
+    fun draftOf(controller: ChatController): ChatDraft = drafts.getOrPut(controller) { ChatDraft() }
+
+    /**
+     * The screen of [controller] came up in an app in front, or went away: under another screen, with
+     * the app in the background, or for another chat. Only a chat on the screen works on its
+     * transcript and takes its answers as read.
+     */
+    fun chatShown(controller: ChatController, shown: Boolean) {
+        controller.setVisible(shown)
+        if (controller !== _chat.value) return
+        chatOnScreen = shown
+        container.turns.visibleChat = if (shown) controller.state.value.storedId else null
     }
 
     /** An empty chat, as the pencil button and the pull past the end give; the server lists it from the first message. */
@@ -422,16 +463,18 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     }
 
     private fun controller(connection: Connection, id: String?): ChatController {
-        container.turns.visibleChat = id
+        // The chat takes the place of the one on the screen, shown or hidden as that one was.
+        container.turns.visibleChat = id.takeIf { chatOnScreen }
         return ChatController(
             connection.session, connection.socket, viewModelScope, container.strings, id,
             onSessionCreated = { stored ->
-                container.turns.visibleChat = stored
+                if (chatOnScreen) container.turns.visibleChat = stored
                 refreshChats()
             },
             onLive = container.turns::bind,
             onTurnStart = container.turns::turnStarting,
             onRead = { id, at -> markRead(id, at) },
+            visible = chatOnScreen,
         )
     }
 
@@ -498,8 +541,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     fun pop(): Boolean {
         if (stack.isEmpty()) return false
         stack.removeAt(stack.lastIndex)
-        // Back on the chat, the screen is the chat itself again.
-        if (stack.isEmpty()) container.turns.visibleChat = _chat.value?.state?.value?.storedId
+        // Back on the chat, its screen says it is shown again (chatShown).
         return true
     }
 

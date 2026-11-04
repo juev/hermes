@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.chat
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -12,7 +13,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -99,6 +99,11 @@ data class ChatState(
  * before the first message; the server keeps no chat for it until that message, and leaving the empty
  * chat closes the session. An existing chat shows its stored history at once and joins the live
  * session in the background, so a turn that runs elsewhere keeps streaming here.
+ *
+ * A chat that is not on the screen of the app in front keeps working on its state, the screen's copy
+ * of it stays as it was: the words and reasoning that stream meanwhile are only appended to a buffer
+ * per piece of the answer, and go into the transcript at once when a tool, a message boundary or the
+ * screen needs it. Shown again, the chat publishes what it has, once, and asks the server nothing.
  */
 class ChatController(
     private val session: ServerSession,
@@ -116,9 +121,93 @@ class ChatController(
     private val onTurnStart: () -> TurnHold = { TurnHold.NONE },
     /** The messages of the chat are on the screen up to the server's `last_active`; tells the read mark. */
     private val onRead: (storedId: String, lastActive: Double) -> Unit = { _, _ -> },
+    /** Whether the chat starts on the screen; the screen tells it afterwards with [setVisible]. */
+    visible: Boolean = true,
 ) {
+    /** Orders every change of the chat's state, its publication and the change of its visibility. */
+    private val lock = Any()
+
+    /** The chat's own state, always current but for the words in [streamed]; guarded by [lock]. */
     private val _state = MutableStateFlow(ChatState(storedId = storedId))
-    val state: StateFlow<ChatState> = _state.asStateFlow()
+
+    /** What the screen sees: the state as of the last change made while the chat was shown. */
+    private val published = MutableStateFlow(_state.value)
+    val state: StateFlow<ChatState> = published.asStateFlow()
+
+    /** The chat is on the screen of an app in front. */
+    @Volatile
+    private var visible = visible
+
+    /**
+     * The words and reasoning a hidden chat received since its transcript last changed, in the order
+     * they came, one buffer per run of one kind: as many buffers as pieces of the answer, however many
+     * deltas came. Guarded by [lock].
+     */
+    private val streamed = ArrayList<Pair<String, StringBuilder>>()
+
+    /** When the first of [streamed] came: an answer they open takes that time. */
+    private var streamedAt = 0.0
+
+    /** What the chat read while hidden, to tell the read mark once it is shown. */
+    private var pendingRead: Double? = null
+
+    /** The state without what [streamed] holds, for tests that check no delta rebuilt it. */
+    @VisibleForTesting
+    internal val working: ChatState get() = _state.value
+
+    /** The state with what [streamed] holds, for code that reads the transcript. */
+    private val current: ChatState get() = synchronized(lock) {
+        flushStreamed()
+        _state.value
+    }
+
+    /**
+     * Changes the chat's state and, while it is shown, what the screen sees. [flush] first puts the
+     * buffered words into the transcript; a change that leaves the transcript alone does not need it.
+     */
+    private fun edit(flush: Boolean = true, change: (ChatState) -> ChatState) = synchronized(lock) {
+        if (flush) flushStreamed()
+        _state.value = change(_state.value)
+        if (visible) published.value = _state.value
+    }
+
+    /** Puts the buffered words into the transcript in one pass, as their deltas one by one would have. */
+    private fun flushStreamed() {
+        if (streamed.isEmpty()) return
+        val at = streamedAt
+        var items = _state.value.items
+        for ((type, text) in streamed) {
+            items = reduce(items, GatewayEvent(type, liveId, null, buildJsonObject { put("text", text.toString()) }), keyOf = { "a${keys.incrementAndGet()}" }, now = { at })
+        }
+        streamed.clear()
+        _state.value = _state.value.copy(items = items)
+    }
+
+    /**
+     * The screen of this chat came up in an app in front, or went away. Hidden, the chat publishes
+     * nothing and tells the read mark nothing; shown again, it publishes its state once, and what it
+     * read meanwhile is marked read.
+     */
+    fun setVisible(shown: Boolean) {
+        val read = synchronized(lock) {
+            if (visible == shown) return
+            visible = shown
+            if (!shown) return
+            flushStreamed()
+            published.value = _state.value
+            pendingRead.also { pendingRead = null }
+        }
+        val id = _state.value.storedId
+        if (read != null && id != null) onRead(id, read)
+    }
+
+    /** Tells the read mark, or keeps it for when the chat is on the screen: a hidden chat is not read. */
+    private fun tellRead(id: String, lastActive: Double) {
+        val now = synchronized(lock) {
+            visible.also { if (!it) pendingRead = maxOf(pendingRead ?: lastActive, lastActive) }
+        }
+        if (now) onRead(id, lastActive)
+    }
 
     @Volatile
     private var liveId: String? = null
@@ -272,15 +361,15 @@ class ChatController(
 
     private suspend fun performLoad() {
         val id = _state.value.storedId ?: return
-        _state.update { it.copy(loading = true, error = null) }
-        if (_state.value.items.isEmpty()) showCached(id)
+        edit { it.copy(loading = true, error = null) }
+        if (current.items.isEmpty()) showCached(id)
         try {
             coroutineScope {
                 val head = async { runCatching { session.chat.get(id) } }
                 val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
                 val summary = head.await().getOrNull()
                 summary?.let { read ->
-                    _state.update { state ->
+                    edit { state ->
                         state.copy(
                             title = read.title,
                             // The live session knows its model better than the stored row: after a
@@ -321,9 +410,9 @@ class ChatController(
                     showHistory(read.getOrDefault(emptyList()))
                     // What is on the screen now is read: a mark in the sidebar clears, and a new
                     // answer after this will mark it again.
-                    summary?.let { onRead(id, it.lastActive) }
+                    summary?.let { tellRead(id, it.lastActive) }
                 } else {
-                    _state.update { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                    edit { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
                 }
                 joined?.getOrNull()?.let { (answer, generation) -> adopt(answer, id, starting = false, generation) }
                 joined?.exceptionOrNull()?.let { throw it }
@@ -331,7 +420,7 @@ class ChatController(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _state.update { it.copy(loading = false, error = e.message) }
+            edit { it.copy(loading = false, error = e.message) }
         }
     }
 
@@ -341,7 +430,7 @@ class ChatController(
      * comes back with the join, which is applied after this.
      */
     private fun showHistory(history: List<ChatItem>) {
-        _state.update { state ->
+        edit { state ->
             val known = history.mapTo(HashSet()) { it.key }
             val unsent = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
             state.copy(items = if (unsent.isEmpty()) history else history + unsent, loading = false)
@@ -353,8 +442,8 @@ class ChatController(
         try {
             val history = transcriptOf(cached.messages(id))
             val summary = runCatching { cached.get(id) }.getOrNull()
-            _state.update { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
-            summary?.let { onRead(id, it.lastActive) }
+            edit { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
+            summary?.let { tellRead(id, it.lastActive) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -428,7 +517,7 @@ class ChatController(
         // A turn under way when the chat opens goes on in its answer, with what streamed while the chat was away.
         val resumed = running && !starting
         val streamed = (result["inflight"] as? JsonObject)?.string("assistant").orEmpty()
-        _state.update {
+        edit {
             it.copy(
                 storedId = storedId ?: it.storedId,
                 running = running,
@@ -441,7 +530,7 @@ class ChatController(
         // A card left open while the chat was away comes back with the server's deadline; one the
         // server no longer has open ended while the socket was down and takes no answers.
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
-        _state.update { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
+        edit { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
         (result["open_requests"] as? JsonArray)?.forEach { request ->
             val obj = request as? JsonObject ?: return@forEach
@@ -464,7 +553,7 @@ class ChatController(
         if (text.isBlank() && attachments.isEmpty()) return
         val key = "local${keys.incrementAndGet()}"
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
-        _state.update { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
+        edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
         awaitingStart = true
         val hold = onTurnStart()
         val started = System.currentTimeMillis().also { sentAt = it }
@@ -474,11 +563,11 @@ class ChatController(
             var submitted = false
             try {
                 // A message sent before the socket is up says so instead of waiting in silence.
-                if (socket.state.value != SocketState.READY) _state.update { it.copy(connecting = true) }
+                if (socket.state.value != SocketState.READY) edit { it.copy(connecting = true) }
                 try {
                     socket.awaitReady()
                 } finally {
-                    _state.update { it.copy(connecting = false) }
+                    edit { it.copy(connecting = false) }
                 }
                 val socketMillis = System.currentTimeMillis() - started
                 withLive(starting = true) { live ->
@@ -519,12 +608,12 @@ class ChatController(
     private fun deliveryFor(e: Exception, submitted: Boolean): Delivery =
         if (!submitted || e is RpcException) Delivery.FAILED else if (e is IOException || e is TimeoutCancellationException) Delivery.UNKNOWN else Delivery.FAILED
 
-    private fun markDelivery(key: String, delivery: Delivery) = _state.update { state ->
+    private fun markDelivery(key: String, delivery: Delivery) = edit { state ->
         state.copy(items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item })
     }
 
     /** The submission did not go through: the message keeps its place with the outcome, in one update. */
-    private fun failDelivery(key: String, delivery: Delivery, error: String) = _state.update { state ->
+    private fun failDelivery(key: String, delivery: Delivery, error: String) = edit { state ->
         state.copy(
             items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
             running = false,
@@ -566,10 +655,10 @@ class ChatController(
             try {
                 socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
+                edit { it.copy(error = e.message) }
             }
             awaitingStart = false
-            _state.update { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
+            edit { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
         }
     }
 
@@ -580,7 +669,7 @@ class ChatController(
     fun editLast(text: String) = rewriteLast(text)
 
     private fun rewriteLast(replacement: String?) {
-        val lastUser = _state.value.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
+        val lastUser = current.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
         val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
         val text = again.sent
         var hold: TurnHold? = null
@@ -590,9 +679,9 @@ class ChatController(
                 val live = ensureLive()
                 if (_state.value.running) socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
                 socket.call("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
-                val index = _state.value.items.indexOfLast { it is ChatItem.User }
-                val kept = if (index >= 0) _state.value.items.subList(0, index) else _state.value.items
-                _state.update { it.copy(items = kept + again, running = true, error = null) }
+                val index = current.items.indexOfLast { it is ChatItem.User }
+                val kept = if (index >= 0) current.items.subList(0, index) else current.items
+                edit { it.copy(items = kept + again, running = true, error = null) }
                 awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
                 submitted = true
@@ -616,21 +705,21 @@ class ChatController(
             try {
                 // A rename touches no pin.
                 ChatMutations(session.chat, socket, liveOf = { stored -> liveId.takeIf { stored == id } }, pinLocally = { _, _ -> }).rename(id, title)
-                _state.update { it.copy(title = title) }
+                edit { it.copy(title = title) }
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
+                edit { it.copy(error = e.message) }
             }
         }
     }
 
-    fun dismissError() = _state.update { it.copy(error = null) }
+    fun dismissError() = edit { it.copy(error = null) }
 
     /** Switches the model of this chat; a running turn finishes on the old one. */
     fun chooseModel(provider: String, model: String, confirmed: Boolean = false) {
-        _state.update { it.copy(modelConfirm = null) }
+        edit { it.copy(modelConfirm = null) }
         if (liveId == null && _state.value.storedId == null) {
             draftModel = provider to model
-            _state.update { it.copy(model = model, modelPending = false) }
+            edit { it.copy(model = model, modelPending = false) }
             // The draft session was built for the model before; a new one is created with the pick.
             jobs += scope.launch { renewDraft() }
             return
@@ -649,11 +738,11 @@ class ChatController(
                     ) as? JsonObject
                 }
                 if (result?.bool("confirm_required") == true) {
-                    _state.update { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: strings.get(R.string.chat_model_expensive))) }
+                    edit { it.copy(modelConfirm = Triple(provider, model, result.string("confirm_message") ?: strings.get(R.string.chat_model_expensive))) }
                 } else {
                     // A turn already runs: the server switches at the next turn, so the pick is shown
                     // with that caveat instead of claiming the running turn already uses it.
-                    _state.update {
+                    edit {
                         it.copy(
                             model = model,
                             modelPending = result?.bool("deferred") == true,
@@ -662,12 +751,12 @@ class ChatController(
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
+                edit { it.copy(error = e.message) }
             }
         }
     }
 
-    fun dismissModelConfirm() = _state.update { it.copy(modelConfirm = null) }
+    fun dismissModelConfirm() = edit { it.copy(modelConfirm = null) }
 
     fun answerApproval(choice: String) = answer { buildJsonObject { put("choice", choice) } }
 
@@ -682,7 +771,7 @@ class ChatController(
         val prompt = _state.value.prompt ?: return
         if (value == null) {
             socket.respond(prompt.request.id, null, error = "cancelled")
-            _state.update { it.copy(prompt = null) }
+            edit { it.copy(prompt = null) }
         } else {
             answer { buildJsonObject { put("value", value) } }
         }
@@ -698,7 +787,7 @@ class ChatController(
     }
 
     /** A newer snapshot of a known operation replaces it; a new operation joins the chat. */
-    private fun showConnection(connection: ConnectionOp) = _state.update { state ->
+    private fun showConnection(connection: ConnectionOp) = edit(flush = false) { state ->
         val known = state.connections.indexOfFirst { it.opId == connection.opId }
         when {
             known < 0 -> state.copy(connections = state.connections + connection)
@@ -747,7 +836,7 @@ class ChatController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message ?: strings.get(R.string.error_failed)) }
+                edit { it.copy(error = e.message ?: strings.get(R.string.error_failed)) }
             }
         }
     }
@@ -770,7 +859,7 @@ class ChatController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.update { it.copy(error = strings.get(R.string.connect_retry_failed, name)) }
+                edit { it.copy(error = strings.get(R.string.connect_retry_failed, name)) }
             }
         }
     }
@@ -809,7 +898,7 @@ class ChatController(
         }
     }
 
-    private fun replaceTarget(opId: String, name: String, change: (ConnectionTarget) -> ConnectionTarget) = _state.update { state ->
+    private fun replaceTarget(opId: String, name: String, change: (ConnectionTarget) -> ConnectionTarget) = edit { state ->
         state.copy(
             connections = state.connections.map { c ->
                 if (c.opId != opId) c else c.copy(targets = c.targets.map { if (it.name == name) change(it) else it })
@@ -818,7 +907,7 @@ class ChatController(
     }
 
     /** The user opened the sign-in link of a row; it waits for the browser now. */
-    fun linkOpened(opId: String, name: String) = _state.update { state ->
+    fun linkOpened(opId: String, name: String) = edit { state ->
         state.copy(connections = state.connections.map { if (it.opId == opId) it.copy(opened = it.opened + name) else it })
     }
 
@@ -839,7 +928,7 @@ class ChatController(
                 try {
                     socket.call("connectors.operation.wake", params)
                     val status = socket.call("connectors.operation.status", params) as? JsonObject ?: continue
-                    _state.update { state -> state.copy(connections = state.connections.map { it.applying(status) }) }
+                    edit { state -> state.copy(connections = state.connections.map { it.applying(status) }) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -877,14 +966,14 @@ class ChatController(
     private fun answer(result: () -> JsonElement) {
         val prompt = _state.value.prompt ?: return
         socket.respond(prompt.request.id, result())
-        _state.update { it.copy(prompt = null) }
+        edit { it.copy(prompt = null) }
     }
 
     private fun onEvent(event: GatewayEvent) {
         val live = liveId
         when (event.type) {
             "session.title" -> if (event.payload.string("session_id") == _state.value.storedId || event.sessionId == live) {
-                _state.update { it.copy(title = event.payload.string("title").orEmpty()) }
+                edit { it.copy(title = event.payload.string("title").orEmpty()) }
             }
         }
         if (live == null || event.sessionId != live) return
@@ -902,35 +991,59 @@ class ChatController(
         when (event.type) {
             "message.start", "message.complete", "error" -> awaitingStart = false
         }
-        when (event.type) {
-            // A turn starts only after a queued model switch has been applied, so the pick is the model now.
-            "message.start" -> _state.update { it.copy(running = true, status = null, modelPending = false) }
-            "message.complete" -> {
-                _state.update { it.copy(running = false, status = null) }
-                refreshUsage()
-                // A new chat has no stored history on the phone until one is read; the first finished
-                // turn writes it so switching away and back does not redraw the chat from nothing.
-                if (!warmed) warmHistory()
+        synchronized(lock) {
+            // Hidden, the words of the answer go to their buffer: no transcript is rebuilt for them.
+            if (!visible && buffer(event)) return
+            // The fields of the turn leave the transcript alone, so the buffered words wait for a change that needs them.
+            when (event.type) {
+                // A turn starts only after a queued model switch has been applied, so the pick is the model now.
+                "message.start" -> edit(flush = false) { it.copy(running = true, status = null, modelPending = false) }
+                "message.complete" -> {
+                    edit(flush = false) { it.copy(running = false, status = null) }
+                    refreshUsage()
+                    // A new chat has no stored history on the phone until one is read; the first finished
+                    // turn writes it so switching away and back does not redraw the chat from nothing.
+                    if (!warmed) warmHistory()
+                }
+                "session.info" -> edit(flush = false) { state ->
+                    // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
+                    val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
+                    val model = event.payload.string("model")
+                    // A pick the server dropped (an unconfirmed expensive model, a failed switch) reports
+                    // the old model; one still queued reports the pick. Only the former ends the pending state.
+                    val pending = state.modelPending && (model == null || model == state.model)
+                    state.copy(running = running ?: state.running, model = model ?: state.model, modelPending = pending)
+                }
+                "status.update" -> edit(flush = false) { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }
+                "thinking.delta" -> strings.get(R.string.chat_thinking).let { thinking ->
+                    edit(flush = false) { if (it.status == thinking) it else it.copy(status = thinking) }
+                }
+                "error" -> edit(flush = false) { it.copy(error = event.payload.string("message"), running = false) }
+                "request.cancel" -> edit(flush = false) { state ->
+                    if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
+                }
+                "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
+                "connection.update" -> edit(flush = false) { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
             }
-            "session.info" -> _state.update { state ->
-                // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
-                val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
-                val model = event.payload.string("model")
-                // A pick the server dropped (an unconfirmed expensive model, a failed switch) reports
-                // the old model; one still queued reports the pick. Only the former ends the pending state.
-                val pending = state.modelPending && (model == null || model == state.model)
-                state.copy(running = running ?: state.running, model = model ?: state.model, modelPending = pending)
-            }
-            "status.update" -> _state.update { it.copy(status = event.payload.string("text")?.takeIf { t -> t.isNotBlank() }) }
-            "thinking.delta" -> _state.update { it.copy(status = strings.get(R.string.chat_thinking)) }
-            "error" -> _state.update { it.copy(error = event.payload.string("message"), running = false) }
-            "request.cancel" -> _state.update { state ->
-                if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
-            }
-            "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
-            "connection.update" -> _state.update { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
+            if (event.type in TRANSCRIPT_EVENTS) edit { it.copy(items = reduce(it.items, event, keyOf = { "a${keys.incrementAndGet()}" })) }
         }
-        _state.update { it.copy(items = reduce(it.items, event, keyOf = { "a${keys.incrementAndGet()}" })) }
+    }
+
+    /**
+     * Appends a delta of words or reasoning to the buffer of a hidden chat: to the last run when it is
+     * of the same kind, as the transcript would grow its last piece, or as a new run. False for any
+     * other event, which is applied as it comes.
+     */
+    private fun buffer(event: GatewayEvent): Boolean {
+        val text = when (event.type) {
+            "message.delta" -> (event.payload["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            "reasoning.delta" -> event.payload.string("text")
+            else -> null
+        } ?: return false
+        if (streamed.isEmpty()) streamedAt = nowSeconds()
+        val last = streamed.lastOrNull()
+        if (last != null && last.first == event.type) last.second.append(text) else streamed += event.type to StringBuilder(text)
+        return true
     }
 
     /**
@@ -953,9 +1066,9 @@ class ChatController(
         scope.launch {
             try {
                 session.chat.get(id)?.let { read ->
-                    read.usage?.let { usage -> _state.update { it.copy(usage = usage) } }
+                    read.usage?.let { usage -> edit { it.copy(usage = usage) } }
                     // The turn that just ended is on the screen: its answer is read.
-                    onRead(id, read.lastActive)
+                    tellRead(id, read.lastActive)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -992,11 +1105,17 @@ class ChatController(
                 null
             }
         }
-        if (prompt != null) _state.update { it.copy(prompt = prompt) }
+        if (prompt != null) edit(flush = false) { it.copy(prompt = prompt) }
     }
 
     private companion object {
         const val TAG = "HermesChat"
+
+        /** The events [reduce] builds the transcript from. */
+        val TRANSCRIPT_EVENTS = setOf(
+            "message.start", "message.delta", "message.interim", "reasoning.delta", "reasoning.available",
+            "tool.start", "tool.complete", "message.complete",
+        )
     }
 }
 

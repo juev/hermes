@@ -24,7 +24,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +37,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.server.ProxySettings
@@ -62,10 +65,10 @@ import org.evsyukov.hermes.ui.viewer.ViewerScreen
 @Composable
 fun HermesApp(vm: MainViewModel) {
     val container = vm.container
-    val settings by container.settings.current.collectAsState()
-    val loaded by container.servers.loaded.collectAsState()
-    val servers by container.servers.state.collectAsState()
-    val draft by vm.draftServer.collectAsState()
+    val settings by container.settings.current.collectAsStateWithLifecycle()
+    val loaded by container.servers.loaded.collectAsStateWithLifecycle()
+    val servers by container.servers.state.collectAsStateWithLifecycle()
+    val draft by vm.draftServer.collectAsStateWithLifecycle()
     HermesTheme(settings.theme) {
         Box(Modifier.fillMaxSize().background(ChatTheme.colors.background)) {
             when {
@@ -84,19 +87,19 @@ fun HermesApp(vm: MainViewModel) {
 @Composable
 private fun MainScreen(vm: MainViewModel) {
     val container = vm.container
-    val access by vm.access.collectAsState()
-    val connection by vm.connection.collectAsState()
-    val servers by container.servers.state.collectAsState()
-    val settings by container.settings.current.collectAsState()
-    val sidebar by vm.sidebar.collectAsState()
-    val search by vm.search.collectAsState()
-    val chat by vm.chat.collectAsState()
+    val access by vm.access.collectAsStateWithLifecycle()
+    val connection by vm.connection.collectAsStateWithLifecycle()
+    val servers by container.servers.state.collectAsStateWithLifecycle()
+    val settings by container.settings.current.collectAsStateWithLifecycle()
+    val sidebar by vm.sidebar.collectAsStateWithLifecycle()
+    val search by vm.search.collectAsStateWithLifecycle()
+    val chat by vm.chat.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val socketState = connection?.socket?.state?.collectAsState()
+    val socketState = connection?.socket?.state?.collectAsStateWithLifecycle()
     val top = vm.stack.lastOrNull()
 
-    val notice by vm.notice.collectAsState()
+    val notice by vm.notice.collectAsStateWithLifecycle()
     val context = LocalContext.current
     LaunchedEffect(notice) {
         notice?.let {
@@ -161,7 +164,7 @@ private fun MainScreen(vm: MainViewModel) {
         }
         Access.OFFLINE -> {
             OfflineScreen(
-                error = vm.accessError.collectAsState().value,
+                error = vm.accessError.collectAsStateWithLifecycle().value,
                 tailnetHint = servers.active?.proxy?.type == ProxyType.NONE,
                 onRetry = vm::checkAccess,
                 onEditServer = { vm.push(Screen.ServerEdit(servers.active?.id)) },
@@ -197,7 +200,9 @@ private fun MainScreen(vm: MainViewModel) {
         gesturesEnabled = true,
         scrimColor = ChatTheme.colors.background.copy(alpha = 0.6f),
         drawerContent = {
-            Sidebar(sidebar, chat?.state?.collectAsState()?.value?.storedId, servers.servers, servers.active, actions)
+            // The drawer is composed while closed too: it follows the id of the chat, not each step of its answer.
+            val currentChatId by remember(chat) { chat?.state?.map { it.storedId }?.distinctUntilChanged() ?: flowOf(null) }.collectAsStateWithLifecycle(null)
+            Sidebar(sidebar, currentChatId, servers.servers, servers.active, actions)
         },
     ) {
         val controller = chat
@@ -215,9 +220,10 @@ private fun MainScreen(vm: MainViewModel) {
                 openFile = { path -> vm.openServerFile(path, controller.state.value.storedId) },
                 loadFile = { path -> vm.serverFile(path, controller.state.value.storedId) },
                 loadModels = { c.session.admin.modelOptions() },
-                transcribe = { audio, mime -> c.session.chat.transcribe(audio, mime) },
                 openLocal = { attachment -> vm.openLocalFile(container.attachments.put(attachment.name, attachment.bytes), attachment.name, attachment.mime) },
-                shared = vm.shared.collectAsState().value,
+                onShown = vm::chatShown,
+                draft = vm.draftOf(controller),
+                shared = vm.shared.collectAsStateWithLifecycle().value,
                 onSharedTaken = vm::sharedTaken,
             )
         }

@@ -135,16 +135,33 @@ class ChatPinsTest {
     @Test
     fun `a list takes the chats its filters take`() {
         assertThat(ListMode.CHATS.admits(chat("a", source = "android"))).isTrue()
-        assertThat(ListMode.CHATS.admits(chat("a", source = "cron"))).isTrue()          // cron is a row of the list now
-        assertThat(ListMode.CHATS.admits(chat("a", source = "oneshot"))).isFalse()
-        assertThat(ListMode.CHATS.admits(chat("a", source = "webhook"))).isFalse()
         assertThat(ListMode.CHATS.admits(chat("a", source = "telegram"))).isTrue()
+        // Cron runs have a screen of their own; the service runs are no list at all.
+        listOf("cron", "oneshot", "tool", "api_server", "acp", "hermes_flow", "vulcan_delegate", "webhook").forEach { source ->
+            assertThat(ListMode.CHATS.admits(chat("a", source = source))).isFalse()
+        }
         assertThat(ListMode.CHATS.admits(chat("a", archived = true))).isFalse()
+        assertThat(ListMode.CRON.admits(chat("a", source = "cron"))).isTrue()
+        assertThat(ListMode.CRON.admits(chat("a", source = "android"))).isFalse()
+        assertThat(ListMode.CRON.admits(chat("a", source = "telegram"))).isFalse()
+        assertThat(ListMode.CRON.admits(chat("a", source = "cron", archived = true))).isFalse()
         assertThat(ListMode.ARCHIVE.admits(chat("a", archived = true))).isTrue()
+        assertThat(ListMode.ARCHIVE.admits(chat("a", source = "cron", archived = true))).isTrue()
     }
 
     @Test
-    fun `the chat list asks the server to leave out the service runs but cron`() = runBlocking<Unit> {
+    fun `a pin kept on the phone joins only the list its source belongs to`() = runBlocking<Unit> {
+        val far = mapOf("run" to chat("run", source = "cron"), "talk" to chat("talk"))
+
+        val chats = withLocalPins(emptyList(), setOf("run", "talk"), ListMode.CHATS::admits) { far[it] }
+        val runs = withLocalPins(emptyList(), setOf("run", "talk"), ListMode.CRON::admits) { far[it] }
+
+        assertThat(chats.map { it.id }).containsExactly("talk")
+        assertThat(runs.map { it.id }).containsExactly("run")
+    }
+
+    @Test
+    fun `the chat list asks the server to leave out cron and the service runs`() = runBlocking<Unit> {
         server.enqueue(MockResponse.Builder().addHeader("Content-Type", "application/json").body("""{"sessions": [], "total": 0}""").build())
         val mode = ListMode.CHATS
 
@@ -152,9 +169,24 @@ class ChatPinsTest {
 
         val url = server.takeRequest().url
         assertThat(url.encodedPath).isEqualTo("/api/sessions")
-        assertThat(url.queryParameter("exclude_sources")).isEqualTo("oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook")
-        assertThat(url.queryParameter("exclude_sources")!!.split(',')).doesNotContain("cron")
+        assertThat(url.queryParameter("exclude_sources")).isEqualTo("cron,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook")
         assertThat(url.queryParameter("sources")).isNull()
+        assertThat(url.queryParameter("archived")).isEqualTo("exclude")
+    }
+
+    @Test
+    fun `the cron list asks the server for cron runs only`() = runBlocking<Unit> {
+        server.enqueue(MockResponse.Builder().addHeader("Content-Type", "application/json").body("""{"sessions": [], "total": 0}""").build())
+        val mode = ListMode.CRON
+
+        chats.list(offset = 50, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+
+        val url = server.takeRequest().url
+        assertThat(url.encodedPath).isEqualTo("/api/sessions")
+        assertThat(url.queryParameter("sources")).isEqualTo("cron")
+        assertThat(url.queryParameter("exclude_sources")).isNull()
+        assertThat(url.queryParameter("archived")).isEqualTo("exclude")
+        assertThat(url.queryParameter("offset")).isEqualTo("50")
     }
 
     private fun snapshot() = MockResponse.Builder().body("""{"runtime_revision": 3, "runtime_generation": 1}""").build()

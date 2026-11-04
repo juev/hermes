@@ -24,6 +24,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
+import org.evsyukov.hermes.data.remote.ServerRequest
 import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
@@ -339,6 +340,123 @@ class TurnWatcherTest {
 
     /** The line the notification of [chatId] shows. */
     private fun capturedAnswer(chatId: String) = posted(chatId)?.let { shadowOf(it).contentText?.toString() }
+
+    /** A watcher of an app in front ([front]) or in the background, with stored-1 bound to live-1. */
+    private fun requestWatcher(front: Boolean, visible: String?): TurnWatcher {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        return TurnWatcher(context, scope, MutableStateFlow<Connection?>(null), Notifications(context), keep, inFront = { front }).apply {
+            visibleChat = visible
+            bind("live-1", "stored-1", "Chat")
+        }
+    }
+
+    private fun approval(id: String, live: String = "live-1") = ServerRequest(
+        id, "approval",
+        buildJsonObject {
+            put("session_id", live)
+            put("command", "rm -rf build")
+            put("description", "delete the build")
+            put("choices", kotlinx.serialization.json.JsonArray(listOf("once", "session", "deny").map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        },
+    )
+
+    private fun question(id: String, method: String) = ServerRequest(id, method, buildJsonObject { put("session_id", "live-1"); put("env_var", "TOKEN") })
+
+    private fun card(opId: String) = GatewayEvent(
+        "connection.request", "live-1", 3,
+        org.evsyukov.hermes.data.remote.HermesJson.parseToJsonElement(
+            """{"op_id":"$opId","seq":1,"deadline_at":1800000000,"tool_call_id":"call_1","targets":[{"name":"gmail","kind":"connector","action":"connect","state":"initiated"}]}""",
+        ) as JsonObject,
+    )
+
+    /** The notification the shade holds for a question or a card [id], or null when it holds none. */
+    private fun request(id: String) =
+        shadowOf(context.getSystemService(NotificationManager::class.java)).getNotification("request", id.hashCode())
+
+    @Test
+    fun `questions and cards of a chat under another screen notify while the app is in front`() {
+        // The settings cover the chat: no chat is on the screen.
+        val front = requestWatcher(front = true, visible = null)
+
+        front.onRequest(approval("a1"))
+        front.onRequest(question("c1", "clarify"))
+        front.onRequest(question("s1", "secret"))
+        front.onEvent(card("op1"))
+
+        val approval = request("a1")
+        assertThat(approval).isNotNull()
+        assertThat(approval!!.channelId).isEqualTo(Notifications.REQUESTS)
+        // The buttons answer it from the shade.
+        assertThat(approval.actions.map { it.title.toString() }).containsExactly(
+            context.getString(R.string.notify_choice_once), context.getString(R.string.notify_choice_session), context.getString(R.string.notify_choice_deny),
+        ).inOrder()
+        assertThat(shadowOf(request("c1")!!).contentTitle.toString()).isEqualTo(context.getString(R.string.notify_waiting_title))
+        assertThat(request("s1")).isNotNull()
+        assertThat(shadowOf(request("op1")!!).contentTitle.toString()).isEqualTo(context.getString(R.string.notify_connection_title))
+    }
+
+    @Test
+    fun `questions and cards of a chat notify while another chat is on the screen`() {
+        val front = requestWatcher(front = true, visible = "stored-2")
+
+        front.onRequest(approval("a1"))
+        front.onRequest(question("c1", "clarify"))
+        front.onEvent(card("op1"))
+
+        assertThat(request("a1")).isNotNull()
+        assertThat(request("c1")).isNotNull()
+        assertThat(request("op1")).isNotNull()
+    }
+
+    @Test
+    fun `the chat on the screen shows its own questions and cards, and they do not notify`() {
+        val front = requestWatcher(front = true, visible = "stored-1")
+
+        front.onRequest(approval("a1"))
+        front.onRequest(question("c1", "clarify"))
+        front.onRequest(question("s1", "sudo"))
+        front.onEvent(card("op1"))
+
+        assertThat(request("a1")).isNull()
+        assertThat(request("c1")).isNull()
+        assertThat(request("s1")).isNull()
+        assertThat(request("op1")).isNull()
+    }
+
+    @Test
+    fun `a question of a session no chat of the app is bound to notifies while the app is in front`() {
+        val front = requestWatcher(front = true, visible = "stored-1")
+
+        front.onRequest(approval("a9", live = "live-9"))
+
+        assertThat(request("a9")).isNotNull()
+    }
+
+    @Test
+    fun `in the background the last chat on the screen still notifies its questions and cards`() {
+        val back = requestWatcher(front = false, visible = "stored-1")
+
+        back.onRequest(approval("a1"))
+        back.onEvent(card("op1"))
+
+        assertThat(request("a1")).isNotNull()
+        assertThat(request("op1")).isNotNull()
+    }
+
+    @Test
+    fun `a cancelled question and a settled card leave the shade`() {
+        val front = requestWatcher(front = true, visible = null)
+        front.onRequest(approval("a1"))
+        front.onEvent(card("op1"))
+        assertThat(request("a1")).isNotNull()
+        assertThat(request("op1")).isNotNull()
+
+        front.onEvent(GatewayEvent("request.cancel", "live-1", 4, buildJsonObject { put("id", "a1") }))
+        front.onEvent(GatewayEvent("connection.update", "live-1", 5, buildJsonObject { put("op_id", "op1"); put("settled", true) }))
+
+        assertThat(request("a1")).isNull()
+        assertThat(request("op1")).isNull()
+    }
 
     @Test
     fun `the service stays sticky unless the switch is read as off`() {

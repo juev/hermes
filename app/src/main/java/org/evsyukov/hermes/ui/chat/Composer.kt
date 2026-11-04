@@ -1,9 +1,6 @@
 package org.evsyukov.hermes.ui.chat
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
-import android.media.MediaRecorder
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,9 +34,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.PhotoCamera
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -64,7 +59,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil3.compose.AsyncImage
 import org.evsyukov.hermes.R
@@ -88,7 +82,6 @@ fun Composer(
     enterSends: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
-    transcribe: suspend (ByteArray, String) -> String,
     onError: (String) -> Unit,
     onOpen: (LocalAttachment) -> Unit,
 ) {
@@ -98,8 +91,6 @@ fun Composer(
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var cameraFile by remember { mutableStateOf<File?>(null) }
-    var recorder by remember { mutableStateOf<Recording?>(null) }
-    var transcribing by remember { mutableStateOf(false) }
 
     fun add(uris: List<Uri>) {
         scope.launch {
@@ -114,25 +105,6 @@ fun Composer(
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val file = cameraFile
         if (ok && file != null) onAttachments(attachments + LocalAttachment("photo_${System.currentTimeMillis()}.jpg", "image/jpeg", file.readBytes()))
-    }
-    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) recorder = Recording.start(context) else onError(resources.getString(R.string.composer_no_mic))
-    }
-
-    fun stopRecording() {
-        val rec = recorder ?: return
-        recorder = null
-        val audio = rec.stop() ?: return
-        transcribing = true
-        scope.launch {
-            try {
-                val words = transcribe(audio, "audio/mp4")
-                if (words.isNotBlank()) onText(if (text.isBlank()) words else "$text $words")
-            } catch (e: Exception) {
-                onError(resources.getString(R.string.composer_not_recognized, e.message))
-            }
-            transcribing = false
-        }
     }
 
     Column(
@@ -178,7 +150,7 @@ fun Composer(
             }
             // The vertical padding centres one line of text on the 48 dp buttons.
             Box(Modifier.weight(1f).padding(horizontal = 4.dp, vertical = 12.dp)) {
-                if (text.isEmpty()) Text(stringResource(if (recorder != null) R.string.composer_listening else R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
+                if (text.isEmpty()) Text(stringResource(R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
                 BasicTextField(
                     value = text,
                     onValueChange = onText,
@@ -193,19 +165,6 @@ fun Composer(
                     maxLines = 8,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp),
                 )
-            }
-            ButtonSlot {
-                when {
-                    transcribing -> CircularProgressIndicator(Modifier.padding(10.dp).size(20.dp), strokeWidth = 2.dp)
-                    recorder != null -> RoundButton(colors.danger, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop_dictation)) { stopRecording() }
-                    else -> IconButton(onClick = {
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                            recorder = Recording.start(context)
-                        } else {
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    }) { Icon(Icons.Outlined.Mic, stringResource(R.string.composer_dictate), tint = colors.text) }
-                }
             }
             Spacer(Modifier.width(4.dp))
             val canSend = text.isNotBlank() || attachments.isNotEmpty()
@@ -291,37 +250,4 @@ internal fun readAttachment(context: Context, uri: Uri): LocalAttachment? {
     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
     if (bytes.size > MAX_ATTACHMENT) return null
     return LocalAttachment(name, resolver.getType(uri), bytes)
-}
-
-/** Dictation: AAC in an MP4 box, which the server's speech-to-text takes as audio/mp4. */
-class Recording private constructor(private val recorder: MediaRecorder, private val file: File) {
-    fun stop(): ByteArray? = try {
-        recorder.stop()
-        file.readBytes()
-    } catch (e: RuntimeException) {
-        // Stopped before any sound was recorded.
-        null
-    } finally {
-        recorder.release()
-        file.delete()
-    }
-
-    companion object {
-        fun start(context: Context): Recording? = try {
-            val file = File(context.cacheDir, "dictation.m4a")
-            val recorder = MediaRecorder(context).apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioSamplingRate(16_000)
-                setAudioEncodingBitRate(64_000)
-                setOutputFile(file.absolutePath)
-                prepare()
-                start()
-            }
-            Recording(recorder, file)
-        } catch (e: Exception) {
-            null
-        }
-    }
 }
