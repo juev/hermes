@@ -32,6 +32,7 @@ import org.evsyukov.hermes.background.Notifications
 import org.evsyukov.hermes.background.TurnWatcher
 import org.evsyukov.hermes.chat.LocalPins
 import org.evsyukov.hermes.chat.LocalReads
+import org.evsyukov.hermes.chat.QuestionMemory
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
@@ -51,7 +52,13 @@ import org.evsyukov.hermes.tailnet.Tailnet
 import java.io.File
 
 /** The server the app works with now, its HTTP routes and its chat socket. */
-class Connection(val session: ServerSession, val socket: GatewaySocket)
+class Connection(val session: ServerSession, val socket: GatewaySocket) {
+    /**
+     * The questions of the agent in the chats of this server, for as long as it is the app's: a chat
+     * opened again finds them, another server, profile or route starts without them.
+     */
+    val questions = QuestionMemory()
+}
 
 /** Objects shared by the whole app. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)

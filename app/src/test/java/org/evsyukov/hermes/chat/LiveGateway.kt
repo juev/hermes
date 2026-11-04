@@ -62,6 +62,19 @@ internal class LiveGateway : GatewayChannel {
     private val _connections = MutableStateFlow(0)
     override val connections: StateFlow<Int> = _connections
 
+    private val _transport = LaggingFlow(0L)
+    override val transport: StateFlow<Long> = _transport
+    private var transports = 0L
+
+    /** The connection each `session.create` went over, as [transport] numbered it. */
+    val createdOn = ConcurrentLinkedQueue<Long>()
+
+    /** The ids each `session.resume` listed in `open_requests`, in order. */
+    val listedOn = ConcurrentLinkedQueue<List<String>>()
+
+    /** The connection each `session.resume` went over, as [connections] counted it then. */
+    val resumedOn = ConcurrentLinkedQueue<Int>()
+
     /** Every call the chat made, in order. */
     val calls = ConcurrentLinkedQueue<Pair<String, JsonObject>>()
 
@@ -95,6 +108,10 @@ internal class LiveGateway : GatewayChannel {
     var lastActive = 100.0
         private set
 
+    /** The gateway hosts the session of `s1`; off, its live list leaves the chat out. */
+    @Volatile
+    var hosted = true
+
     /** Runs inside `session.resume` after its answer is taken and before it is sent. */
     @Volatile
     var afterResume: (suspend () -> Unit)? = null
@@ -109,15 +126,43 @@ internal class LiveGateway : GatewayChannel {
         _requests.emit(ServerRequest("barrier", "clarify", buildJsonObject { put("session_id", "elsewhere") }))
     }
 
+    /** A connection comes up and the gateway is ready on it, counted at once. */
     suspend fun connect() {
+        establish()
+        announce()
+    }
+
+    /**
+     * The socket is READY on a new connection and calls go over it, but the gateway is not counted
+     * yet: the real socket counts it only once `client.capabilities` is answered, up to 15 seconds later.
+     */
+    fun establish() {
+        _transport.value = synchronized(lock) { ++transports }
         _state.value = SocketState.READY
+    }
+
+    /** The connection [establish] brought is counted and announced as ready. */
+    suspend fun announce() {
         _connections.update { it + 1 }
         _ready.emit(epoch)
     }
 
     fun drop() {
         _state.value = SocketState.DISCONNECTED
+        _transport.value = 0
     }
+
+    /**
+     * The connection is lost and another is READY at once, and no collector of [transport] has run
+     * since: its value is the new connection, while what listens to it still knows only the old one.
+     * [heard] lets the collectors run.
+     */
+    fun replaceUnheard() {
+        _transport.quietly(synchronized(lock) { ++transports })
+    }
+
+    /** The collectors of [transport] hear what [replaceUnheard] did. */
+    fun heard() = _transport.publish()
 
     val latestSeq: Long get() = synchronized(lock) { seq }
 
@@ -127,6 +172,11 @@ internal class LiveGateway : GatewayChannel {
         _events.emit(event)
     }
 
+    /** Sends an event of another live session of the dashboard, which no chat of `live1` may take as its own. */
+    suspend fun foreign(type: String, payload: JsonObject) {
+        _events.emit(GatewayEvent(type, "live9", null, payload, transport = _transport.value))
+    }
+
     /** Stamps an event without sending it: a frame the connection lost. */
     fun lost(type: String, payload: JsonObject = JsonObject(emptyMap())) {
         synchronized(lock) { stamp(type, payload) }
@@ -134,7 +184,7 @@ internal class LiveGateway : GatewayChannel {
 
     private fun stamp(type: String, payload: JsonObject): GatewayEvent {
         seq += 1
-        return GatewayEvent(type, "live1", seq, payload)
+        return GatewayEvent(type, "live1", seq, payload, transport = _transport.value)
     }
 
     /** The user's message was taken and a turn starts on the server. */
@@ -218,15 +268,45 @@ internal class LiveGateway : GatewayChannel {
 
     /** The agent asks the user; the question waits until it is answered. */
     suspend fun ask(id: String, method: String, params: JsonObject) {
-        val request = ServerRequest(id, method, JsonObject(params + ("session_id" to JsonPrimitive("live1"))))
+        val request = ServerRequest(id, method, JsonObject(params + ("session_id" to JsonPrimitive("live1"))), transport = _transport.value)
         synchronized(lock) { open[id] = request }
         _requests.emit(request)
+    }
+
+    /**
+     * A request of `live1` that came over connection [transport] and reaches the chat only now: the
+     * server never listed it as open on the connection after. [transport] 0 is one with no connection known.
+     */
+    suspend fun askLate(transport: Long, id: String, params: JsonObject) {
+        _requests.emit(ServerRequest(id, "clarify", JsonObject(params + ("session_id" to JsonPrimitive("live1"))), transport = transport))
+    }
+
+    /** An event of `live1` that came over connection [transport] and reaches the chat only now. */
+    suspend fun eventLate(transport: Long, type: String, payload: JsonObject) {
+        _events.emit(GatewayEvent(type, "live1", null, payload, transport = transport))
     }
 
     /** The question was answered elsewhere, e.g. from the notification: it no longer waits. */
     fun answeredElsewhere(id: String) {
         synchronized(lock) { open.remove(id) }
     }
+
+    /** The server stops waiting for the question, as the dashboard does: one `request.cancel` with the reason. */
+    suspend fun withdraw(id: String, reason: String) {
+        val request = synchronized(lock) { open.remove(id) } ?: return
+        event("request.cancel", buildJsonObject { put("id", id); put("method", request.method); put("reason", reason) })
+        deliver()
+    }
+
+    /** An answer of the chat, as it went to the socket. */
+    data class Response(val id: String, val result: JsonElement?, val error: String?)
+
+    /** Every answer the chat gave to a question, in order. */
+    val responses = ConcurrentLinkedQueue<Response>()
+
+    /** Answers leave the phone but never reach the server, as on a connection that is dying. */
+    @Volatile
+    var losesResponses = false
 
     fun storedHistory(): String = synchronized(lock) { """{"messages":[${stored.joinToString(",")}]}""" }
 
@@ -239,7 +319,9 @@ internal class LiveGateway : GatewayChannel {
         calls += method to params
         return when (method) {
             "session.resume" -> {
+                resumedOn += _connections.value
                 val answer = synchronized(lock) {
+                    listedOn += open.keys.toList()
                     buildJsonObject {
                         put("session_id", "live1")
                         put("stored_session_id", "s1")
@@ -253,7 +335,12 @@ internal class LiveGateway : GatewayChannel {
                 afterResume?.invoke()
                 answer
             }
-            "session.active_list" -> HermesJson.parseToJsonElement("""{"sessions":[{"id":"live1","session_key":"s1"}]}""")
+            // A new chat's session; its questions are asked on `live1` like those of `s1`.
+            "session.create" -> {
+                createdOn += _transport.value
+                buildJsonObject { put("session_id", "live1") }
+            }
+            "session.active_list" -> HermesJson.parseToJsonElement(if (hosted) """{"sessions":[{"id":"live1","session_key":"s1"}]}""" else """{"sessions":[]}""")
             else -> JsonObject(emptyMap())
         }
     }
@@ -263,7 +350,8 @@ internal class LiveGateway : GatewayChannel {
     }
 
     override fun respond(id: String, result: JsonElement?, error: String?) {
-        synchronized(lock) { open.remove(id) }
+        responses += Response(id, result, error)
+        if (!losesResponses) synchronized(lock) { open.remove(id) }
         calls += "respond" to JsonObject(mapOf("id" to JsonPrimitive(id)))
     }
 
@@ -318,4 +406,35 @@ internal class LiveServer(private val gateway: LiveGateway) {
 
 internal fun questions(vararg text: String): JsonObject = buildJsonObject {
     put("questions", JsonArray(text.mapIndexed { i, q -> buildJsonObject { put("qid", "q$i"); put("question", q) } }))
+}
+
+/**
+ * A [StateFlow] whose collectors can lag behind its value, as a collector that has not been scheduled
+ * yet does: [quietly] changes the value at once and tells no collector until [publish].
+ */
+@OptIn(kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi::class)
+internal class LaggingFlow(initial: Long) : StateFlow<Long> {
+    private val told = MutableStateFlow(initial)
+
+    @Volatile
+    private var current = initial
+
+    override var value: Long
+        get() = current
+        set(v) {
+            current = v
+            told.value = v
+        }
+
+    override val replayCache: List<Long> get() = listOf(current)
+
+    override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Long>): Nothing = told.collect(collector)
+
+    fun quietly(v: Long) {
+        current = v
+    }
+
+    fun publish() {
+        told.value = current
+    }
 }

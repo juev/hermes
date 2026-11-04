@@ -52,6 +52,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
@@ -502,6 +503,14 @@ private class FakeGateway : GatewayChannel {
 
     override val connections: StateFlow<Int> = _connections
 
+    /** The connection the fake is on: a new number with every connection, 0 after a drop. */
+    private val _transport = MutableStateFlow(0L)
+
+    override val transport: StateFlow<Long> = _transport
+
+    /** Numbers every connection anew: a connection after a drop is never the one before it. */
+    private val transports = AtomicLong()
+
     val calls = Channel<Pair<String, JsonObject>>(Channel.UNLIMITED)
     private val seen = ConcurrentLinkedQueue<String>()
 
@@ -529,6 +538,7 @@ private class FakeGateway : GatewayChannel {
 
     /** The connection comes up, for the first time or again after a drop. */
     suspend fun connect(epoch: String = "epoch1") {
+        _transport.value = transports.incrementAndGet()
         _state.value = SocketState.READY
         _connections.update { it + 1 }
         _ready.emit(epoch)
@@ -539,6 +549,7 @@ private class FakeGateway : GatewayChannel {
      * listening yet: only the count of connections tells that it happened.
      */
     fun connectedWithoutSaying() {
+        _transport.value = transports.incrementAndGet()
         _state.value = SocketState.READY
         _connections.update { it + 1 }
     }
@@ -546,6 +557,7 @@ private class FakeGateway : GatewayChannel {
     /** The connection is gone, as after the server closed it. */
     fun drop() {
         _state.value = SocketState.DISCONNECTED
+        _transport.value = 0
     }
 
     fun send(type: String, sessionId: String, payload: String) {

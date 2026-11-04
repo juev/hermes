@@ -475,6 +475,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             onTurnStart = container.turns::turnStarting,
             onRead = { id, at -> markRead(id, at) },
             visible = chatOnScreen,
+            questionMemory = connection.questions,
         )
     }
 
@@ -488,6 +489,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         it.delete(id)
         container.connection.value?.let { c -> container.reads.forget(c.session.profile.id, id) }
         container.connection.value?.session?.forgetChat(id)
+        container.connection.value?.questions?.forget(id)
         if (_chat.value?.state?.value?.storedId == id) newChat()
     }
 

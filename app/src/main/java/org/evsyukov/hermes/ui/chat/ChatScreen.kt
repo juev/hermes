@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -66,7 +67,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,6 +90,7 @@ import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LocalAttachment
 import org.evsyukov.hermes.chat.Part
+import org.evsyukov.hermes.chat.QuestionState
 import org.evsyukov.hermes.chat.TranscriptRow
 import org.evsyukov.hermes.chat.transcriptRows
 import org.evsyukov.hermes.data.remote.ModelChoices
@@ -156,17 +162,18 @@ fun ChatScreen(
     }
     val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
     // The rows are reversed with their day separators, so a separator stays above the messages of its day.
-    val reversed = remember(state.items) { transcriptRows(state.items).asReversed() }
+    val reversed = remember(state.items, state.questions) { transcriptRows(state.items, questions = state.questions).asReversed() }
     // Only the last message of the chat can be answered again, and only the last of the user edited.
     val lastAnswer = (state.items.lastOrNull() as? ChatItem.Assistant)?.key
     val lastUser = state.items.lastOrNull { it is ChatItem.User }?.key
-    // A new message joins the reader who is at the end; one who scrolled up stays put, and a screen
-    // that comes back to the messages it showed keeps its place. The place is read from the list's
-    // position rather than [atBottom], which knows nothing before the first layout.
-    LaunchedEffect(controller, state.items.size) {
+    // A new message or question joins the reader who is at the end; one who scrolled up stays put, and
+    // a screen that comes back to the messages it showed keeps its place. The place is read from the
+    // list's position rather than [atBottom], which knows nothing before the first layout.
+    val shownRows = state.items.size + state.questions.size
+    LaunchedEffect(controller, shownRows) {
         val seen = draft.shownItems
-        draft.shownItems = state.items.size
-        if (seen == state.items.size) return@LaunchedEffect
+        draft.shownItems = shownRows
+        if (seen == shownRows) return@LaunchedEffect
         val atEnd = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
         if (atEnd || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
     }
@@ -228,6 +235,40 @@ fun ChatScreen(
         state.connections.groupBy { owners[it.toolCallId] }
     }
 
+    // A question that waits off the screen is announced over the chat rather than scrolled to: the
+    // reader of older messages stays where they are until they ask for it. A sliver at the edge does
+    // not count as seen.
+    val waitingKeys = remember(state.questions) { state.questions.filter { it.state == QuestionState.PENDING }.map { "question:${it.id}" }.toSet() }
+    val seenPart = with(LocalDensity.current) { 48.dp.toPx() }
+    val questionAway by remember(waitingKeys) {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            waitingKeys.isNotEmpty() && layout.visibleItemsInfo.none { item ->
+                val shown = minOf(item.offset + item.size, layout.viewportEndOffset) - maxOf(item.offset, layout.viewportStartOffset)
+                item.key in waitingKeys && shown >= minOf(item.size.toFloat(), seenPart)
+            }
+        }
+    }
+    // The rows before the transcript in the list: the waiting reply and the cards no answer holds.
+    val leading = (if (state.awaitingAnswer) 1 else 0) + cardsOf[null].orEmpty().size
+    val waitingAt = reversed.indexOfFirst { it is TranscriptRow.Ask && it.card.state == QuestionState.PENDING }.let { if (it < 0) -1 else leading + it }
+    // A card settled by its own button gets shorter: its end, with how it ended, stays in view rather
+    // than slipping under the edge of the list.
+    fun keepEndInView(id: String) {
+        val at = reversed.indexOfFirst { it is TranscriptRow.Ask && it.card.id == id }.takeIf { it >= 0 }?.let { leading + it } ?: return
+        if (at == listState.firstVisibleItemIndex && listState.firstVisibleItemScrollOffset > 0) scope.launch { listState.scrollToItem(at) }
+    }
+    val questionActions = QuestionActions(
+        answer = { id, answers ->
+            controller.answerQuestion(id, answers)
+            keepEndInView(id)
+        },
+        cancel = { id ->
+            controller.cancelQuestion(id)
+            keepEndInView(id)
+        },
+    )
+
     val actions = MessageActions(
         copy = { text -> scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Hermes", text))) } },
         share = { text -> context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), null)) },
@@ -284,14 +325,14 @@ fun ChatScreen(
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (state.items.isEmpty() && !state.loading) {
+            if (state.items.isEmpty() && state.questions.isEmpty() && !state.loading) {
                 // A suggestion would replace what was shared, so the quick actions stand in for them.
                 EmptyChat(serverName, suggestions = !quickActions) { draft.text = it }
             } else {
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
-                    modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) },
+                    modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) }.testTag("transcript"),
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
                     // The turn runs without an open answer, e.g. while the socket connects or the agent starts.
@@ -306,6 +347,9 @@ fun ChatScreen(
                     items(reversed, key = { row -> rowKey(row) }) { row ->
                         when (row) {
                             is TranscriptRow.Day -> DaySeparator(row.date)
+                            is TranscriptRow.Ask -> Column(Modifier.padding(horizontal = 16.dp)) {
+                                AgentQuestion(row.card, controller.answersOf(row.card), connected, questionActions)
+                            }
                             is TranscriptRow.Message -> when (val item = row.item) {
                                 is ChatItem.User -> UserBubble(item, last = item.key == lastUser, actions = actions)
                                 is ChatItem.CronReport -> CronReportMessage(item)
@@ -337,8 +381,24 @@ fun ChatScreen(
                     Text(stringResource(if (pull.progress >= 1f) R.string.chat_release_for_new else R.string.chat_pull_for_new), color = colors.secondaryText, fontSize = 13.sp)
                 }
             }
+            if (questionAway && waitingAt >= 0 && pull.distance == 0f) {
+                // Lower rows are nearer the end of the chat: the arrow points to where the question is.
+                val below = waitingAt < listState.firstVisibleItemIndex
+                Row(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp, start = 16.dp, end = 16.dp).clip(RoundedCornerShape(20.dp)).background(colors.contrast)
+                        .clickable(onClickLabel = stringResource(R.string.chat_question_show)) { scope.launch { listState.animateScrollToItem(waitingAt) } }
+                        .semantics { liveRegion = LiveRegionMode.Polite }
+                        .padding(horizontal = 14.dp, vertical = 8.dp).testTag("question-waiting"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(if (below) Icons.Outlined.ArrowDownward else Icons.Outlined.ArrowUpward, null, tint = colors.onContrast, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.chat_question_waiting), color = colors.onContrast, fontSize = 14.sp)
+                }
+            }
+            // The arrow to the end would cover the buttons of a question on the screen; one off the screen has its own button.
             androidx.compose.animation.AnimatedVisibility(
-                visible = !atBottom && state.items.isNotEmpty() && pull.distance == 0f,
+                visible = !atBottom && waitingKeys.isEmpty() && state.items.isNotEmpty() && pull.distance == 0f,
                 enter = fadeIn(), exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             ) {
@@ -380,7 +440,6 @@ fun ChatScreen(
         PromptSheet(
             prompt,
             onApproval = controller::answerApproval,
-            onClarify = controller::answerClarify,
             onSecret = controller::answerSecret,
             onCancel = controller::cancelPrompt,
         )
@@ -434,4 +493,5 @@ private fun EmptyChat(serverName: String, suggestions: Boolean, onSuggestion: (S
 private fun rowKey(row: TranscriptRow): String = when (row) {
     is TranscriptRow.Day -> "day:${row.date}"
     is TranscriptRow.Message -> row.item.key
+    is TranscriptRow.Ask -> "question:${row.card.id}"
 }

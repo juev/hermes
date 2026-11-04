@@ -163,6 +163,8 @@ private class DeliveryGateway : GatewayChannel {
 
     private val _connections = MutableStateFlow(1)
     override val connections: StateFlow<Int> = _connections
+    private val _transport = MutableStateFlow(1L)
+    override val transport: StateFlow<Long> = _transport
 
     private val _ready = MutableSharedFlow<String?>(replay = 1, extraBufferCapacity = 4)
     override val ready: SharedFlow<String?> = _ready
@@ -175,9 +177,11 @@ private class DeliveryGateway : GatewayChannel {
 
     fun drop() {
         _state.value = SocketState.DISCONNECTED
+        _transport.value = 0
     }
 
     fun connect(epoch: String) {
+        _transport.value = _connections.value + 1L
         _state.value = SocketState.READY
         _connections.update { it + 1 }
         _ready.tryEmit(epoch)

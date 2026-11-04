@@ -279,7 +279,7 @@ class TurnWatcher(
 
     internal fun onRequest(request: ServerRequest) {
         val live = request.params.string("session_id") ?: return
-        // Only the chat on the screen asks in its own sheet; the app in front with another screen or chat does not.
+        // Only the chat on the screen asks itself, in a sheet or a card; the app in front with another screen or chat does not.
         if (showingChatOf(live)) return
         val stored = chats[live]
         when (request.method) {

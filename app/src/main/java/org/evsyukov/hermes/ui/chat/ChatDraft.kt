@@ -21,6 +21,6 @@ class ChatDraft {
     var scrollIndex = 0
     var scrollOffset = 0
 
-    /** How many messages the screen last showed; a screen that comes back to the same count stays put. */
+    /** How many messages and questions the screen last showed; a screen that comes back to the same count stays put. */
     var shownItems = -1
 }

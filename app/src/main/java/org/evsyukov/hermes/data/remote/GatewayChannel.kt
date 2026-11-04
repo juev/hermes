@@ -32,6 +32,14 @@ interface GatewayChannel {
      */
     val connections: StateFlow<Int>
 
+    /**
+     * The connection the socket is READY on now, 0 while it is on none. Every connection that becomes
+     * ready takes a new number, together with [state] and before the gateway is counted in
+     * [connections]; a lost one turns it to 0 at once. A chat ties what it learned from a join to the
+     * connection the join's answer came over, and trusts it only while this is still that connection.
+     */
+    val transport: StateFlow<Long>
+
     /** Calls [method] and waits for its result; errors come back as [RpcException]. */
     suspend fun call(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement
 
@@ -40,4 +48,14 @@ interface GatewayChannel {
 
     /** Answers a [ServerRequest]; [error] rejects it instead. */
     fun respond(id: String, result: JsonElement?, error: String? = null)
+
+    /**
+     * Answers a [ServerRequest] over connection [transport] alone: false, and nothing sent, when the
+     * socket is on another connection or none.
+     */
+    fun respondOn(transport: Long, id: String, result: JsonElement?): Boolean {
+        if (transport == 0L || this.transport.value != transport) return false
+        respond(id, result)
+        return true
+    }
 }

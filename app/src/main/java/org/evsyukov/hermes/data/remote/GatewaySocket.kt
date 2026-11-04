@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.data.remote
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -37,10 +38,18 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
 /** An event of the gateway: `params` of a JSON-RPC notification with method `event`. */
-data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject)
+/**
+ * An event of a session. [transport] is not on the wire: it is the connection, by
+ * [GatewayChannel.transport], the frame came over, 0 for one the app made itself.
+ */
+data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject, val transport: Long = 0L)
 
-/** A question the server asks the client (approval, clarify); answered with [GatewaySocket.respond]. */
-data class ServerRequest(val id: String, val method: String, val params: JsonObject)
+/**
+ * A question the server asks the client (approval, clarify); answered with [GatewaySocket.respond].
+ * [transport] is not on the wire: it is the connection the frame came over, or the one of the join
+ * whose answer listed the request; 0 when neither is known.
+ */
+data class ServerRequest(val id: String, val method: String, val params: JsonObject, val transport: Long = 0L)
 
 class RpcException(val code: Int, message: String, val data: JsonElement?) : IOException(message)
 
@@ -73,6 +82,14 @@ class GatewaySocket(
 
     private val _connections = MutableStateFlow(0)
     override val connections: StateFlow<Int> = _connections.asStateFlow()
+
+    /** The number of the attempt the socket is READY on, 0 while it is on none; changed under the lock with [state]. */
+    private val _transport = MutableStateFlow(0L)
+    override val transport: StateFlow<Long> = _transport.asStateFlow()
+
+    /** The websocket of [transport], for an answer that must go over that connection alone. */
+    @Volatile
+    private var readyOn: WebSocket? = null
 
     @Volatile
     var sessionAuthority: Boolean = false
@@ -158,6 +175,7 @@ class GatewaySocket(
             // was ready has completed already and a caller would loop on it without ever suspending.
             readyGate.completeExceptionally(closed)
             readyGate = CompletableDeferred<Unit>().apply { completeExceptionally(closed) }
+            lose()
             _state.value = SocketState.DISCONNECTED
             pending.close()
         }
@@ -241,6 +259,7 @@ class GatewaySocket(
     private fun begin(): Pair<Long, CompletableDeferred<Unit>>? {
         if (!wanted) return null
         attempt++
+        lose()
         _state.value = SocketState.CONNECTING
         return attempt to readyGate
     }
@@ -274,6 +293,7 @@ class GatewaySocket(
             // caller that looks only now, e.g. one whose start ran the whole attempt, fails with the
             // reason at once instead of waiting for a connection nobody opens.
             readyGate = if (wanted) CompletableDeferred() else gate
+            lose()
             _state.value = SocketState.DISCONNECTED
             // The loop ends here, so the next start must begin another one.
             if (!wanted) connector = null
@@ -338,6 +358,16 @@ class GatewaySocket(
 
     /** Answers a [ServerRequest]; [error] rejects it instead. */
     override fun respond(id: String, result: JsonElement?, error: String?) {
+        socket?.send(answerFrame(id, result, error))
+    }
+
+    /** Sends the answer over the websocket of [transport] itself, so it never goes over a connection that replaced it. */
+    override fun respondOn(transport: Long, id: String, result: JsonElement?): Boolean {
+        val via = synchronized(this) { readyOn.takeIf { transport != 0L && _transport.value == transport } } ?: return false
+        return via.send(answerFrame(id, result, null))
+    }
+
+    private fun answerFrame(id: String, result: JsonElement?, error: String?): String {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", id)
@@ -347,7 +377,7 @@ class GatewaySocket(
                 put("result", result ?: JsonObject(emptyMap()))
             }
         }
-        socket?.send(HermesJson.encodeToString(JsonElement.serializer(), frame))
+        return HermesJson.encodeToString(JsonElement.serializer(), frame)
     }
 
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
@@ -363,7 +393,17 @@ class GatewaySocket(
         }
     }
 
+    /** For the tests: [text] as the listener of attempt [number] hands it over, on the socket open now. */
+    @VisibleForTesting
+    internal fun receive(text: String, number: Long) {
+        val via = socket ?: return
+        handle(text, via, number, readyGate)
+    }
+
     private fun handle(text: String, via: WebSocket, number: Long, gate: CompletableDeferred<Unit>) {
+        // A frame of an attempt that is over, handed over late by its listener, belongs to no connection
+        // the socket has: it neither tells the app anything nor counts as a sign of life.
+        if (!current(number)) return
         lastFrameAt = System.currentTimeMillis()
         frames.incrementAndGet()
         val frame = try {
@@ -381,6 +421,7 @@ class GatewaySocket(
                     sessionId = params.string("session_id"),
                     seq = params.long("seq"),
                     payload = params["payload"] as? JsonObject ?: JsonObject(emptyMap()),
+                    transport = number,
                 )
                 if (event.type == "gateway.ready") {
                     onReady(event.payload, via, number, gate)
@@ -388,7 +429,7 @@ class GatewaySocket(
                     _events.tryEmit(event)
                 }
             }
-            method != null && id != null -> _requests.tryEmit(ServerRequest(id, method, frame["params"] as? JsonObject ?: JsonObject(emptyMap())))
+            method != null && id != null -> _requests.tryEmit(ServerRequest(id, method, frame["params"] as? JsonObject ?: JsonObject(emptyMap()), transport = number))
             id != null -> {
                 val deferred = pending.take(id) ?: return
                 val error = frame["error"] as? JsonObject
@@ -431,9 +472,18 @@ class GatewaySocket(
         sessionAuthority = payload.bool("session_authority") ?: false
         pings = payload.bool("heartbeat") == true
         pending.open(via)
+        // The connection is the socket's from READY on, before the gateway is counted in [connections].
+        readyOn = via
+        _transport.value = number
         _state.value = SocketState.READY
         gate.complete(Unit)
         return true
+    }
+
+    /** The connection the socket was READY on is no longer its own; called under the lock. */
+    private fun lose() {
+        readyOn = null
+        _transport.value = 0
     }
 
     @Synchronized
