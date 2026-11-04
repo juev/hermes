@@ -28,6 +28,11 @@ data class ChatSummary(
     val active: Boolean,
     /** Messages the user has not read yet, as the server's read watermark says. */
     val unread: Boolean = false,
+    /**
+     * The server's read watermark (`last_read_at`): when the chat was last read, 0 when it was marked
+     * unread, null when the server never tracked it.
+     */
+    val lastReadAt: Double? = null,
     /** What the chat has spent so far; null while it has spent nothing. */
     val usage: SessionUsage? = null,
 ) {
@@ -103,13 +108,21 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
         return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
     }
 
-    /** The text of the newest answer of the chat, for a notification. */
-    suspend fun lastReply(id: String): String? {
-        val root = reads.fresh("api/sessions/$id/messages", mapOf("limit" to 6, "order" to "latest", "inline_images" to false)).jsonObject
-        return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }
-            ?.filter { it.role == "assistant" && it.text.isNotBlank() && !it.hidden }
-            ?.maxByOrNull { it.timestamp }
-            ?.text
+    /**
+     * The newest answer of the chat written after [after]: text the assistant showed, not its reasoning,
+     * its tool calls or the user's words. The history is read back page by page as far as [after],
+     * however many tool runs came since; null when no answer is newer.
+     */
+    suspend fun lastReply(id: String, after: Double): StoredMessage? {
+        var offset = 0
+        while (true) {
+            val root = reads.fresh("api/sessions/$id/messages", mapOf("limit" to REPLY_PAGE, "offset" to offset, "order" to "latest", "inline_images" to false)).jsonObject
+            val page = (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+            val newer = page.filter { it.timestamp > after }
+            newer.filter { it.role == "assistant" && it.text.isNotBlank() && !it.hidden }.maxByOrNull { it.timestamp }?.let { return it }
+            if (page.isEmpty() || newer.size < page.size) return null
+            offset += REPLY_PAGE
+        }
     }
 
     /** Renames, pins, archives or marks read; the server takes such a change only with the revision it was made on. */
@@ -177,6 +190,9 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
     }
 
     companion object {
+        /** Rows of the history read at a time when looking for the newest answer. */
+        private const val REPLY_PAGE = 50
+
         /** A message the user sent while the agent worked; `display_content` holds their words. */
         private const val STEER = "steer"
 
@@ -199,6 +215,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 archived = obj.flag("archived"),
                 active = obj.flag("is_active"),
                 unread = obj.flag("unread"),
+                lastReadAt = obj.double("last_read_at"),
                 usage = usage(obj),
             )
         }

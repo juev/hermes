@@ -223,6 +223,24 @@ a reconnect whose previous join answer never arrived.
   the dashboard names the chat — the clients then show `preview`), `preview`, `source`, `model`,
   `message_count`, `started_at`, `last_active`, `pinned`, `archived`, `is_active`, `unread`. A source is
   what the chat came in through — `android`, `cron`, `matrix`, `telegram` were all in one capture.
+- `last_active` is activity, not an answer: the later of `last_activity_at` and the newest stored row,
+  whatever its role, so reasoning, a tool call or result and the user's own message all move it. The
+  server's `unread` compares the same activity with `last_read_at` — null means never tracked and
+  read, 0 means marked unread, otherwise the time of the last read. Neither field says when the last
+  answer came; only the stored history does. Read from the source (`hermes_state_common.py`,
+  `_sql_session_last_active`; `hermes_state_sessions.py`, `session_unread`); `last_read_at` is null in
+  all five rows of `list.json`.
+- The Android client therefore marks a chat unread only for an answer — an assistant row with visible
+  text — written after where the chat is read: its own mark, else the server's `last_read_at`. It finds
+  that answer by reading `GET /api/sessions/{id}/messages?order=latest` back page by page to the mark,
+  four chats at a time, and only for a chat whose activity moved since the last look; the time of the
+  answer found is kept on the phone, so a list shown offline from the phone's copy still marks it. The
+  server's `unread` decides a chat without a phone mark until a look settles it, and a chat with no
+  mark at all. The background check, without push, announces such an answer and nothing else; a chat
+  whose history cannot be read, or whose answer is past the five notifications of one check, stays
+  behind the check's mark and is taken again by the next check, while the others are announced once
+  (`../app/src/main/java/org/evsyukov/hermes/`: `chat/ReadMarks.kt`, `chat/LocalReads.kt`,
+  `background/ActivityCheck.kt`).
 - Spending travels with the session, not with a turn: `input_tokens`, `output_tokens`,
   `cache_read_tokens`, `cache_write_tokens`, `actual_cost_usd`, `estimated_cost_usd` and `cost_status`
   (`included` when the plan bills by subscription, `estimated` when the dashboard priced it itself, and
