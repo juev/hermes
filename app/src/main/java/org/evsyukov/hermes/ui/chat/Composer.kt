@@ -124,6 +124,7 @@ fun Composer(
             }
         }
         // One row: the buttons sit at the bottom edge, so a field grown past one line keeps them next to its last line.
+        val canSend = text.isNotBlank() || attachments.isNotEmpty()
         Row(verticalAlignment = Alignment.Bottom) {
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.Add, stringResource(R.string.composer_attach), tint = colors.text) }
@@ -160,18 +161,25 @@ fun Composer(
                         capitalization = KeyboardCapitalization.Sentences,
                         imeAction = if (enterSends) ImeAction.Send else ImeAction.Default,
                     ),
-                    keyboardActions = KeyboardActions(onSend = { if (!running) onSend() }),
+                    // A follow-up typed while a turn runs is queued by the send key, once, like the
+                    // queue button; an empty field does not pretend to submit anything.
+                    keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
                     singleLine = false,
                     maxLines = 8,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp),
                 )
             }
             Spacer(Modifier.width(4.dp))
-            val canSend = text.isNotBlank() || attachments.isNotEmpty()
             ButtonSlot {
                 when {
-                    running && !canSend -> RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop), onStop)
-                    running -> RoundButton(colors.contrast, colors.onContrast, Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.composer_queue), onSend)
+                    // Stop keeps the last place while a turn runs: a follow-up adds Queue beside it
+                    // instead of taking its place, so stopping never throws the draft away.
+                    running -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (canSend) {
+                            RoundButton(colors.composerBorder, colors.text, Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.composer_queue), onSend)
+                        }
+                        RoundButton(colors.contrast, colors.onContrast, Icons.Filled.Stop, stringResource(R.string.composer_stop), onStop)
+                    }
                     else -> RoundButton(
                         if (canSend) colors.contrast else colors.composerBorder,
                         colors.onContrast,

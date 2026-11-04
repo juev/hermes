@@ -2,6 +2,7 @@ package org.evsyukov.hermes.ui.chat
 
 import android.app.Application
 import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -43,6 +45,8 @@ class ComposerTest {
 
     private var sent = 0
     private var stopped = 0
+    private val draftText = mutableStateOf("")
+    private val draftAttachments = mutableStateOf<List<LocalAttachment>>(emptyList())
 
     @Test
     fun `the empty composer is one row of attach, text and send`() {
@@ -146,16 +150,103 @@ class ComposerTest {
     }
 
     @Test
-    fun `words typed while a turn runs are queued, not sent by the keyboard`() {
+    fun `a running turn keeps stop beside the queue when a follow-up is drafted`() {
+        show("next", running = true)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).assertExists()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).assertExists()
+    }
+
+    @Test
+    fun `a running turn keeps stop beside the queue when only a file is attached`() {
+        show("", listOf(LocalAttachment("report.pdf", "application/pdf", ByteArray(1))), running = true)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).assertExists()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).assertExists()
+    }
+
+    @Test
+    fun `the queue action submits a drafted follow-up once and stop does not`() {
+        show("next", running = true)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+
+        assertThat(sent).isEqualTo(1)
+        assertThat(stopped).isEqualTo(1)
+    }
+
+    @Test
+    fun `the queue action submits a file-only follow-up`() {
+        show("", listOf(LocalAttachment("report.pdf", "application/pdf", ByteArray(1))), running = true)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+
+        assertThat(sent).isEqualTo(1)
+        assertThat(stopped).isEqualTo(0)
+    }
+
+    @Test
+    fun `stop keeps the drafted words and the attached file`() {
+        show("follow up", listOf(LocalAttachment("report.pdf", "application/pdf", ByteArray(1))), running = true)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+
+        assertThat(stopped).isEqualTo(1)
+        assertThat(sent).isEqualTo(0)
+        assertThat(draftText.value).isEqualTo("follow up")
+        assertThat(draftAttachments.value.map { it.name }).containsExactly("report.pdf")
+        compose.onNode(hasSetTextAction() and hasText("follow up")).assertExists()
+        compose.onNodeWithText("report.pdf").assertExists()
+    }
+
+    @Test
+    fun `the send key queues the follow-up once while a turn runs`() {
         show("next", running = true, enterSends = true)
 
-        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).assertDoesNotExist()
-        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
-        // The send key does not send over a running turn: only the queue button does.
         compose.onNode(hasSetTextAction()).performImeAction()
 
         assertThat(sent).isEqualTo(1)
         assertThat(stopped).isEqualTo(0)
+    }
+
+    @Test
+    fun `the send key queues a file-only follow-up once while a turn runs`() {
+        show("", listOf(LocalAttachment("report.pdf", "application/pdf", ByteArray(1))), running = true, enterSends = true)
+
+        compose.onNode(hasSetTextAction()).performImeAction()
+
+        assertThat(sent).isEqualTo(1)
+        assertThat(stopped).isEqualTo(0)
+    }
+
+    @Test
+    fun `the send key does nothing on an empty running composer`() {
+        show("", running = true, enterSends = true)
+
+        compose.onNode(hasSetTextAction()).performImeAction()
+
+        assertThat(sent).isEqualTo(0)
+        assertThat(stopped).isEqualTo(0)
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp")
+    fun `at 360 dp a running draft shows stop and queue and both act`() {
+        show("next", running = true)
+
+        val queue = bounds(R.string.composer_queue)
+        val stop = bounds(R.string.composer_stop)
+        val composer = compose.onNodeWithTag("composer").getBoundsInRoot()
+        assertThat(field().right.value).isAtMost(queue.left.value)
+        assertThat(queue.right.value).isAtMost(stop.left.value)
+        assertThat(stop.right.value).isAtMost(composer.right.value)
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+
+        assertThat(sent).isEqualTo(1)
+        assertThat(stopped).isEqualTo(1)
     }
 
     @Test
@@ -165,7 +256,9 @@ class ComposerTest {
 
         val composer = compose.onNodeWithTag("composer").getBoundsInRoot()
         val queue = bounds(R.string.composer_queue)
-        assertThat(queue.right.value).isAtMost(composer.right.value)
+        val stop = bounds(R.string.composer_stop)
+        assertThat(stop.right.value).isAtMost(composer.right.value)
+        assertThat(queue.right.value).isAtMost(stop.left.value)
         assertThat(field().right.value).isAtMost(queue.left.value)
         assertThat(bounds(R.string.composer_attach).right.value).isAtMost(field().left.value)
     }
@@ -177,11 +270,14 @@ class ComposerTest {
     private fun bounds(label: Int) = compose.onNodeWithContentDescription(app.getString(label)).getBoundsInRoot()
 
     private fun show(text: String, attachments: List<LocalAttachment> = emptyList(), running: Boolean = false, enterSends: Boolean = false) {
+        draftText.value = text
+        draftAttachments.value = attachments
         compose.setContent {
             HermesTheme {
                 Box(Modifier.testTag("composer")) {
                     Composer(
-                        text = text, onText = {}, attachments = attachments, onAttachments = {},
+                        text = draftText.value, onText = { draftText.value = it },
+                        attachments = draftAttachments.value, onAttachments = { draftAttachments.value = it },
                         running = running, enterSends = enterSends, onSend = { sent++ }, onStop = { stopped++ },
                         onError = {}, onOpen = {},
                     )
