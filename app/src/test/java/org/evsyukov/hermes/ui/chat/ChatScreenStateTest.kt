@@ -17,10 +17,12 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -73,6 +75,17 @@ class ChatScreenStateTest {
     )
 
     private fun field(text: String) = compose.onNode(hasSetTextAction() and hasText(text))
+
+    /** A live chat with a turn already submitted, as the gateway has it after the first message. */
+    private suspend fun runningChat(): ChatController {
+        gateway.connect()
+        val chat = chat("s1")
+        withTimeout(5_000) { chat.state.first { !it.loading } }
+        chat.send("first", emptyList())
+        withTimeout(5_000) { chat.state.first { it.running } }
+        withTimeout(5_000) { while (gateway.count("prompt.submit") < 1) delay(10) }
+        return chat
+    }
 
     @Test
     fun `the words, the files and the place in a chat survive a screen over it`() {
@@ -130,5 +143,43 @@ class ChatScreenStateTest {
 
         field("for the first chat").assertExists()
         field("for the second").assertDoesNotExist()
+    }
+
+    @Test
+    fun `stop keeps the follow-up and sends nothing while a turn runs`() = runBlocking<Unit> {
+        val chat = runningChat()
+        val draft = ChatDraft().apply {
+            text = "follow-up"
+            attachments = listOf(LocalAttachment("note.pdf", "application/pdf", ByteArray(1)))
+        }
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        val submitted = gateway.count("prompt.submit")
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+        compose.waitForIdle()
+        withTimeout(5_000) { chat.state.first { !it.running } }
+
+        assertThat(gateway.count("prompt.submit")).isEqualTo(submitted)
+        assertThat(draft.text).isEqualTo("follow-up")
+        assertThat(draft.attachments.map { it.name }).containsExactly("note.pdf")
+        field("follow-up").assertExists()
+        compose.onNodeWithText("note.pdf").assertExists()
+        chat.close()
+    }
+
+    @Test
+    fun `queue submits the follow-up once and clears it while a turn runs`() = runBlocking<Unit> {
+        val chat = runningChat()
+        val draft = ChatDraft().apply { text = "follow-up" }
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        val submitted = gateway.count("prompt.submit")
+
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") < submitted + 1) delay(10) }
+        compose.waitForIdle()
+
+        assertThat(gateway.count("prompt.submit")).isEqualTo(submitted + 1)
+        assertThat(draft.text).isEmpty()
+        chat.close()
     }
 }
