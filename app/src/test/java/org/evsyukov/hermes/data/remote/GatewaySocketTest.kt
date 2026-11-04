@@ -12,6 +12,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -258,6 +259,62 @@ class GatewaySocketTest {
     }
 
     @Test
+    fun `a connection is the socket's from READY on, before the gateway is counted, and no longer once lost`() = runBlocking<Unit> {
+        // `client.capabilities` goes unanswered: the socket is READY and the gateway not counted yet.
+        gateway.holdCapabilities = true
+        repeat(2) { server.enqueue(upgrade()) }
+        val socket = socket(firstPause = 100)
+        socket.start()
+        withTimeout(5_000) { until { socket.state.value == SocketState.READY && "client.capabilities" in gateway.methods } }
+        val first = socket.transport.value
+
+        assertThat(first).isNotEqualTo(0L)
+        assertThat(socket.connections.value).isEqualTo(0)
+        gateway.sockets.single().close(1001, "going away")
+        withTimeout(5_000) { until { socket.state.value != SocketState.READY } }
+        assertThat(socket.transport.value).isEqualTo(0L)
+        withTimeout(5_000) { until { gateway.sockets.size == 2 && socket.state.value == SocketState.READY } }
+        val second = socket.transport.value
+        assertThat(second).isNotEqualTo(0L)
+        assertThat(second).isNotEqualTo(first)
+
+        // An answer meant for the lost connection does not go over the new one.
+        assertThat(socket.respondOn(first, "r1", kotlinx.serialization.json.JsonObject(emptyMap()))).isFalse()
+        assertThat(socket.respondOn(second, "r2", kotlinx.serialization.json.JsonObject(emptyMap()))).isTrue()
+        withTimeout(5_000) { until { "r2" in gateway.answered } }
+        assertThat(gateway.answered).containsExactly("r2")
+    }
+
+    @Test
+    fun `a frame of an attempt that is over is not taken, and one of the current attempt carries its connection`() = runBlocking<Unit> {
+        repeat(2) { server.enqueue(upgrade()) }
+        val socket = socket(firstPause = 100)
+        settled(socket)
+        val first = socket.transport.value
+        gateway.sockets.single().close(1001, "going away")
+        withTimeout(5_000) { until { gateway.sockets.size == 2 && socket.state.value == SocketState.READY } }
+        val second = socket.transport.value
+        val requests = CopyOnWriteArrayList<ServerRequest>()
+        val events = CopyOnWriteArrayList<GatewayEvent>()
+        val listening = listOf(scope.launch { socket.requests.collect { requests += it } }, scope.launch { socket.events.collect { events += it } })
+        delay(200)
+
+        // Frames the listener of the first attempt hands over late, then the same of the current attempt.
+        val request = """{"jsonrpc":"2.0","id":"srq-1","method":"clarify","params":{"session_id":"live1","questions":[]}}"""
+        val cancel = """{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","session_id":"live1","payload":{"id":"srq-1","method":"clarify","reason":"timeout"}}}"""
+        socket.receive(request, first)
+        socket.receive(cancel, first)
+        socket.receive(request.replace("srq-1", "srq-2"), second)
+        socket.receive(cancel.replace("srq-1", "srq-2"), second)
+        withTimeout(5_000) { until { requests.isNotEmpty() && events.any { it.type == "request.cancel" } } }
+        delay(200)
+        listening.forEach { it.cancel() }
+
+        assertThat(requests.map { it.id to it.transport }).containsExactly("srq-2" to second)
+        assertThat(events.filter { it.type == "request.cancel" }.map { it.payload.string("id") to it.transport }).containsExactly("srq-2" to second)
+    }
+
+    @Test
     fun `a stopped socket stays closed when a late owner starts it`() = runBlocking {
         repeat(2) { server.enqueue(upgrade()) }
         val socket = socket(firstPause = 50)
@@ -363,6 +420,9 @@ private class FakeGateway : WebSocketListener() {
     val held = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
     val methods = CopyOnWriteArrayList<String>()
 
+    /** The ids of the requests the client answered, in order. */
+    val answered = CopyOnWriteArrayList<String>()
+
     @Volatile
     var heartbeat = true
 
@@ -387,7 +447,7 @@ private class FakeGateway : WebSocketListener() {
         if (webSocket in silenced) return
         val frame = HermesJson.parseToJsonElement(text).jsonObject
         val id = frame["id"]?.jsonPrimitive?.content ?: return
-        val method = frame["method"]?.jsonPrimitive?.content ?: return
+        val method = frame["method"]?.jsonPrimitive?.content ?: return run { answered += id }
         methods += method
         if (method == "gateway.ping" && webSocket in dropOnPing) return webSocket.cancel()
         if (method == "client.capabilities" && holdCapabilities) return

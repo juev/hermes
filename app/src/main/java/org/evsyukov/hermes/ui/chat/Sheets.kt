@@ -24,7 +24,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
@@ -34,7 +33,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -70,7 +68,6 @@ private fun choiceLabel(choice: String): String = when (choice) {
 fun PromptSheet(
     prompt: Prompt,
     onApproval: (String) -> Unit,
-    onClarify: (Map<String, String?>) -> Unit,
     onSecret: (String?) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -109,28 +106,6 @@ fun PromptSheet(
                         }
                     }
                     TextButton(onClick = { onApproval("deny") }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.chat_choice_deny), color = colors.danger) }
-                }
-                is Prompt.Clarify -> {
-                    val answers = remember { mutableStateMapOf<String, String>() }
-                    Text(stringResource(R.string.chat_clarify_title), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
-                    prompt.questions.forEach { question ->
-                        Text(question.text, color = colors.text)
-                        if (question.choices.isNotEmpty()) {
-                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                question.choices.forEach { choice ->
-                                    FilterChip(selected = answers[question.id] == choice, onClick = { answers[question.id] = choice }, label = { Text(choice) })
-                                }
-                            }
-                        }
-                        OutlinedTextField(
-                            answers[question.id].orEmpty(), { answers[question.id] = it },
-                            placeholder = { Text(stringResource(R.string.chat_own_answer)) }, modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    Button(
-                        onClick = { onClarify(prompt.questions.associate { it.id to answers[it.id] }) }, modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast),
-                    ) { Text(stringResource(R.string.chat_answer)) }
                 }
                 is Prompt.Secret -> {
                     var value by remember { mutableStateOf("") }

@@ -30,6 +30,15 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   open in a new chat of the active server: the text in the field, the files as attachments. Three
   buttons above the field send it at once: Summarize, Find related, Create a task; the agent picks
   the connected service for the result. A message of one's own can go instead.
+- A question of the agent is a card in the chat, under the answer that asked it: its choices, a field for
+  one's own words for each question, Answer and Cancel question. Only these two buttons answer it;
+  scrolling, swiping, Back or leaving the chat do not. The words and choices on a card stay while another
+  screen or another chat is open, and an answered, cancelled, expired or closed card keeps its questions
+  with the answer given in its place in the chat; the phone keeps both in memory for as long as the app
+  stays on that server. A reader of older messages is not moved to a new question: a button over the chat
+  says that the agent waits and leads to it. After a reconnect the chat shows again the questions the
+  server still waits on, once each, closes those it no longer does, and never opens again one the server
+  has ended.
 - When the agent needs an integration, a card under its answer connects it: accounts through
   Nous (sign-in in the browser, several accounts of one service by name), MCP servers with the
   keys they ask for, and plugins and skills of the catalog with their source, scan and advanced
@@ -54,7 +63,7 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   chat do not count, and neither does the service that keeps the app alive. The same answer comes
   twice — over the socket and then as the push of that turn — and is one notification; a later answer
   is always a new one. Approvals, questions of the agent and cards notify on the same rule as answers:
-  only the chat on the screen asks in its own sheet instead. Approvals can be answered from the
+  only the chat on the screen asks itself instead. Approvals can be answered from the
   notification.
 - A chat that is not on the screen — the app in the background, or the settings or another screen
   over it — keeps its connection, its notifications and every word of its answer, but does not

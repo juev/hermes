@@ -237,13 +237,13 @@ class HiddenChatTest {
         gateway.delta(" waiting")
         gateway.deliver()
 
-        // The chat answers for r2 while hidden; the screen's copy is unchanged.
-        assertThat(chat.working.prompt?.request?.id).isEqualTo("r2")
+        // The chat holds r2 open and r1 closed while hidden; the screen's copy is unchanged.
+        assertThat(chat.working.questions.map { it.id to it.state }).containsExactly("r1" to QuestionState.CLOSED, "r2" to QuestionState.PENDING).inOrder()
         assertThat(chat.state.value).isSameInstanceAs(published)
         chat.setVisible(true)
         val back = chat.state.value
 
-        assertThat((back.prompt as Prompt.Clarify).questions.single().text).isEqualTo("Which branch?")
+        assertThat(back.questions.single { it.state == QuestionState.PENDING }.questions.single().text).isEqualTo("Which branch?")
         assertThat(answer(back)!!.text).isEqualTo("Hello there waiting")
     }
 
@@ -302,7 +302,7 @@ class HiddenChatTest {
 
         assertThat(answer(back)!!.text).isEqualTo("Hello there lost after")
         assertThat(back.items.count { it is ChatItem.Assistant }).isEqualTo(1)
-        assertThat(back.prompt!!.request.id).isEqualTo("r1")
+        assertThat(back.questions.single().id).isEqualTo("r1")
         assertThat(gateway.calls.size).isEqualTo(calls)
     }
 

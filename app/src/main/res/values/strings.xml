@@ -247,6 +247,17 @@
     <string name="chat_clarify_title">The agent has a question</string>
     <string name="chat_own_answer">Your own answer</string>
     <string name="chat_answer">Answer</string>
+    <string name="chat_question_number">Question %1$d of %2$d</string>
+    <string name="chat_question_cancel">Cancel question</string>
+    <string name="chat_question_answered">Answered</string>
+    <string name="chat_question_cancelled">Cancelled: the agent goes on without an answer</string>
+    <string name="chat_question_expired">Expired: the agent stopped waiting for an answer</string>
+    <string name="chat_question_closed">Closed: the agent no longer waits for an answer</string>
+    <string name="chat_question_no_answer">No answer</string>
+    <string name="chat_question_waiting">The agent is waiting for your answer</string>
+    <string name="chat_question_show">Show the question</string>
+    <string name="chat_question_offline">No connection to the server: answer once it is back</string>
+    <string name="chat_question_checking">Checking that the agent still waits for this answer</string>
     <string name="chat_need_sudo">Sudo password needed</string>
     <string name="chat_need_secret">A secret value is needed</string>
     <string name="chat_submit">Submit</string>

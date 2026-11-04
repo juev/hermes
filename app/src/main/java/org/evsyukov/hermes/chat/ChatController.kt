@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
@@ -49,7 +50,10 @@ class LocalAttachment(val name: String, val mime: String?, val bytes: ByteArray)
     val image: Boolean get() = mime?.startsWith("image/") == true
 }
 
-/** A question of the agent that waits for the user: approve a command, answer, give a secret. */
+/**
+ * A request of the agent that waits for the user in a sheet: approve a command or give a secret. Its
+ * questions are cards of the chat instead, [QuestionCard].
+ */
 sealed interface Prompt {
     val request: ServerRequest
 
@@ -60,10 +64,7 @@ sealed interface Prompt {
         val description: String,
         val choices: List<String>,
     ) : Prompt
-    data class Clarify(override val request: ServerRequest, val questions: List<Question>) : Prompt
     data class Secret(override val request: ServerRequest, val title: String, val sudo: Boolean) : Prompt
-
-    data class Question(val id: String, val text: String, val choices: List<String>)
 }
 
 data class ChatState(
@@ -89,6 +90,8 @@ data class ChatState(
     val usage: SessionUsage? = null,
     /** Connection operations seen in this chat, oldest first; a settled one stays as its outcome. */
     val connections: List<ConnectionOp> = emptyList(),
+    /** The questions the agent asked in this chat, oldest first; an answered or closed one stays as its outcome. */
+    val questions: List<QuestionCard> = emptyList(),
 ) {
     /** A turn runs, and no open answer shows it yet: the chat says it is waiting under the last message. */
     val awaitingAnswer: Boolean get() = running && (items.lastOrNull() as? ChatItem.Assistant)?.streaming != true
@@ -123,12 +126,20 @@ class ChatController(
     private val onRead: (storedId: String, lastActive: Double) -> Unit = { _, _ -> },
     /** Whether the chat starts on the screen; the screen tells it afterwards with [setVisible]. */
     visible: Boolean = true,
+    /** The questions of the chats of this connection, which outlive this chat being open. */
+    private val questionMemory: QuestionMemory = QuestionMemory(),
 ) {
     /** Orders every change of the chat's state, its publication and the change of its visibility. */
     private val lock = Any()
 
     /** The chat's own state, always current but for the words in [streamed]; guarded by [lock]. */
-    private val _state = MutableStateFlow(ChatState(storedId = storedId))
+    private val _state = MutableStateFlow(
+        ChatState(
+            storedId = storedId,
+            // Kept from an earlier visit: shown at once, answered only once this chat's join confirms them.
+            questions = questionMemory.cards(storedId.orEmpty()).map { it.copy(confirmed = false) },
+        ),
+    )
 
     /** What the screen sees: the state as of the last change made while the chat was shown. */
     private val published = MutableStateFlow(_state.value)
@@ -155,6 +166,10 @@ class ChatController(
     @VisibleForTesting
     internal val working: ChatState get() = _state.value
 
+    /** The connection the chat's current join came over, for tests; 0 while it has no join it can trust. */
+    @VisibleForTesting
+    internal val joinedTransport: Long get() = joinedOn
+
     /** The state with what [streamed] holds, for code that reads the transcript. */
     private val current: ChatState get() = synchronized(lock) {
         flushStreamed()
@@ -167,7 +182,10 @@ class ChatController(
      */
     private fun edit(flush: Boolean = true, change: (ChatState) -> ChatState) = synchronized(lock) {
         if (flush) flushStreamed()
+        val asked = _state.value.questions
         _state.value = change(_state.value)
+        // The questions outlive the chat being open: opened again, it finds them as they are now.
+        if (_state.value.questions !== asked) questionMemory.keep(_state.value.storedId.orEmpty(), _state.value.questions)
         if (visible) published.value = _state.value
     }
 
@@ -235,6 +253,9 @@ class ChatController(
     /** The answer of `session.create` for a new chat that has not been sent; guarded by [joining]. */
     private var draft: JsonObject? = null
 
+    /** The connection [draft] was created over, by [GatewayChannel.transport]; 0 when that is not known. */
+    private var draftOn = 0L
+
     @Volatile
     private var closed = false
     private val keys = AtomicLong()
@@ -255,9 +276,47 @@ class ChatController(
     @Volatile
     private var awaitingStart = false
 
+    /**
+     * The questions and withdrawals that came over the connection the socket is on while the chat has
+     * no join over it yet — one on its way, or none begun — in the order they came. Guarded by [lock].
+     * None is left out: a withdrawal or a question dropped here could be newer than the answer of the
+     * join it waits for, which could then not tell it. A join over that connection takes those of its
+     * session once it answers and the others go; a new connection or closing the chat empties it.
+     */
+    private val early = ArrayList<Heard>()
+
+    /** A question or a withdrawal as [observe] took it, with the place it came in among all it took. */
+    private class Heard(val observation: Any, val ordinal: Long)
+
+    /**
+     * Counts the questions and withdrawals [observe] took, in the order they came: a join reads it when
+     * it asks, so it knows which came after.
+     */
+    private val heardLive = AtomicLong()
+
+    /** When each request was last heard live, by [heardLive]; guarded by [lock]. */
+    private val seenLive = HashMap<String, Long>()
+
+    /**
+     * The connection, by [GatewayChannel.transport], that the answer of the chat's current join came
+     * over; 0 when the chat has no join it can trust. Only while the socket is still on this very
+     * connection does what the join confirmed stand: an answer to a question goes over it alone, and a
+     * new connection, even one already READY and not yet announced, confirms nothing until a join of
+     * its own. Guarded by [lock].
+     */
+    @Volatile
+    private var joinedOn = 0L
+
     init {
         jobs += scope.launch { socket.events.collect(::onEvent) }
         jobs += scope.launch { socket.requests.collect(::onRequest) }
+        // The connection of the join is lost: nothing it confirmed takes an answer any more. The check
+        // reads the socket itself, so a value that arrives late cannot undo a newer join.
+        jobs += scope.launch {
+            socket.transport.collect {
+                synchronized(lock) { if (joinedOn != 0L && socket.transport.value != joinedOn) invalidateJoin() }
+            }
+        }
         // After a reconnect the old live id may be gone: join the session again. The count of
         // connections says whether this chat has already joined the one under way, also for a
         // collector that starts after the connection came.
@@ -272,7 +331,7 @@ class ChatController(
                     rejoinPending.set(true)
                     return@collect
                 }
-                liveId = null
+                forgetLive()
                 reload()
             }
         }
@@ -288,6 +347,7 @@ class ChatController(
     fun close() {
         closed = true
         jobs.forEach { it.cancel() }
+        synchronized(lock) { early.clear() }
         // Keep what the chat shows on the phone: opening it again puts that on the screen at once
         // and refreshes it under the surface, rather than waiting for the server with an empty chat.
         _state.value.storedId?.let { id -> scope.launch { runCatching { session.chat.messages(id) } } }
@@ -308,13 +368,25 @@ class ChatController(
             }
             if (closed || !ready || liveId != null || _state.value.storedId != null) return@withLock
             draft = try {
-                create()
+                onTransport { create() }.let { (answer, on) -> answer.also { draftOn = on } }
             } catch (e: Exception) {
                 // The first message creates the session then.
                 Log.w(TAG, "Draft session not created", e)
                 null
             }
         }
+    }
+
+    /**
+     * Runs [call] on the connection the socket is on when it starts and gives its answer with that
+     * connection, or with 0 when the socket was on another one by the time the answer came: such an
+     * answer tells nothing about the connection the socket is on now.
+     */
+    private suspend fun <T> onTransport(call: suspend () -> T): Pair<T, Long> {
+        socket.awaitReady()
+        val before = socket.transport.value
+        val answer = call()
+        return answer to if (before != 0L && socket.transport.value == before) before else 0L
     }
 
     private suspend fun create() = socket.call(
@@ -387,17 +459,24 @@ class ChatController(
                 // the dashboard process is looked up in the gateway's live list: without that the
                 // chat would open on its history alone and the tools and answer of the running turn
                 // would never arrive.
-                val live = if (summary?.active == true) null else liveSession(id)
+                val since = heardLive.get()
+                val lookup = if (summary?.active == true) null else liveSession(id)
+                val live = lookup?.getOrNull()
+                // Live nowhere the gateway knows: none of the chat's questions can still wait for an answer.
+                if (summary != null && lookup?.isSuccess == true && live == null) closeUnlisted(emptySet(), since)
                 val joined = if (summary?.active == true || live != null) {
                     runCatching {
                         joining.withLock {
-                            if (liveId != null) {
+                            // A join over the connection the socket is on now needs no other; one over a
+                            // lost connection, or none, is made again, also while an earlier load runs.
+                            if (validJoin() != 0L) {
                                 null
                             } else {
                                 val generationAtStart = socket.connections.value
-                                val answer = resume(id)
+                                val joinAnswer = resume(id)
                                 val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
-                                answer.also { liveId = it.string("session_id") } to generation
+                                joinAnswer.answer.string("session_id")?.let { takeLive(it, joinAnswer.transport) }
+                                joinAnswer to generation
 
                             }
                         }
@@ -414,7 +493,7 @@ class ChatController(
                 } else {
                     edit { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
                 }
-                joined?.getOrNull()?.let { (answer, generation) -> adopt(answer, id, starting = false, generation) }
+                joined?.getOrNull()?.let { (joinAnswer, generation) -> adopt(joinAnswer, id, starting = false, generation) }
                 joined?.exceptionOrNull()?.let { throw it }
             }
         } catch (e: CancellationException) {
@@ -462,51 +541,173 @@ class ChatController(
         // The connection the answer comes over: a call made before the socket is up opens it, so the
         // number is read again after the call when there was none.
         val generationAtStart = socket.connections.value
-        val result = if (stored == null) {
-            draft?.also { draft = null } ?: create()
+        val joinAnswer = if (stored == null) {
+            val asked = heardLive.get()
+            val kept = draft
+            draft = null
+            // A session made in advance over a connection since lost is not this connection's: a new one is made.
+            if (kept != null && draftOn != 0L && draftOn == socket.transport.value) {
+                JoinAnswer(kept, asked, draftOn)
+            } else {
+                kept?.string("session_id")?.let { old -> runCatching { socket.call("session.close", buildJsonObject { put("session_id", old) }) } }
+                onTransport { create() }.let { (answer, on) -> JoinAnswer(answer, asked, on) }
+            }
         } else {
             resume(stored)
         }
         val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
-        return adopt(result, stored, starting, generation)
+        return adopt(joinAnswer, stored, starting, generation)
     }
 
     /**
-     * The live session of stored chat [id] from the gateway's process-local list, or null when this
-     * gateway does not host it. The socket is given a moment to come up; a chat opened offline
-     * waits for its history, not for the live list.
+     * The live session of stored chat [id] from the gateway's process-local list, null when this
+     * gateway does not host it, or a failure when the list could not be read. The socket is given a
+     * moment to come up; a chat opened offline waits for its history, not for the live list.
      */
-    private suspend fun liveSession(id: String): JsonObject? {
+    private suspend fun liveSession(id: String): Result<JsonObject?> {
         val ready = socket.state.value == SocketState.READY || withTimeoutOrNull(3_000) { socket.awaitReady(); true } == true
-        if (!ready) return null
+        if (!ready) return Result.failure(IOException("no connection"))
         return runCatching {
             val answer = socket.call("session.active_list", buildJsonObject { put("current_session_id", id) }, timeoutMillis = 10_000) as? JsonObject
             (answer?.get("sessions") as? JsonArray)?.mapNotNull { it as? JsonObject }?.firstOrNull {
                 it.string("session_key") == id || it.string("id") == id
             }
-        }.getOrNull()
+        }
     }
 
-    /** Asks the server to join the session of [stored]; [adopt] puts the answer on the screen. */
-    private suspend fun resume(stored: String): JsonObject = socket.call(
-        "session.resume",
-        buildJsonObject {
-            put("session_id", stored)
-            put("close_on_disconnect", false)
-            put("omit_messages", true)
-            put("inline_images", false)
-        },
-        timeoutMillis = 120_000,
-    ) as JsonObject
+    /**
+     * Asks the server to join the session of [stored]; [adopt] puts the answer on the screen. Gives the
+     * answer, the connection it came over and how many requests the chat had heard live when it asked:
+     * the open requests of the answer are as of a moment after that, and one heard later is newer.
+     */
+    private suspend fun resume(stored: String): JoinAnswer {
+        val asked = heardLive.get()
+        val (answer, transport) = onTransport {
+            socket.call(
+                "session.resume",
+                buildJsonObject {
+                    put("session_id", stored)
+                    put("close_on_disconnect", false)
+                    put("omit_messages", true)
+                    put("inline_images", false)
+                },
+                timeoutMillis = 120_000,
+            ) as JsonObject
+        }
+        return JoinAnswer(answer, asked, transport)
+    }
+
+    /**
+     * The join answered with live session [live] over connection [transport], 0 when that connection
+     * is already lost: what came for the session meanwhile is applied now, in the order it came, and
+     * what came for any other session is dropped.
+     */
+    private fun takeLive(live: String, transport: Long) = synchronized(lock) {
+        liveId = live
+        // Another join, or one over a lost connection: what an earlier join confirmed is not confirmed by this one.
+        if (joinedOn != transport) {
+            joinedOn = transport
+            unconfirm()
+        }
+        val heard = ArrayList(early)
+        early.clear()
+        // In the order they came, each with the place it came in, not the moment of this replay.
+        heard.forEach { entry ->
+            when (val observation = entry.observation) {
+                is GatewayEvent -> takeWithdrawal(observation, entry.ordinal)
+                is ServerRequest -> takeQuestion(observation, socket.connections.value, entry.ordinal)
+            }
+        }
+    }
+
+    /**
+     * Takes a question or a withdrawal as it comes, or from [early] once a join answered: the only way
+     * either changes the chat, under [lock] from the check to the change. One that came over no known
+     * connection, or over one the socket is no longer on, is dropped: it neither spares a question from
+     * the reconciliation of a join nor ends one. One that came over the connection the socket is on
+     * now is [applied][apply] when the chat's join is over that same connection and [sessionId] is the
+     * chat's live session; while the chat has no such join it waits in [early] for one.
+     *
+     * Each one taken gets its place among all taken, by [heardLive], once, when it first comes: a replay
+     * from [early] passes that [ordinal] on rather than counting it again, so a join tells by it what
+     * came before it asked. A request a join [listed] is not heard live and gets no place.
+     */
+    private fun observe(
+        observation: Any,
+        transport: Long,
+        sessionId: String?,
+        ordinal: Long = 0L,
+        listed: Boolean = false,
+        apply: (ordinal: Long) -> Unit,
+    ) = synchronized(lock) {
+        if (transport == 0L || transport != socket.transport.value) return@synchronized
+        val heard = when {
+            listed -> 0L
+            ordinal != 0L -> ordinal
+            else -> heardLive.incrementAndGet()
+        }
+        if (transport != joinedOn || liveId == null) {
+            // A join lists what it answers with itself; only what came live waits for one.
+            if (listed) return@synchronized
+            // What came over an earlier connection can no longer be attributed: only this one's are kept.
+            early.removeAll { originOf(it.observation) != transport }
+            early += Heard(observation, heard)
+            return@synchronized
+        }
+        if (sessionId == liveId) apply(heard)
+    }
+
+    private fun takeWithdrawal(event: GatewayEvent, ordinal: Long = 0L) =
+        observe(event, event.transport, event.sessionId, ordinal) { withdraw(event) }
+
+    private fun takeQuestion(request: ServerRequest, generation: Int, ordinal: Long = 0L, listed: Boolean = false) =
+        observe(request, request.transport, request.params.string("session_id"), ordinal, listed) { heard -> showQuestion(request, generation, listed, heard) }
+
+    private fun originOf(observation: Any): Long = when (observation) {
+        is GatewayEvent -> observation.transport
+        is ServerRequest -> observation.transport
+        else -> 0L
+    }
+
+    /**
+     * The live session is no longer known, after a lost connection or a session the server dropped:
+     * no question takes an answer until the next join confirms it is still open.
+     */
+    private fun forgetLive() = synchronized(lock) {
+        liveId = null
+        invalidateJoin()
+    }
+
+    /** The join can no longer be trusted: its connection is lost. Guarded by [lock]. */
+    private fun invalidateJoin() {
+        joinedOn = 0L
+        unconfirm()
+    }
+
+    private fun unconfirm() = edit(flush = false) { state ->
+        if (state.questions.none { it.confirmed }) state else state.copy(questions = state.questions.map { it.copy(confirmed = false) })
+    }
+
+    /** The connection of the chat's current join while the socket is still on it, or 0. */
+    private fun validJoin(): Long = synchronized(lock) {
+        joinedOn.takeIf { it != 0L && liveId != null && socket.transport.value == it } ?: 0L
+    }
+
+    /** The answer of a join, the connection it came over and the count of [heardLive] when it was asked. */
+    private class JoinAnswer(val answer: JsonObject, val asked: Long, val transport: Long)
 
     /**
      * Applies the answer of a join: the live id, the turn that runs, its card and the questions the
      * server holds. Separately from [resume] so a chat that reconnects can ask at once and apply
      * once its history is on the screen, the turn streaming on top of it.
      */
-    private fun adopt(result: JsonObject, stored: String?, starting: Boolean, generation: Int): String {
+    private fun adopt(joinAnswer: JoinAnswer, stored: String?, starting: Boolean, generation: Int): String {
+        val result = joinAnswer.answer
         val live = result.string("session_id") ?: error("No session_id in the answer")
-        liveId = live
+        // What the answer says of the requests holds on the connection it came over, and confirms
+        // nothing once the socket is on another one: the join over that one brings its own answer.
+        val current = joinAnswer.transport != 0L && socket.transport.value == joinAnswer.transport
+        takeLive(live, if (current) joinAnswer.transport else 0L)
         joinedGeneration.set(generation)
         // The answer came over `generation`; a connection that came meanwhile may have moved the
         // card or the turn, so that one is joined as well.
@@ -532,10 +733,16 @@ class ChatController(
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
         edit { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
-        (result["open_requests"] as? JsonArray)?.forEach { request ->
-            val obj = request as? JsonObject ?: return@forEach
-            val id = obj.string("id") ?: return@forEach
-            onRequest(ServerRequest(id, obj.string("method").orEmpty(), obj["params"] as? JsonObject ?: JsonObject(emptyMap())))
+        if (current) {
+            val listed = HashSet<String>()
+            (result["open_requests"] as? JsonArray)?.forEach { request ->
+                val obj = request as? JsonObject ?: return@forEach
+                val id = obj.string("id") ?: return@forEach
+                listed += id
+                // Listed by this join's answer: it came over the connection of that answer.
+                onRequest(ServerRequest(id, obj.string("method").orEmpty(), obj["params"] as? JsonObject ?: JsonObject(emptyMap()), joinAnswer.transport), generation, listed = true)
+            }
+            closeUnlisted(listed, joinAnswer.asked)
         }
         return live
     }
@@ -545,7 +752,7 @@ class ChatController(
         block(ensureLive(starting))
     } catch (e: RpcException) {
         if (!e.sessionGone()) throw e
-        liveId = null
+        forgetLive()
         block(ensureLive(starting))
     }
 
@@ -760,10 +967,104 @@ class ChatController(
 
     fun answerApproval(choice: String) = answer { buildJsonObject { put("choice", choice) } }
 
-    fun answerClarify(answers: Map<String, String?>) = answer {
-        buildJsonObject {
-            put("answers", JsonObject(answers.mapValues { (_, v) -> if (v == null) kotlinx.serialization.json.JsonNull else JsonPrimitive(v) }))
+    /**
+     * Answers question [id], once and only while its card is pending: a second tap, or a card the
+     * server closed meanwhile, sends nothing. A question without words is sent as skipped.
+     */
+    fun answerQuestion(id: String, answers: Map<String, String?>) = resolveQuestion(id) { card ->
+        val given = card.questions.associate { q -> q.id to answers[q.id]?.trim()?.takeIf { it.isNotEmpty() } }
+        card.copy(state = QuestionState.SUBMITTED, answers = given) to buildJsonObject {
+            put("answers", JsonObject(given.mapValues { (_, v) -> if (v == null) JsonNull else JsonPrimitive(v) }))
             put("outcome", "submitted")
+        }
+    }
+
+    /** The answers written on the card of [card] and not sent yet. */
+    fun answersOf(card: QuestionCard) = questionMemory.answers(_state.value.storedId.orEmpty(), card.id, card.prefilled)
+
+    /** Tells the agent the user will not answer question [id]; only the button of its card says so. */
+    fun cancelQuestion(id: String) = resolveQuestion(id) { card ->
+        card.copy(state = QuestionState.CANCELLED) to buildJsonObject { put("outcome", "cancelled") }
+    }
+
+    /**
+     * Settles a pending question and sends the one answer [settle] gives for it. The answer is a frame
+     * that gets no reply, so without a connection it would be lost unseen: then nothing is sent, the
+     * card stays open and the chat says why.
+     */
+    private fun resolveQuestion(id: String, settle: (QuestionCard) -> Pair<QuestionCard, JsonElement>) {
+        synchronized(lock) {
+            // A closed chat answers nothing, and a card this chat's join has not confirmed may be one the server ended.
+            if (closed) return
+            val card = _state.value.questions.firstOrNull { it.id == id && it.state == QuestionState.PENDING } ?: return
+            val chat = _state.value.storedId.orEmpty()
+            if (questionMemory.ended(chat, id) != null) return
+            if (socket.state.value != SocketState.READY) {
+                edit(flush = false) { it.copy(error = strings.get(R.string.chat_question_offline)) }
+                return
+            }
+            // Only over the connection of the join that confirmed it, and only while the socket is still on it.
+            val on = validJoin()
+            if (!card.confirmed || on == 0L) return
+            val (settled, result) = settle(card)
+            if (!socket.respondOn(on, id, result)) return
+            questionMemory.heard(chat, id, socket.connections.value)
+            edit(flush = false) { state -> state.copy(questions = state.questions.map { if (it.id == id) settled else it }) }
+        }
+    }
+
+    /**
+     * Shows a `clarify` request as a card under the answer whose tool asked it, and confirms it takes
+     * an answer: it is open on the session this chat has joined, live or [listed] by the join. The
+     * request comes again with every join while it waits: a card the chat has stays one card, with
+     * what the user wrote on it. A request the server ended stays ended, whatever an older answer
+     * still lists: its card shows how it ended, also when the chat had not shown it yet. A card the
+     * user settled opens again only when the server still holds the request over a later connection
+     * than the one its answer went over, which lost the answer. [ordinal] is the place a live request
+     * came in among all [observe] took.
+     */
+    private fun showQuestion(request: ServerRequest, generation: Int, listed: Boolean, ordinal: Long) = edit(flush = false) { state ->
+        val chat = state.storedId.orEmpty()
+        if (!listed) seenLive[request.id] = maxOf(seenLive[request.id] ?: 0L, ordinal)
+        val known = state.questions.firstOrNull { it.id == request.id }
+        val heard = questionMemory.heardOn(chat, request.id)
+        val ended = questionMemory.ended(chat, request.id)
+        fun replaced(card: QuestionCard) = state.copy(questions = state.questions.map { if (it.id == request.id) card else it })
+        // Confirmed only by a join the chat can still trust: one over the connection the socket is on now.
+        val valid = validJoin() != 0L
+        when {
+            known == null -> {
+                if (ended == null) questionMemory.heard(chat, request.id, generation)
+                val card = questionCardOf(request, lastTool(state.items), time = nowSeconds())
+                state.copy(questions = state.questions + if (ended == null) card.copy(confirmed = valid) else card.copy(state = ended))
+            }
+            ended != null -> state
+            known.state == QuestionState.PENDING -> {
+                questionMemory.heard(chat, request.id, maxOf(heard ?: 0, generation))
+                if (known.confirmed == valid) state else replaced(known.copy(confirmed = valid))
+            }
+            heard != null && heard < generation -> {
+                questionMemory.heard(chat, request.id, generation)
+                val given = known.answers.mapNotNull { (qid, answer) -> answer?.let { qid to it } }.toMap()
+                replaced(known.copy(state = QuestionState.PENDING, answers = emptyMap(), prefilled = known.prefilled + given, confirmed = valid))
+            }
+            else -> state
+        }
+    }
+
+    /**
+     * Closes the pending questions that a join does not [listed] as open, unless heard live after the
+     * join asked: the server no longer waits for them, and they take no answer. [asked] is the count
+     * of [heardLive] when the join asked.
+     */
+    private fun closeUnlisted(listed: Set<String>, asked: Long) = edit(flush = false) { state ->
+        val chat = state.storedId.orEmpty()
+        val gone = state.questions.filter { it.state == QuestionState.PENDING && it.id !in listed && (seenLive[it.id] ?: 0) <= asked }
+        gone.forEach { questionMemory.end(chat, it.id, QuestionState.CLOSED) }
+        if (gone.isEmpty()) {
+            state
+        } else {
+            state.copy(questions = state.questions.map { if (it in gone) it.copy(state = QuestionState.CLOSED, confirmed = false) else it })
         }
     }
 
@@ -781,7 +1082,6 @@ class ChatController(
         val prompt = _state.value.prompt ?: return
         when (prompt) {
             is Prompt.Approval -> answerApproval("deny")
-            is Prompt.Clarify -> answer { buildJsonObject { put("outcome", "cancelled") } }
             is Prompt.Secret -> answerSecret(null)
         }
     }
@@ -976,6 +1276,10 @@ class ChatController(
                 edit { it.copy(title = event.payload.string("title").orEmpty()) }
             }
         }
+        if (event.type == "request.cancel") {
+            takeWithdrawal(event)
+            return
+        }
         if (live == null || event.sessionId != live) return
         val sent = sentAt
         if (sent != 0L) {
@@ -1019,9 +1323,6 @@ class ChatController(
                     edit(flush = false) { if (it.status == thinking) it else it.copy(status = thinking) }
                 }
                 "error" -> edit(flush = false) { it.copy(error = event.payload.string("message"), running = false) }
-                "request.cancel" -> edit(flush = false) { state ->
-                    if (state.prompt?.request?.id == event.payload.string("id")) state.copy(prompt = null) else state
-                }
                 "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
                 "connection.update" -> edit(flush = false) { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
             }
@@ -1079,24 +1380,37 @@ class ChatController(
         }
     }
 
-    private fun onRequest(request: ServerRequest) {
+    /**
+     * The server stopped waiting for a request: at its deadline, or because the turn or the session
+     * ended or another client answered. A card the user settled keeps its outcome. Remembered even for
+     * a request the chat has not shown yet: a join answered before the withdrawal may still list it,
+     * and must not open it again. Called by [observe] alone.
+     */
+    private fun withdraw(event: GatewayEvent) = edit(flush = false) { state ->
+        val id = event.payload.string("id")
+        val ended = if (event.payload.string("reason") == "timeout") QuestionState.EXPIRED else QuestionState.CLOSED
+        if (id != null && questionMemory.ended(state.storedId.orEmpty(), id) == null) questionMemory.end(state.storedId.orEmpty(), id, ended)
+        state.copy(
+            prompt = if (state.prompt?.request?.id == id) null else state.prompt,
+            questions = state.questions.map { if (it.id == id && it.state == QuestionState.PENDING) it.copy(state = ended) else it },
+        )
+    }
+
+    /**
+     * A request of the server, live or [listed] among the open requests of a join answered over
+     * connection [generation].
+     */
+    private fun onRequest(request: ServerRequest, generation: Int = socket.connections.value, listed: Boolean = false) {
         val live = liveId
         val sessionId = request.params.string("session_id")
+        if (request.method == "clarify") {
+            takeQuestion(request, generation, listed = listed)
+            return
+        }
         if (live == null || sessionId != live) return
         val params = request.params
         val prompt = when (request.method) {
             "approval" -> approvalOf(request)
-            "clarify" -> Prompt.Clarify(
-                request,
-                (params["questions"] as? JsonArray)?.mapNotNull { q ->
-                    val obj = q as? JsonObject ?: return@mapNotNull null
-                    Prompt.Question(
-                        id = obj.string("qid").orEmpty(),
-                        text = obj.string("question").orEmpty(),
-                        choices = (obj["choices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty(),
-                    )
-                }.orEmpty(),
-            )
             "sudo" -> Prompt.Secret(request, strings.get(R.string.chat_sudo_password, params.string("command").orEmpty()), sudo = true)
             "secret" -> Prompt.Secret(request, params.string("prompt") ?: strings.get(R.string.chat_secret_value, params.string("env_var").orEmpty()), sudo = false)
             else -> {

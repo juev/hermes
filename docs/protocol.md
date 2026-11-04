@@ -374,10 +374,22 @@ test `../app/src/test/java/org/evsyukov/hermes/chat/ServiceMessagesTest.kt`.
   `{"outcome": "cancelled"}` when the person gives up.
 - `secret {prompt, env_var?}` and `sudo {command}` ask for a value the agent cannot read for itself;
   the answer is `{"value": "…"}`, and a refusal is an error answer.
-- `Unknown —` how a request is withdrawn when the turn ends elsewhere: no event seen so far takes a
-  question back, so a client keeps showing one until it answers or the socket drops.
+- A request the server stops waiting for — its deadline passed (clarify waits 300 seconds), the turn was
+  interrupted, the session closed — is withdrawn by one event, `request.cancel {id, method, reason}`,
+  with `reason` one of `timeout`, `interrupted`, `shutdown`, `resolved`, `session_closed`. An answer to
+  an id that is no longer open is dropped without a reply. A request another client answered depends on
+  the mode: the dashboard's own registry settles it without an event (`tui_gateway/server_requests.py`,
+  `resolve_response`), so a client learns of it only from the `open_requests` of its next join; a
+  gateway that owns the session (`gateway/session_server_requests.py`) withdraws it from every viewer
+  with `reason: resolved`, also from the client that answered. Read from the source, not observed.
+- The Android client shows a question whose request ended this way as expired (`timeout`) or closed
+  (anything else), and closes one that a join no longer lists in `open_requests`. What a join confirmed
+  holds only while the socket is on the connection the join's answer came over: the socket numbers each
+  connection when it turns READY, before the gateway is counted as ready once `client.capabilities` is
+  answered, and the answer to a question goes over that connection alone.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/chat/Approval.kt`,
+`../app/src/main/java/org/evsyukov/hermes/chat/ChatController.kt` (`showQuestion`, `closeUnlisted`),
 `../app/src/main/java/org/evsyukov/hermes/background/Notifications.kt`.
 
 ## 10. Attachments and files
