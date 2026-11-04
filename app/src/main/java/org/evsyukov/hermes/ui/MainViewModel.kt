@@ -29,7 +29,6 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatMutations
 import org.evsyukov.hermes.chat.withLocalPins
-import org.evsyukov.hermes.chat.withUnread
 import org.evsyukov.hermes.data.auth.CallbackPageText
 import org.evsyukov.hermes.data.remote.ChatApi
 import org.evsyukov.hermes.data.remote.ChatSummary
@@ -267,7 +266,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
                 val mode = _sidebar.value.mode
                 val chat = connection.session.chat
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val chats = withReads(connection, withPins(connection, chat, page.chats, mode, forgetGone = true))
+                val chats = withReads(connection, chat, withPins(connection, chat, page.chats, mode, forgetGone = true))
                 _sidebar.update { it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) }
                 listedByServer = true
             } catch (e: Exception) {
@@ -296,14 +295,12 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     }
 
     /**
-     * [chats] with the unread mark: the server's own flag, and what the phone remembers of the read
-     * state for a chat whose server route refuses the write.
+     * [chats] with the unread mark: an answer after where the chat is read, by the phone's mark or the
+     * server's. [api] looks for the answers; the copy on the phone keeps no history for that, so a list
+     * shown from it marks the answers found before, which the phone keeps.
      */
-    private suspend fun withReads(connection: Connection, chats: List<ChatSummary>): List<ChatSummary> {
-        val server = connection.session.profile.id
-        container.reads.baseline(server, chats)
-        return withUnread(chats, container.reads.of(server))
-    }
+    private suspend fun withReads(connection: Connection, api: ChatApi, chats: List<ChatSummary>): List<ChatSummary> =
+        container.reads.unread(connection.session.profile.id, chats) { id, after -> api.lastReply(id, after)?.timestamp }
 
     /** Shows the first page the phone keeps until the server answers, or when it cannot. */
     private fun showCachedChats(connection: Connection) {
@@ -313,7 +310,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             val page = runCatching {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
-            val chats = withReads(connection, withPins(connection, cached, page.chats, mode, forgetGone = false))
+            val chats = withReads(connection, cached, withPins(connection, cached, page.chats, mode, forgetGone = false))
             if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
         }
     }
@@ -327,7 +324,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             try {
                 val mode = state.mode
                 val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val more = withReads(connection, page.chats)
+                val more = withReads(connection, connection.session.chat, page.chats)
                 // The first page already brought every pinned chat, so the ones met again are left out.
                 _sidebar.update { s -> s.copy(chats = (s.chats + more).distinctBy { it.id }, total = page.total, listed = s.listed + page.chats.size, loading = false) }
             } catch (e: Exception) {
