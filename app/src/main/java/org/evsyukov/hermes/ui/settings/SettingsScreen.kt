@@ -27,7 +27,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -45,6 +44,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
@@ -68,8 +68,8 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val browser = LocalUriHandler.current
-    val settings by container.settings.current.collectAsState()
-    val tailnet by container.tailnet.status.collectAsState()
+    val settings by container.settings.current.collectAsStateWithLifecycle()
+    val tailnet by container.tailnet.status.collectAsStateWithLifecycle()
     var cacheSize by remember { mutableLongStateOf(container.attachments.size()) }
     var cacheTick by remember { mutableIntStateOf(0) }
     var editLimit by remember { mutableStateOf(false) }
@@ -123,7 +123,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             BatteryRow(settings.keepConnected)
 
             SectionTitle(stringResource(R.string.settings_push))
-            val push by container.push.status.collectAsState()
+            val push by container.push.status.collectAsStateWithLifecycle()
             Toggle(stringResource(R.string.settings_push_switch), stringResource(R.string.settings_push_switch_hint), settings.push) { v -> change { it.copy(push = v) } }
             val pushApp = push.distributors.firstOrNull { it.packageName == push.distributor }?.label ?: push.distributor.orEmpty()
             Text(
@@ -169,7 +169,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
             }
 
             SectionTitle(stringResource(R.string.settings_session))
-            val servers by container.servers.state.collectAsState()
+            val servers by container.servers.state.collectAsStateWithLifecycle()
             val tokens = servers.active?.let { servers.tokens[it.id] }
             Text(
                 when {

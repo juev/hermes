@@ -47,13 +47,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +74,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.evsyukov.hermes.R
 import java.io.File
 import java.util.Locale
@@ -110,24 +110,32 @@ fun ChatScreen(
     openFile: (String) -> Unit,
     loadFile: suspend (String) -> File?,
     loadModels: suspend () -> ModelChoices,
-    transcribe: suspend (ByteArray, String) -> String,
     openLocal: (LocalAttachment) -> Unit,
+    /** The screen of [controller] came up in an app in front (true) or went away (false). */
+    onShown: (ChatController, Boolean) -> Unit,
+    /** The words, files and place of [controller], kept by the app while the chat is open. */
+    draft: ChatDraft,
     shared: Shared? = null,
     onSharedTaken: () -> Unit = {},
 ) {
-    val state by controller.state.collectAsState()
+    // Below STARTED — the app in the background — the screen takes no new state; it takes the
+    // latest when it comes back, not every step in between.
+    val state by controller.state.collectAsStateWithLifecycle()
+    // The chat works on its transcript only while this screen is up in an app in front; a screen
+    // over it or another chat disposes this one, and the chat stops as well.
+    LifecycleStartEffect(controller) {
+        onShown(controller, true)
+        onStopOrDispose { onShown(controller, false) }
+    }
     val colors = ChatTheme.colors
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    var draft by rememberSaveable(controller) { mutableStateOf("") }
-    var attachments by remember(controller) { mutableStateOf<List<LocalAttachment>>(emptyList()) }
     var models by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ChatItem.User?>(null) }
     var localError by remember { mutableStateOf<String?>(null) }
-    var fromShare by remember(controller) { mutableStateOf(false) }
 
     // A chat opens to read it, as in ChatGPT: the keyboard waits for a tap on the field.
     val focus = LocalFocusManager.current
@@ -138,16 +146,29 @@ fun ChatScreen(
 
     // The list is laid out from the bottom: a chat opens at its end, and a growing answer or the
     // keyboard keeps the last message in view without scrolling by hand.
-    val listState = remember(controller) { LazyListState() }
+    // The place in the chat comes from its draft, so a screen over the chat brings the reader back to it.
+    val listState = remember(controller) { LazyListState(draft.scrollIndex, draft.scrollOffset) }
+    DisposableEffect(controller) {
+        onDispose {
+            draft.scrollIndex = listState.firstVisibleItemIndex
+            draft.scrollOffset = listState.firstVisibleItemScrollOffset
+        }
+    }
     val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
     // The rows are reversed with their day separators, so a separator stays above the messages of its day.
     val reversed = remember(state.items) { transcriptRows(state.items).asReversed() }
     // Only the last message of the chat can be answered again, and only the last of the user edited.
     val lastAnswer = (state.items.lastOrNull() as? ChatItem.Assistant)?.key
     val lastUser = state.items.lastOrNull { it is ChatItem.User }?.key
-    // A new message joins the reader who is at the end; one who scrolled up stays put.
-    LaunchedEffect(state.items.size) {
-        if (atBottom || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
+    // A new message joins the reader who is at the end; one who scrolled up stays put, and a screen
+    // that comes back to the messages it showed keeps its place. The place is read from the list's
+    // position rather than [atBottom], which knows nothing before the first layout.
+    LaunchedEffect(controller, state.items.size) {
+        val seen = draft.shownItems
+        draft.shownItems = state.items.size
+        if (seen == state.items.size) return@LaunchedEffect
+        val atEnd = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+        if (atEnd || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
     }
 
     val threshold = with(LocalDensity.current) { 96.dp.toPx() }
@@ -160,25 +181,25 @@ fun ChatScreen(
     }
     pull.enabled = settings.pullForNewChat && state.items.isNotEmpty()
 
-    fun send(text: String = draft.trim()) {
-        if (text.isEmpty() && attachments.isEmpty()) return
+    fun send(text: String = draft.text.trim()) {
+        if (text.isEmpty() && draft.attachments.isEmpty()) return
         if (settings.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-        controller.send(text, attachments)
-        draft = ""
-        attachments = emptyList()
-        fromShare = false
+        controller.send(text, draft.attachments)
+        draft.text = ""
+        draft.attachments = emptyList()
+        draft.fromShare = false
     }
 
     // A share fills the field of the empty new chat and offers quick actions until a message goes.
     LaunchedEffect(controller, shared) {
         val current = controller.state.value
         if (shared == null || current.storedId != null || current.items.isNotEmpty()) return@LaunchedEffect
-        draft = listOf(draft.trim(), shared.text).filter { it.isNotEmpty() }.joinToString("\n")
-        attachments = attachments + shared.attachments
-        fromShare = true
+        draft.text = listOf(draft.text.trim(), shared.text).filter { it.isNotEmpty() }.joinToString("\n")
+        draft.attachments = draft.attachments + shared.attachments
+        draft.fromShare = true
         onSharedTaken()
     }
-    val quickActions = fromShare && state.items.isEmpty() && (draft.isNotBlank() || attachments.isNotEmpty())
+    val quickActions = draft.fromShare && state.items.isEmpty() && (draft.text.isNotBlank() || draft.attachments.isNotEmpty())
 
     // The server gives the phone no link back from the browser; coming back to the app is the sign.
     LifecycleResumeEffect(controller) {
@@ -265,7 +286,7 @@ fun ChatScreen(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.items.isEmpty() && !state.loading) {
                 // A suggestion would replace what was shared, so the quick actions stand in for them.
-                EmptyChat(serverName, suggestions = !quickActions) { draft = it }
+                EmptyChat(serverName, suggestions = !quickActions) { draft.text = it }
             } else {
                 LazyColumn(
                     state = listState,
@@ -338,18 +359,17 @@ fun ChatScreen(
         Column(Modifier.navigationBarsPadding()) {
             if (quickActions) {
                 val resources = LocalResources.current
-                QuickActions(onAction = { send(quickMessage(resources.getString(it.prompt), draft)) }, modifier = Modifier.padding(top = 8.dp))
+                QuickActions(onAction = { send(quickMessage(resources.getString(it.prompt), draft.text)) }, modifier = Modifier.padding(top = 8.dp))
             }
             Composer(
-                text = draft,
-                onText = { draft = it },
-                attachments = attachments,
-                onAttachments = { attachments = it },
+                text = draft.text,
+                onText = { draft.text = it },
+                attachments = draft.attachments,
+                onAttachments = { draft.attachments = it },
                 running = state.running,
                 enterSends = settings.enterSends,
                 onSend = ::send,
                 onStop = controller::stop,
-                transcribe = transcribe,
                 onError = { localError = it },
                 onOpen = openLocal,
             )

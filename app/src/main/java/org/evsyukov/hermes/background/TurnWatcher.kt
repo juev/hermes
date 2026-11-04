@@ -91,6 +91,9 @@ class TurnWatcher(
     /** True when [storedId] is the chat on the screen of an app that is in front: its answer is read as it arrives. */
     fun showing(storedId: String): Boolean = inForeground && visibleChat == storedId
 
+    /** True when live session [live] belongs to a chat of the app that is on the screen of the app in front. */
+    private fun showingChatOf(live: String): Boolean = chats[live]?.let(::showing) == true
+
     /** Called when a chat of the app joins its live session. */
     fun bind(liveId: String, storedId: String, title: String) {
         chats[liveId] = storedId
@@ -250,7 +253,8 @@ class TurnWatcher(
             }
             "request.cancel" -> event.payload.string("id")?.let(notifications::cancelRequest)
             "connection.request" -> {
-                if (inForeground) return
+                // The chat on the screen shows the card itself; any other chat, or a screen over it, needs the notification.
+                if (showingChatOf(live)) return
                 val connection = connectionOf(event.payload) ?: return
                 val services = connection.targets.joinToString(", ") { it.catalog?.display ?: it.name }.ifEmpty { context.getString(R.string.connect_title_directory) }
                 notifications.connection(chats[live], connection.opId, services)
@@ -273,9 +277,11 @@ class TurnWatcher(
         }
     }
 
-    private fun onRequest(request: ServerRequest) {
-        if (inForeground) return
-        val stored = chats[request.params.string("session_id") ?: return]
+    internal fun onRequest(request: ServerRequest) {
+        val live = request.params.string("session_id") ?: return
+        // Only the chat on the screen asks in its own sheet; the app in front with another screen or chat does not.
+        if (showingChatOf(live)) return
+        val stored = chats[live]
         when (request.method) {
             "approval" -> {
                 val approval = approvalOf(request)

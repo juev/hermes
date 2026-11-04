@@ -15,11 +15,15 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   model on its own, such as a finished background process, is not shown. Notifications carry
   the text without Markdown syntax. The socket connects while the app checks the server at start,
   and a message sent before it is up says that the app is connecting.
-- The drawer lists chats by date, with pinned chats and the archive. A chat that came in from
-  elsewhere names its source on its row (Telegram, Matrix, cron); cron runs have no section of
-  their own, and the runs of one job under one date heading fold into a single row named by the job,
-  with a count and a chevron that opens the other runs. Search
-  uses the server's full-text index.
+- The drawer lists chats by date, with pinned chats, the cron runs and the archive. A chat that came
+  in from elsewhere names its source on its row (Telegram, Matrix). Cron runs are not among the
+  chats: they have a screen of their own in the drawer, where the runs of one job under one date
+  heading fold into a single row named by the job, with a count and a chevron that opens the other
+  runs. Search uses the server's full-text index.
+- The message field has the attach button, the text and send; while a turn runs, send queues the
+  message, or stops the turn when the field is empty. There is no dictation button: the keyboard's
+  own voice input still types into the field, and an answer can still be read aloud. The words being
+  written, the files picked and the place in the chat stay while another screen is open over it.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
 - Hermes is in the Android share sheet. A link, text, pictures or files shared from another app
@@ -30,9 +34,8 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   Nous (sign-in in the browser, several accounts of one service by name), MCP servers with the
   keys they ask for, and plugins and skills of the catalog with their source, scan and advanced
   choices. The server gives the phone no link back from the browser, so the app asks the server
-  to check the account when the user returns to it. A card that waits while the app is in the
-  background raises a notification.
-- Dictation goes to the speech-to-text provider configured in Hermes.
+  to check the account when the user returns to it. A card that waits while its chat is not on the
+  screen — the app in the background, another screen or another chat in front — raises a notification.
 - The server section shows status and changes the gateway, model, `config.yaml` (by schema or as
   raw YAML), `.env` secrets, cron jobs, skills, toolsets and channels, and shows logs and usage.
   Steps that break or delete something ask first. Choosing the default model saves it to
@@ -50,7 +53,17 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   exception is the chat whose screen is open in front of the user: the list, the settings and another
   chat do not count, and neither does the service that keeps the app alive. The same answer comes
   twice — over the socket and then as the push of that turn — and is one notification; a later answer
-  is always a new one. Approvals can be answered from the notification.
+  is always a new one. Approvals, questions of the agent and cards notify on the same rule as answers:
+  only the chat on the screen asks in its own sheet instead. Approvals can be answered from the
+  notification.
+- A chat that is not on the screen — the app in the background, or the settings or another screen
+  over it — keeps its connection, its notifications and every word of its answer, but does not
+  rebuild the answer for each word that streams nor redraw it: the words wait in a buffer and join
+  the answer at the next tool, message boundary or when the chat is shown. Shown again, it shows
+  everything at once and asks the server nothing. The open drawer does not hide the chat, as it does
+  not for the notifications. The screens take new state only while the app is in front. This saves
+  work on the phone; it does not change what the network delivers, and no battery measurement backs a
+  figure.
 - Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
   ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
   encrypted. A self-hosted ntfy server works too; how to connect it is in

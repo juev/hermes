@@ -195,6 +195,12 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
   dashboard writes the answer down after each round of tools, so the stored history plus `inflight`
   resumes a turn without the ring. The ring is what covers a client that does not re-read, and the
   questions, which history cannot carry.
+- The Android client does not use the ring for a chat that is not on the screen. Such a chat stays
+  joined and keeps taking every event of its turn over the open connection; it only stops showing
+  them. The words and reasoning of the deltas go to one buffer per piece of the answer, and the
+  transcript is built from them once, when a tool, a message boundary or the screen needs it. Shown
+  again, the chat publishes what it has and asks the server nothing. A reconnect, shown or not, joins
+  the chat again as before: history plus `resume`.
 - A handshake the dashboard will not accept — no ticket on a dashboard that wants one, an expired
   ticket — is answered `403` with an empty body, before any JSON-RPC frame is exchanged. The client
   cannot tell an expired ticket from a missing one by the answer; it fetches a fresh ticket and, when
@@ -205,8 +211,10 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
 
 Source, read on v0.22.5 and not yet reproduced against a live server:
 `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`GatewaySocket.kt`, `GatewayChannel.kt`) for the
-join, the heartbeat and the `403`; `tui_gateway/event_replay.py`, `tui_gateway/methods_session.py` and
-`tui_gateway/session_registry.py` for `session.events.since`, the epoch and `open_requests`.
+join, the heartbeat and the `403`; `../app/src/main/java/org/evsyukov/hermes/chat/ChatController.kt`
+(`buffer`, `flushStreamed`) for a hidden chat; `tui_gateway/event_replay.py`,
+`tui_gateway/methods_session.py` and `tui_gateway/session_registry.py` for `session.events.since`, the
+epoch and `open_requests`.
 
 Still to fill here: what happens when the join answer itself is lost — a `session.resume` whose answer
 never arrived — and which methods take a timeout of their own. The observation that settles the first is
@@ -274,19 +282,22 @@ a reconnect whose previous join answer never arrived.
 - The gateway keeps one session per firing of a cron job and titles it `<job name> · Nov 01 12:28`
   (`%b %d %H:%M`), or `cron <job_id>` and `cron <job_id> <last 6 of the id>` for a job without a name
   (`cron/scheduler.py`, `_cron_title`, read from the source). A session carries no job field, so the
-  Android client keys on that title: the text before the stamp, or `cron <job_id>`. It folds the runs
-  of one job into one row per day group — the job's name, a run count and a chevron that opens the
-  other runs with their own titles (`ui/sidebar/ChatGroups.kt`, `groupChats`). The row is named by the
-  job, not by the newest run's full title, because a full title plus the count and the chevron
-  truncates the date at a 360 dp width; the newest run's stamp is therefore not on screen. A run
-  renamed by hand and a chat of another source are never folded. The Telegram topic that collects the
-  reports is the job's delivery `origin`, not a session.
+  Android client keys on that title: the text before the stamp, or `cron <job_id>`. On its cron runs
+  screen it folds the runs of one job into one row per day group — the job's name, a run count and a
+  chevron that opens the other runs with their own titles (`ui/sidebar/ChatGroups.kt`, `groupChats`).
+  The row is named by the job, not by the newest run's full title, because a full title plus the count
+  and the chevron truncates the date at a 360 dp width; the newest run's stamp is therefore not on
+  screen. A run renamed by hand and a chat of another source are never folded. The Telegram topic
+  that collects the reports is the job's delivery `origin`, not a session.
 
 The dashboard's own web client splits eight sources into its Chats and Automation categories — `cron`,
 `tool`, `oneshot`, `api_server`, `acp`, `hermes_flow`, `vulcan_delegate`, `webhook`
-(`web/src/pages/SessionsPage_sources.tsx`, `AUTOMATION_SESSION_SOURCES`). The Android and the macOS
-client send the same set without `cron` as `exclude_sources`, so a scheduled run is a row of their one
-chat list, its source named on it, and a one-shot run is not a chat at all.
+(`web/src/pages/SessionsPage_sources.tsx`, `AUTOMATION_SESSION_SOURCES`). The Android client sends all
+eight as `exclude_sources` for its chats and lists the cron runs on a screen of their own with
+`sources=cron`, archived excluded, paged like the chats; the archive sends neither filter. A row of a
+page that does not belong to the list it was asked for is dropped on the phone, and a page that
+arrives after the list was switched is not shown. The macOS client sends the set without `cron`, so a
+scheduled run is a row of its one chat list. A one-shot run is a chat in neither.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/ChatApi.kt` (`list`, `messages`) for the
 parameters a client sends; the shapes were observed on v0.22.5 against the dashboard on loffe on

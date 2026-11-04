@@ -34,7 +34,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.evsyukov.hermes.R
 import java.util.UUID
 import kotlinx.coroutines.flow.filterNotNull
@@ -68,7 +68,7 @@ import org.evsyukov.hermes.ui.theme.ChatTheme
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit, draft: ServerProfile? = null) {
-    val servers by container.servers.state.collectAsState()
+    val servers by container.servers.state.collectAsStateWithLifecycle()
     val existing = servers.servers.firstOrNull { it.id == id }
     // A server from a link fills the form; the user still checks and saves it.
     val source = draft ?: existing
@@ -86,7 +86,7 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
     var result by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val tailnetStatus by container.tailnet.status.collectAsState()
+    val tailnetStatus by container.tailnet.status.collectAsStateWithLifecycle()
 
     fun profile() = ServerProfile(
         id = existing?.id ?: draft?.id ?: UUID.randomUUID().toString(),
