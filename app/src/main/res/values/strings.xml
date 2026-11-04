@@ -188,7 +188,7 @@
     <string name="setup_login">Username</string>
     <string name="setup_password">Password</string>
     <string name="setup_proxy_hint">The proxy resolves the server name itself, so private network names work too.</string>
-    <string name="setup_tailscale_missing">The built-in Tailscale is not part of this build (no app/libs/tailnet.aar). Build it with scripts/build-tailnet.sh.</string>
+    <string name="setup_tailscale_missing">The built-in Tailscale is not part of this build. Use Direct when Tailscale or another VPN already runs on the phone, or install a build with the built-in node.</string>
     <string name="setup_tailscale_hint">The app joins the tailnet itself and reaches the server through its own node. No VPN on the phone is needed, and another VPN keeps working.</string>
     <string name="setup_control">Control server</string>
     <string name="setup_control_placeholder">empty for Tailscale, or https://headscale.example.org</string>

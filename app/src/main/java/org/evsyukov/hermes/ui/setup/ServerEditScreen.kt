@@ -62,14 +62,49 @@ import org.evsyukov.hermes.data.server.TailnetSettings
 import org.evsyukov.hermes.data.server.baseClient
 import org.evsyukov.hermes.data.server.clientFor
 import org.evsyukov.hermes.data.server.normalizeBaseUrl
+import org.evsyukov.hermes.tailnet.TailnetStatus
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
 /** Adds or edits a server; the first run of the app starts here with [onBack] null. */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit, draft: ServerProfile? = null) {
     val servers by container.servers.state.collectAsStateWithLifecycle()
     val existing = servers.servers.firstOrNull { it.id == id }
+    val tailnetStatus by container.tailnet.status.collectAsStateWithLifecycle()
+    ServerEditContent(
+        existing = existing,
+        draft = draft,
+        servers = servers.servers,
+        tailnetStatus = tailnetStatus,
+        onCheck = { check(container, it) },
+        onSave = { container.servers.save(it) },
+        onDelete = { server ->
+            container.servers.remove(server.id)
+            container.responses.forget(server.id)
+            container.reads.clear(server.id)
+        },
+        onBack = onBack,
+        onSaved = onSaved,
+    )
+}
+
+/**
+ * The form itself. [tailnetStatus] says whether this build carries the embedded node, and [onCheck],
+ * [onSave] and [onDelete] are the work the screen asks for; everything else is local to the form.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+internal fun ServerEditContent(
+    existing: ServerProfile?,
+    draft: ServerProfile?,
+    servers: List<ServerProfile>,
+    tailnetStatus: TailnetStatus,
+    onCheck: suspend (ServerProfile) -> String,
+    onSave: suspend (ServerProfile) -> Unit,
+    onDelete: suspend (ServerProfile) -> Unit,
+    onBack: (() -> Unit)?,
+    onSaved: () -> Unit,
+) {
     // A server from a link fills the form; the user still checks and saves it.
     val source = draft ?: existing
     var name by remember(source) { mutableStateOf(source?.name ?: "Hermes") }
@@ -86,7 +121,6 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
     var result by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val tailnetStatus by container.tailnet.status.collectAsStateWithLifecycle()
 
     fun profile() = ServerProfile(
         id = existing?.id ?: draft?.id ?: UUID.randomUUID().toString(),
@@ -98,6 +132,9 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
 
     val valid = normalizeBaseUrl(url) != null &&
         (proxyType != ProxyType.HTTP && proxyType != ProxyType.SOCKS5 || proxyHost.isNotBlank() && (proxyPort.toIntOrNull() ?: 0) in 1..65535)
+    // An imported profile may still carry the embedded route; it stays as it is until the user picks another.
+    val routeCapable = routeSupported(proxyType, tailnetStatus.available)
+    val tailnetMissing = stringResource(R.string.setup_tailscale_missing)
 
     Scaffold(
         containerColor = ChatTheme.colors.background,
@@ -108,8 +145,8 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                     if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back)) }
                 },
                 actions = {
-                    if (existing != null && servers.servers.size > 1) {
-                        IconButton(onClick = { scope.launch { container.servers.remove(existing.id); container.responses.forget(existing.id); container.reads.clear(existing.id); onBack?.invoke() } }) {
+                    if (existing != null && servers.size > 1) {
+                        IconButton(onClick = { scope.launch { onDelete(existing); onBack?.invoke() } }) {
                             Icon(Icons.Outlined.Delete, stringResource(R.string.setup_delete_server))
                         }
                     }
@@ -143,8 +180,16 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
             // Chips wrap: with a large system font four of them do not fit one line.
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(ProxyType.NONE to stringResource(R.string.setup_route_direct), ProxyType.TAILSCALE to "Tailscale", ProxyType.SOCKS5 to "SOCKS5", ProxyType.HTTP to "HTTP").forEach { (type, label) ->
-                    FilterChip(selected = proxyType == type, onClick = { proxyType = type }, label = { Text(label) })
+                    FilterChip(
+                        selected = proxyType == type,
+                        onClick = { proxyType = type },
+                        label = { Text(label) },
+                        enabled = routeSupported(type, tailnetStatus.available),
+                    )
                 }
+            }
+            if (!tailnetStatus.available) {
+                Text(tailnetMissing, color = ChatTheme.colors.danger, fontSize = 13.sp)
             }
             when (proxyType) {
                 ProxyType.NONE -> Text(
@@ -169,12 +214,6 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
                     Text(stringResource(R.string.setup_proxy_hint), color = ChatTheme.colors.faintText, fontSize = 13.sp)
                 }
                 ProxyType.TAILSCALE -> {
-                    if (!tailnetStatus.available) {
-                        Text(
-                            stringResource(R.string.setup_tailscale_missing),
-                            color = ChatTheme.colors.danger, fontSize = 13.sp,
-                        )
-                    }
                     Text(
                         stringResource(R.string.setup_tailscale_hint),
                         color = ChatTheme.colors.faintText, fontSize = 13.sp,
@@ -205,24 +244,29 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(
-                    enabled = valid && !checking,
+                    enabled = valid && routeCapable && !checking,
                     onClick = {
-                        checking = true
-                        result = null
-                        scope.launch {
-                            result = check(container, profile())
-                            checking = false
+                        if (!routeCapable) {
+                            // A Check that cannot reach the selected route must not start the node or wait for its proxy.
+                            result = tailnetMissing
+                        } else {
+                            checking = true
+                            result = null
+                            scope.launch {
+                                result = onCheck(profile())
+                                checking = false
+                            }
                         }
                     },
                 ) {
                     if (checking) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.setup_check))
                 }
                 Button(
-                    enabled = valid,
+                    enabled = valid && routeCapable,
                     colors = ButtonDefaults.buttonColors(containerColor = ChatTheme.colors.contrast, contentColor = ChatTheme.colors.onContrast),
                     onClick = {
                         scope.launch {
-                            container.servers.save(profile())
+                            onSave(profile())
                             onSaved()
                         }
                     },
@@ -235,27 +279,33 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
 }
 
 /** Asks `/api/status` through the chosen route and says what came back, in words. */
-private suspend fun check(container: AppContainer, profile: ServerProfile): String = try {
-    val tailnetProxy = if (profile.proxy.type == ProxyType.TAILSCALE) {
-        container.tailnet.ensure(profile.tailnet)
-        withTimeout(60_000) { container.tailnet.proxy.filterNotNull().first() }
-    } else {
-        null
+private suspend fun check(container: AppContainer, profile: ServerProfile): String {
+    val blocked = container.strings.get(R.string.setup_tailscale_missing)
+    // No engine to start and no proxy to wait for: the route cannot be checked in this build.
+    return guardedCheck(profile.proxy.type, container.tailnet.status.value.available, blocked) {
+        try {
+            val tailnetProxy = if (profile.proxy.type == ProxyType.TAILSCALE) {
+                container.tailnet.ensure(profile.tailnet)
+                withTimeout(60_000) { container.tailnet.proxy.filterNotNull().first() }
+            } else {
+                null
+            }
+            val session = ServerSession(profile, clientFor(baseClient(), profile.proxy, tailnetProxy), container.servers, container.strings)
+            val info = session.authInfo()
+            buildString {
+                append(container.strings.get(R.string.setup_check_ok))
+                info.version?.let { append(container.strings.get(R.string.setup_check_version, it)) }
+                append(". ")
+                append(
+                    when {
+                        !info.required -> container.strings.get(R.string.setup_check_no_auth)
+                        info.nativePkce -> container.strings.get(R.string.setup_check_auth_via, info.providers.joinToString().ifEmpty { container.strings.get(R.string.setup_check_browser) })
+                        else -> container.strings.get(R.string.setup_check_unsupported)
+                    },
+                )
+            }
+        } catch (e: Exception) {
+            container.strings.get(R.string.setup_check_failed, e.message ?: e.javaClass.simpleName)
+        }
     }
-    val session = ServerSession(profile, clientFor(baseClient(), profile.proxy, tailnetProxy), container.servers, container.strings)
-    val info = session.authInfo()
-    buildString {
-        append(container.strings.get(R.string.setup_check_ok))
-        info.version?.let { append(container.strings.get(R.string.setup_check_version, it)) }
-        append(". ")
-        append(
-            when {
-                !info.required -> container.strings.get(R.string.setup_check_no_auth)
-                info.nativePkce -> container.strings.get(R.string.setup_check_auth_via, info.providers.joinToString().ifEmpty { container.strings.get(R.string.setup_check_browser) })
-                else -> container.strings.get(R.string.setup_check_unsupported)
-            },
-        )
-    }
-} catch (e: Exception) {
-    container.strings.get(R.string.setup_check_failed, e.message ?: e.javaClass.simpleName)
 }

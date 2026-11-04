@@ -190,7 +190,7 @@
     <string name="setup_login">Логин</string>
     <string name="setup_password">Пароль</string>
     <string name="setup_proxy_hint">Имя сервера разрешает сам прокси, так что подходят и имена частной сети.</string>
-    <string name="setup_tailscale_missing">Встроенный Tailscale не вошёл в эту сборку (нет app/libs/tailnet.aar). Соберите его scripts/build-tailnet.sh.</string>
+    <string name="setup_tailscale_missing">Встроенного Tailscale нет в этой сборке. Выберите «Напрямую», если Tailscale или другой VPN уже работает на телефоне, либо установите сборку со встроенным узлом.</string>
     <string name="setup_tailscale_hint">Приложение само входит в tailnet и ходит к серверу через свой узел. VPN на телефоне не нужен, другой VPN продолжает работать.</string>
     <string name="setup_control">Сервер управления</string>
     <string name="setup_control_placeholder">пусто — Tailscale, или https://headscale.example.org</string>
