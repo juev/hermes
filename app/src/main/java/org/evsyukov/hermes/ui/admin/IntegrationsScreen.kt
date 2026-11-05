@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -53,6 +54,7 @@ import org.evsyukov.hermes.data.remote.HostedAccount
 import org.evsyukov.hermes.data.remote.HostedConnector
 import org.evsyukov.hermes.data.remote.McpAuthFlow
 import org.evsyukov.hermes.data.remote.McpCatalogEntry
+import org.evsyukov.hermes.data.remote.McpInstall
 import org.evsyukov.hermes.data.remote.McpServer
 import org.evsyukov.hermes.data.remote.McpTest
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -231,18 +233,20 @@ fun IntegrationsScreen(api: AdminApi, connectors: ConnectorsApi, onOpen: (AdminS
         CatalogDialog(api, onPick = { browsing = false; installing = it }, onDismiss = { browsing = false })
     }
     installing?.let { entry ->
-        InstallDialog(entry, onDismiss = { installing = null }) { env ->
-            installing = null
-            scope.attempt(snackbar) {
-                val result = api.installMcp(entry.name, env)
+        InstallDialog(
+            entry,
+            onDismiss = { installing = null },
+            onInstall = { env -> api.installMcp(entry.name, env) },
+            onInstalled = { result ->
+                installing = null
                 if (result.background && result.action != null) {
                     action = result.action
                 } else {
-                    snackbar.showSnackbar(resources.getString(R.string.integrations_installed, entry.name))
                     servers.reload()
+                    scope.launch { snackbar.showSnackbar(resources.getString(R.string.integrations_installed, entry.name)) }
                 }
-            }
-        }
+            },
+        )
     }
     action?.let { name -> ActionLog(api, name) { action = null; servers.reload() } }
     confirm?.let { (text, run) -> ConfirmDialog(stringResource(R.string.common_confirm_title), text, stringResource(R.string.integrations_remove), run) { confirm = null } }
@@ -492,14 +496,24 @@ private fun CatalogDialog(api: AdminApi, onPick: (McpCatalogEntry) -> Unit, onDi
 
 /** Shows what the install clones, builds and starts, and asks for the credentials the entry declares. */
 @Composable
-private fun InstallDialog(entry: McpCatalogEntry, onDismiss: () -> Unit, onInstall: (Map<String, String>) -> Unit) {
+private fun InstallDialog(
+    entry: McpCatalogEntry,
+    onDismiss: () -> Unit,
+    onInstall: suspend (Map<String, String>) -> McpInstall,
+    onInstalled: (McpInstall) -> Unit,
+) {
     val colors = ChatTheme.colors
+    val scope = rememberCoroutineScope()
+    val form = rememberFormSubmission(entry.name)
+    val window = LocalFormWindow.current
     val values = remember(entry.name) { mutableStateMapOf<String, String>() }
     val ready = entry.env.all { !it.required || values[it.name].orEmpty().isNotBlank() }
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    val connectionLost = stringResource(R.string.admin_form_connection_lost)
+    val unknownOutcome = stringResource(R.string.admin_form_unknown_outcome)
+    window.Show(
         title = { Text(entry.name) },
-        text = {
+        onDismiss = { if (!form.saving) onDismiss() },
+        content = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (entry.description.isNotBlank()) Text(entry.description, color = colors.secondaryText, fontSize = 14.sp)
                 entry.source?.let { Detail(stringResource(R.string.integrations_source), it) }
@@ -513,15 +527,30 @@ private fun InstallDialog(entry: McpCatalogEntry, onDismiss: () -> Unit, onInsta
                         supportingText = { Text(field.prompt) },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
+                        enabled = !form.saving,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
                 if (entry.postInstall.isNotBlank()) Text(entry.postInstall, color = colors.faintText, fontSize = 12.sp)
+                form.error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
             }
         },
-        confirmButton = {
-            TextButton(enabled = ready, onClick = { onInstall(values.filterValues { it.isNotBlank() }) }) { Text(stringResource(R.string.integrations_install)) }
+        confirm = {
+            TextButton(
+                enabled = ready && !form.saving,
+                modifier = Modifier.testTag("form-submit"),
+                onClick = {
+                    var installed: McpInstall? = null
+                    form.submit(
+                        scope,
+                        connectionLost,
+                        unknownOutcome,
+                        block = { installed = onInstall(values.filterValues { it.isNotBlank() }) },
+                        onSuccess = { installed?.let(onInstalled) },
+                    )
+                },
+            ) { Text(stringResource(if (form.saving) R.string.common_saving else R.string.integrations_install)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
+        dismiss = { TextButton(enabled = !form.saving, onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }

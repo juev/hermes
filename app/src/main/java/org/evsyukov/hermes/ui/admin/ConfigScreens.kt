@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -168,13 +169,17 @@ fun ConfigScreen(api: AdminApi, onBack: () -> Unit) {
 
     editing?.let { field ->
         val current = config.value?.let { AdminApi.valueAt(it, field.path) } ?: JsonNull
-        FieldEditor(field, current, onDismiss = { editing = null }) { value ->
-            editing = null
-            scope.attempt(snackbar, resources.getString(R.string.admin_config_saved, field.path)) {
-                api.setConfig(field.path, value)
+        FieldEditor(
+            field,
+            current,
+            onDismiss = { editing = null },
+            onSave = { value -> api.setConfig(field.path, value) },
+            onSaved = {
+                editing = null
                 config.reload()
-            }
-        }
+                scope.launch { snackbar.showSnackbar(resources.getString(R.string.admin_config_saved, field.path)) }
+            },
+        )
     }
     if (raw) RawConfigDialog(api, onDismiss = { raw = false }) { config.reload() }
 }
@@ -186,8 +191,17 @@ private fun display(value: JsonElement): String = when (value) {
 }
 
 @Composable
-private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () -> Unit, onSave: (JsonElement) -> Unit) {
+private fun FieldEditor(
+    field: ConfigField,
+    current: JsonElement,
+    onDismiss: () -> Unit,
+    onSave: suspend (JsonElement) -> Unit,
+    onSaved: () -> Unit,
+) {
     val colors = ChatTheme.colors
+    val scope = rememberCoroutineScope()
+    val form = rememberFormSubmission(field.path)
+    val window = LocalFormWindow.current
     val structured = field.type == "list" || field.type == "object" || current is JsonObject || current is kotlinx.serialization.json.JsonArray
     var text by remember {
         mutableStateOf(
@@ -199,55 +213,76 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
         )
     }
     var flag by remember { mutableStateOf((current as? JsonPrimitive)?.content == "true") }
-    var error by remember { mutableStateOf<String?>(null) }
+    var parseError by remember { mutableStateOf<String?>(null) }
     val unparsed = stringResource(R.string.admin_config_unparsed)
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    val connectionLost = stringResource(R.string.admin_form_connection_lost)
+    window.Show(
         title = { Text(field.path, fontSize = 16.sp) },
-        text = {
+        onDismiss = { if (!form.saving) onDismiss() },
+        content = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (field.description != field.path) Text(field.description, color = colors.secondaryText, fontSize = 14.sp)
                 when {
                     field.type == "boolean" -> Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(if (flag) R.string.admin_config_on else R.string.admin_config_off), modifier = Modifier.weight(1f))
-                        Switch(flag, { flag = it })
+                        Switch(flag, { flag = it }, enabled = !form.saving)
                     }
                     field.options.isNotEmpty() -> {
                         var open by remember { mutableStateOf(false) }
                         Box {
                             OutlinedTextField(
                                 text, {}, readOnly = true,
-                                trailingIcon = { IconButton(onClick = { open = true }) { Icon(Icons.Outlined.ArrowDropDown, null) } },
+                                enabled = !form.saving,
+                                trailingIcon = {
+                                    IconButton(
+                                        enabled = !form.saving,
+                                        modifier = Modifier.testTag("form-options"),
+                                        onClick = { open = true },
+                                    ) { Icon(Icons.Outlined.ArrowDropDown, null) }
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             DropdownMenu(open, { open = false }) {
-                                field.options.forEach { option -> DropdownMenuItem(text = { Text(option) }, onClick = { text = option; open = false }) }
+                                field.options.forEach { option ->
+                                    DropdownMenuItem(text = { Text(option) }, onClick = { text = option; open = false }, enabled = !form.saving)
+                                }
                             }
                         }
                     }
                     else -> OutlinedTextField(
-                        text, { text = it; error = null },
+                        text, { text = it; parseError = null },
+                        enabled = !form.saving,
                         textStyle = if (structured) TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp) else TextStyle.Default,
                         minLines = if (structured) 4 else 1,
                         modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
                     )
                 }
                 if (structured) Text(stringResource(R.string.admin_config_json), color = colors.faintText, fontSize = 12.sp)
-                error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
+                (parseError ?: form.error)?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
             }
         },
-        confirmButton = {
-            TextButton(onClick = {
-                val value: JsonElement? = when {
-                    field.type == "boolean" -> JsonPrimitive(flag)
-                    field.type == "number" -> text.trim().toLongOrNull()?.let(::JsonPrimitive) ?: text.trim().toDoubleOrNull()?.let(::JsonPrimitive)
-                    structured -> runCatching { HermesJson.parseToJsonElement(text) }.getOrNull()
-                    else -> JsonPrimitive(text)
-                }
-                if (value == null) error = unparsed else onSave(value)
-            }) { Text(stringResource(R.string.common_save)) }
+        confirm = {
+            TextButton(
+                enabled = !form.saving,
+                modifier = Modifier.testTag("form-submit"),
+                onClick = {
+                    val value: JsonElement? = when {
+                        field.type == "boolean" -> JsonPrimitive(flag)
+                        field.type == "number" -> text.trim().toLongOrNull()?.let(::JsonPrimitive) ?: text.trim().toDoubleOrNull()?.let(::JsonPrimitive)
+                        structured -> runCatching { HermesJson.parseToJsonElement(text) }.getOrNull()
+                        else -> JsonPrimitive(text)
+                    }
+                    if (value == null) {
+                        form.clearError()
+                        parseError = unparsed
+                    } else {
+                        parseError = null
+                        form.submit(scope, connectionLost, block = { onSave(value) }, onSuccess = onSaved)
+                    }
+                },
+            ) { Text(stringResource(if (form.saving) R.string.common_saving else R.string.common_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
+        dismiss = { TextButton(enabled = !form.saving, onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
@@ -259,10 +294,11 @@ private fun RawConfigDialog(api: AdminApi, onDismiss: () -> Unit, onSaved: () ->
     var text by remember(loaded.value) { mutableStateOf(loaded.value.orEmpty()) }
     var confirm by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    val window = LocalFormWindow.current
+    window.Show(
         title = { Text("config.yaml") },
-        text = {
+        onDismiss = onDismiss,
+        content = {
             Column {
                 Text(stringResource(R.string.admin_config_raw_warning), color = colors.warningText, fontSize = 13.sp)
                 Spacer(Modifier.size(8.dp))
@@ -274,8 +310,8 @@ private fun RawConfigDialog(api: AdminApi, onDismiss: () -> Unit, onSaved: () ->
                 (error ?: loaded.error)?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
             }
         },
-        confirmButton = { TextButton(enabled = loaded.value != null && text != loaded.value, onClick = { confirm = true }) { Text(stringResource(R.string.common_save)) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) } },
+        confirm = { TextButton(enabled = loaded.value != null && text != loaded.value, onClick = { confirm = true }) { Text(stringResource(R.string.common_save)) } },
+        dismiss = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) } },
     )
     if (confirm) {
         ConfirmDialog(stringResource(R.string.admin_config_replace_title), stringResource(R.string.admin_config_replace_text), stringResource(R.string.admin_config_replace), {
@@ -335,23 +371,34 @@ fun SecretsScreen(api: AdminApi, onBack: () -> Unit) {
     editing?.let { key ->
         var name by remember(key) { mutableStateOf(key) }
         var value by remember(key) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { editing = null },
+        val form = rememberFormSubmission(key)
+        val window = LocalFormWindow.current
+        val connectionLost = stringResource(R.string.admin_form_connection_lost)
+        window.Show(
             title = { Text(if (key.isEmpty()) stringResource(R.string.admin_secrets_new) else key) },
-            text = {
+            onDismiss = { if (!form.saving) editing = null },
+            content = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (key.isEmpty()) OutlinedTextField(name, { name = it.uppercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = { Text(stringResource(R.string.admin_secrets_name)) }, singleLine = true)
-                    OutlinedTextField(value, { value = it }, label = { Text(stringResource(R.string.admin_secrets_value)) }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    if (key.isEmpty()) OutlinedTextField(name, { name = it.uppercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = { Text(stringResource(R.string.admin_secrets_name)) }, singleLine = true, enabled = !form.saving)
+                    OutlinedTextField(value, { value = it }, label = { Text(stringResource(R.string.admin_secrets_value)) }, singleLine = true, visualTransformation = PasswordVisualTransformation(), enabled = !form.saving)
                     Text(stringResource(R.string.admin_secrets_hint_env), color = colors.faintText, fontSize = 12.sp)
+                    form.error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                 }
             },
-            confirmButton = {
-                TextButton(enabled = name.isNotBlank() && value.isNotEmpty(), onClick = {
-                    editing = null
-                    scope.attempt(snackbar, resources.getString(R.string.admin_secrets_saved, name)) { api.setEnv(name, value); env.reload() }
-                }) { Text(stringResource(R.string.common_save)) }
+            confirm = {
+                TextButton(
+                    enabled = name.isNotBlank() && value.isNotEmpty() && !form.saving,
+                    modifier = Modifier.testTag("form-submit"),
+                    onClick = {
+                        form.submit(scope, connectionLost, block = { api.setEnv(name, value) }, onSuccess = {
+                            editing = null
+                            env.reload()
+                            scope.launch { snackbar.showSnackbar(resources.getString(R.string.admin_secrets_saved, name)) }
+                        })
+                    },
+                ) { Text(stringResource(if (form.saving) R.string.common_saving else R.string.common_save)) }
             },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
+            dismiss = { TextButton(enabled = !form.saving, onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     deleting?.let { key ->

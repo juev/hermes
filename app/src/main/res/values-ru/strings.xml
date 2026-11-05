@@ -87,6 +87,7 @@
     <string name="common_cancel">Отмена</string>
     <string name="sidebar_rename_title">Название чата</string>
     <string name="common_save">Сохранить</string>
+    <string name="common_saving">Сохранение…</string>
     <string name="sidebar_no_server">Нет сервера</string>
     <string name="sidebar_configure">Настроить «%1$s»</string>
     <string name="sidebar_add_server">Добавить сервер</string>
@@ -365,6 +366,8 @@
     <string name="admin_model_expensive">Модель дорогая.</string>
     <string name="admin_model_new_chats">Сохранено: новые чаты используют %1$s</string>
     <string name="admin_model_expensive_title">Дорогая модель</string>
+    <string name="admin_form_connection_lost">Связь прервалась. Проверьте подключение и повторите.</string>
+    <string name="admin_form_unknown_outcome">Связь прервалась. Изменение могло примениться — проверьте список, прежде чем повторять.</string>
     <string name="admin_config_raw">config.yaml целиком</string>
     <string name="admin_config_search">Поиск по ключам и описаниям</string>
     <string name="admin_config_saved">Сохранено: %1$s</string>
