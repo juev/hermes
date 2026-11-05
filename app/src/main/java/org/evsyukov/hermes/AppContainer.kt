@@ -34,6 +34,7 @@ import org.evsyukov.hermes.chat.LocalPins
 import org.evsyukov.hermes.chat.LocalReads
 import org.evsyukov.hermes.chat.QuestionMemory
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
+import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.files.AttachmentCache
@@ -62,13 +63,13 @@ class Connection(val session: ServerSession, val socket: GatewaySocket) {
 
 /** Objects shared by the whole app. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
-class AppContainer(context: Context) {
+class AppContainer(context: Context, cipher: TokenCipher = KeystoreTokenCipher()) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = baseClient()
 
     val strings = AppStrings(context.resources)
     val settings = AppSettings(context, scope)
-    val servers = ServerStore(context, KeystoreTokenCipher(), scope)
+    val servers = ServerStore(context, cipher, scope)
     val tailnet = Tailnet(context, scope)
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
     val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })

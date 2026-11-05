@@ -119,7 +119,7 @@ private fun MainScreen(vm: MainViewModel) {
 
     when (top) {
         is Screen.Search -> {
-            SearchScreen(search, vm::setQuery, onOpen = { vm.openChat(it) }, onBack = { vm.pop() })
+            SearchScreen(search, vm::setQuery, onOpen = vm::openSearchHit, onBack = { vm.pop() })
             return
         }
         is Screen.Admin -> {

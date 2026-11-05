@@ -16,7 +16,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -95,7 +94,17 @@ data class SidebarState(
 internal fun SidebarState.withMore(mode: ListMode, more: List<ChatSummary>, total: Int, size: Int): SidebarState =
     if (this.mode != mode) this else copy(chats = (chats + mode.keep(more)).distinctBy { it.id }, total = total, listed = listed + size, loading = false)
 
-data class SearchState(val query: String = "", val hits: List<SearchHit> = emptyList(), val searching: Boolean = false, val error: String? = null)
+data class SearchState(
+    val query: String = "",
+    val hits: List<SearchHit> = emptyList(),
+    val searching: Boolean = false,
+    val error: String? = null,
+    /** The request the hits belong to; a result of another server or attempt is not actionable. */
+    val request: SearchRequestIdentity? = null,
+)
+
+/** The server and the attempt a search result belongs to; two attempts never share an identity. */
+data class SearchRequestIdentity(val connection: Connection, val generation: Long)
 
 /** What the app needs from the server before chatting: nothing, a sign-in, or a working network. */
 enum class Access { UNKNOWN, OK, SIGN_IN, OFFLINE }
@@ -144,7 +153,13 @@ internal suspend fun checkServer(
 }
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-class MainViewModel(val container: AppContainer) : ViewModel() {
+class MainViewModel(
+    val container: AppContainer,
+    /** Looks the query up; a test controls the answers without a server. */
+    private val searchChats: suspend (Connection, String) -> List<SearchHit> = { connection, query ->
+        connection.session.chat.search(query)
+    },
+) : ViewModel() {
     val stack = mutableStateListOf<Screen>()
 
     private val _sidebar = MutableStateFlow(SidebarState())
@@ -165,6 +180,15 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     val connection: StateFlow<Connection?> get() = container.connection
 
     private var loadJob: Job? = null
+
+    /** The attempt a search belongs to; every input or connection change starts the next one. */
+    private var searchGeneration = 0L
+
+    /** The connection the current search state belongs to. */
+    private var searchConnection: Connection? = null
+
+    /** The query under way, from its debounce to its answer; a new one replaces it at once. */
+    private var searchJob: Job? = null
 
     /** The server has answered for the list shown, so the copy on the phone must not replace it. */
     private var listedByServer = false
@@ -210,9 +234,13 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         // A server found offline is checked again when the network comes back; the button stays for
         // the cases the network does not explain.
         viewModelScope.launch { recovery.follow(container.online) }
+        // A result belongs to the server that found it: another connection ends the request at once,
+        // and the query is asked again on the new one.
         viewModelScope.launch {
-            _search.debounce(300).distinctUntilChanged { a, b -> a.query == b.query }.collectLatest { state ->
-                runSearch(state.query)
+            container.connection.collect { connection ->
+                if (connection === searchConnection) return@collect
+                searchConnection = connection
+                startSearch(_search.value.query, connection)
             }
         }
     }
@@ -517,22 +545,52 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun setQuery(query: String) = _search.update { it.copy(query = query) }
+    fun setQuery(query: String) {
+        val connection = container.connection.value
+        if (query == _search.value.query && connection === searchConnection) return
+        searchConnection = connection
+        startSearch(query, connection)
+    }
 
-    private suspend fun runSearch(query: String) {
-        val connection = container.connection.value ?: return
-        if (query.isBlank()) {
-            _search.update { it.copy(hits = emptyList(), searching = false, error = null) }
-            return
-        }
-        _search.update { it.copy(searching = true, error = null) }
-        try {
-            val hits = connection.session.chat.search(query)
-            _search.update { if (it.query == query) it.copy(hits = hits, searching = false) else it }
-        } catch (e: Exception) {
-            _search.update { it.copy(searching = false, error = e.message) }
+    /** Opens a search result, if it still belongs to the current request of the current server. */
+    fun openSearchHit(hit: SearchHit, identity: SearchRequestIdentity?) {
+        if (identity == null || !isCurrent(identity)) return
+        val state = _search.value
+        if (state.request != identity || hit !in state.hits) return
+        openChat(hit.chat.id)
+    }
+
+    /**
+     * Ends the request under way, drops what it showed, and starts the next one: [query] on
+     * [connection], after the debounce for a nonblank query that has a server to run on. Everything
+     * visible is replaced at once, so no hit of another server or attempt stays actionable.
+     */
+    private fun startSearch(query: String, connection: Connection?) {
+        searchJob?.cancel()
+        searchJob = null
+        searchGeneration += 1
+        val identity = if (query.isNotBlank() && connection != null) SearchRequestIdentity(connection, searchGeneration) else null
+        _search.value = SearchState(query = query, searching = identity != null, request = identity)
+        if (identity == null) return
+        searchJob = viewModelScope.launch {
+            try {
+                delay(SEARCH_DEBOUNCE)
+                if (!isCurrent(identity)) return@launch
+                val hits = searchChats(identity.connection, query)
+                if (!isCurrent(identity)) return@launch
+                _search.value = SearchState(query = query, hits = hits, request = identity)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!isCurrent(identity)) return@launch
+                _search.value = SearchState(query = query, error = e.message, request = identity)
+            }
         }
     }
+
+    /** Whether [identity] is still the request of the connection shown; the answer of an older one is dropped. */
+    private fun isCurrent(identity: SearchRequestIdentity): Boolean =
+        identity.generation == searchGeneration && container.connection.value === identity.connection
 
     fun push(screen: Screen) {
         stack.add(screen)
@@ -578,6 +636,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     companion object {
         const val PAGE = 50
         const val RETURN_URL = "org.evsyukov.hermes://signed-in"
+
+        /** How long typing settles before the query goes to the server. */
+        private const val SEARCH_DEBOUNCE = 300L
         private const val TAG = "HermesMain"
     }
 }
