@@ -7,8 +7,10 @@ import androidx.work.Configuration
 import androidx.work.WorkManager
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -315,8 +317,9 @@ class SearchRequestIdentityTest {
 
         val before = main.scheduler.currentTime
         assertThat(callCount()).isEqualTo(1)
-        container.servers.save(profile(serverB))
-        val onB = awaitSearchRequest(vm, previous)
+        val save = async(Dispatchers.Default) { container.servers.save(profile(serverB)) }
+        val onB = awaitSearchRequest(vm, previous, save)
+        save.await()
         runCurrent()
 
         assertThat(main.scheduler.currentTime).isEqualTo(before)
@@ -378,15 +381,16 @@ class SearchRequestIdentityTest {
         }
 
     /**
-     * Waits until the ViewModel has applied a replacement connection without advancing virtual
-     * time. The test body stays runnable at the current time while the container and its collector
-     * deliver the new connection, so runTest cannot jump ahead to the search debounce.
+     * Waits until the real save has completed and the ViewModel has applied the replacement
+     * connection, without advancing virtual time. The test body stays runnable at the current time
+     * while the save runs on another dispatcher and the collector delivers the connection, so
+     * runTest cannot jump ahead to the search debounce.
      */
-    private suspend fun awaitSearchRequest(vm: MainViewModel, previous: Connection?): Connection {
+    private suspend fun awaitSearchRequest(vm: MainViewModel, previous: Connection?, save: Deferred<Unit>): Connection {
         val deadline = System.nanoTime() + 10_000_000_000L
         while (true) {
             val connection = container.connection.value
-            if (connection != null && connection !== previous &&
+            if (save.isCompleted && connection != null && connection !== previous &&
                 vm.search.value.request?.connection === connection
             ) {
                 return connection
