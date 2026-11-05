@@ -419,12 +419,15 @@ internal class LiveServer(private val gateway: LiveGateway) {
      */
     @Volatile
     var historyGate: CountDownLatch? = null
+    /** The summary of `s1`; null serves the one [gateway] implies. */
+    @Volatile
+    var summary: String? = null
 
     init {
         http.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
                 "/api/sessions/s1" -> json(
-                    """{"id":"s1","title":"Mail","model":"stored-model","last_active":${gateway.lastActive},"is_active":${gateway.running}}""",
+                    summary ?: """{"id":"s1","title":"Mail","model":"stored-model","last_active":${gateway.lastActive},"is_active":${gateway.running}}""",
                 )
                 "/api/sessions/s1/messages" -> {
                     if (historyDelayMillis > 0) Thread.sleep(historyDelayMillis)

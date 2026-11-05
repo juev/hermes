@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
@@ -36,10 +37,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -50,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,6 +66,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
@@ -70,9 +77,14 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -94,6 +106,7 @@ import org.evsyukov.hermes.chat.QuestionState
 import org.evsyukov.hermes.chat.TranscriptRow
 import org.evsyukov.hermes.chat.transcriptRows
 import org.evsyukov.hermes.data.remote.ModelChoices
+import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.sidebar.RenameDialog
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -292,29 +305,17 @@ fun ChatScreen(
     )
 
     Column(Modifier.fillMaxSize().background(colors.background).statusBarsPadding().imePadding()) {
-        // The bar of the ChatGPT app: menu, the model in the middle, a new chat on the right.
-        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onMenu) { Icon(Icons.AutoMirrored.Outlined.Sort, stringResource(R.string.chat_chats), tint = colors.text) }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Row(
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { models = true }.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            state.title.ifBlank { serverName },
-                            color = colors.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clickable(enabled = state.storedId != null) { renaming = true },
-                        )
-                        // The model and what the chat has spent sit on one line, or the spent line moves under it.
-                        ChatSubtitle(state.model, state.usage, pending = state.modelPending)
-                    }
-                    Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
-                }
-            }
-            IconButton(onClick = onNewChat) { Icon(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), tint = colors.text) }
-        }
+        ChatHeader(
+            title = state.title.ifBlank { serverName },
+            model = state.model,
+            usage = state.usage,
+            modelPending = state.modelPending,
+            canRename = state.storedId != null,
+            onMenu = onMenu,
+            onNewChat = onNewChat,
+            onModels = { models = true },
+            onRename = { renaming = true },
+        )
         if (!connected) {
             Text(
                 stringResource(R.string.chat_reconnecting),
@@ -466,6 +467,110 @@ fun ChatScreen(
             confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { editing = null; controller.editLast(text.trim()) }) { Text(stringResource(R.string.common_send)) } },
             dismissButton = { TextButton(onClick = { editing = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
+    }
+}
+
+/**
+ * One bar: the menu and the new-chat button flank a central column where the plain title sits over
+ * its own model target. The title names the chat and does nothing else; the model target opens the
+ * picker alone, and rename is a labelled item of the chat menu, so no target hides another action.
+ *
+ * The totals stay in the centre while they fit it beside or under the model. When the measured
+ * width says they do not, they take a plain full-width line under the bar: information, not a
+ * second row of controls. The model target keeps at least 48 dp, or the platform grows it and it
+ * takes taps from the plain title above.
+ */
+@Composable
+internal fun ChatHeader(
+    title: String,
+    model: String?,
+    usage: SessionUsage?,
+    modelPending: Boolean,
+    canRename: Boolean,
+    onMenu: () -> Unit,
+    onNewChat: () -> Unit,
+    onModels: () -> Unit,
+    onRename: () -> Unit,
+) {
+    val colors = ChatTheme.colors
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val style = TextStyle(color = colors.faintText, fontSize = 12.sp)
+    val usageLine = usage?.let { usageText(it) }
+    val modelLabel = stringResource(R.string.chat_choose_model)
+    var chatMenu by remember { mutableStateOf(false) }
+    // The target is full width inside the centre, so the width it was given is the room the
+    // subtitle has, less its own horizontal padding and the chevron. The first frame has no width
+    // yet; it keeps the totals inside, and the measured frame moves them out only if they overflow.
+    var centerPx by remember { mutableIntStateOf(0) }
+    val roomPx = (centerPx - with(density) { 34.dp.toPx() }).coerceAtLeast(0f)
+    val usageBelow = centerPx > 0 && usageLine != null &&
+        measurer.measure(usageLine, style, maxLines = 1).size.width > roomPx
+    val room = with(density) { roomPx.toDp() }
+    Column(Modifier.fillMaxWidth().testTag("header")) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onMenu, modifier = Modifier.testTag("chat-menu")) {
+                Icon(Icons.AutoMirrored.Outlined.Sort, stringResource(R.string.chat_chats), tint = colors.text)
+            }
+            Box(Modifier.weight(1f).onSizeChanged { centerPx = it.width }) {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        title,
+                        color = colors.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().testTag("chat-title"),
+                    )
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(role = Role.Button, onClickLabel = modelLabel, onClick = onModels)
+                            .semantics(mergeDescendants = true) { contentDescription = modelLabel }
+                            .padding(horizontal = 8.dp)
+                            .heightIn(min = 48.dp)
+                            .testTag("model-picker"),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ChatSubtitle(
+                            model,
+                            if (usageBelow) null else usage,
+                            pending = modelPending,
+                            modifier = Modifier.widthIn(max = room),
+                        )
+                        Icon(Icons.Outlined.ExpandMore, null, tint = colors.faintText, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+            if (canRename) {
+                Box {
+                    IconButton(onClick = { chatMenu = true }, modifier = Modifier.testTag("chat-actions")) {
+                        Icon(Icons.Outlined.MoreVert, stringResource(R.string.chat_actions), tint = colors.text)
+                    }
+                    DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_rename)) },
+                            leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) },
+                            onClick = { chatMenu = false; onRename() },
+                            modifier = Modifier.testTag("chat-rename").semantics { role = Role.Button },
+                        )
+                    }
+                }
+            }
+            IconButton(onClick = onNewChat, modifier = Modifier.testTag("chat-new")) {
+                Icon(Icons.Outlined.EditNote, stringResource(R.string.common_new_chat), tint = colors.text)
+            }
+        }
+        if (usageBelow) {
+            Text(
+                usageLine.orEmpty(),
+                style = style,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("header-usage"),
+            )
+        }
     }
 }
 
