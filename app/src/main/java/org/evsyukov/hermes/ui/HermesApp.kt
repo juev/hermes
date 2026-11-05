@@ -8,15 +8,22 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -25,6 +32,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,8 +52,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.server.ProxySettings
+import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.ui.setup.WebSignIn
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ProxyType
@@ -56,6 +66,7 @@ import org.evsyukov.hermes.ui.search.SearchScreen
 import org.evsyukov.hermes.ui.settings.LicensesScreen
 import org.evsyukov.hermes.ui.settings.SettingsScreen
 import org.evsyukov.hermes.ui.setup.ServerEditScreen
+import org.evsyukov.hermes.ui.sidebar.ServerFooter
 import org.evsyukov.hermes.ui.sidebar.Sidebar
 import org.evsyukov.hermes.ui.sidebar.SidebarActions
 import org.evsyukov.hermes.ui.theme.ChatTheme
@@ -88,6 +99,7 @@ fun HermesApp(vm: MainViewModel) {
 private fun MainScreen(vm: MainViewModel) {
     val container = vm.container
     val access by vm.access.collectAsStateWithLifecycle()
+    val accessError by vm.accessError.collectAsStateWithLifecycle()
     val connection by vm.connection.collectAsStateWithLifecycle()
     val servers by container.servers.state.collectAsStateWithLifecycle()
     val settings by container.settings.current.collectAsStateWithLifecycle()
@@ -159,16 +171,30 @@ private fun MainScreen(vm: MainViewModel) {
 
     when (access) {
         Access.SIGN_IN -> {
-            SignInScreen(vm, servers.active?.name.orEmpty(), onEditServer = { vm.push(Screen.ServerEdit(servers.active?.id)) })
+            val current = connection
+            if (current == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                return
+            }
+            // The route, the browser page, the job and the error belong to this server alone.
+            key(current) { SignInScreen(vm, current, servers.servers) }
             return
         }
         Access.OFFLINE -> {
-            OfflineScreen(
-                error = vm.accessError.collectAsStateWithLifecycle().value,
-                tailnetHint = servers.active?.proxy?.type == ProxyType.NONE,
-                onRetry = vm::checkAccess,
-                onEditServer = { vm.push(Screen.ServerEdit(servers.active?.id)) },
-            )
+            val current = connection
+            if (current == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                return
+            }
+            key(current) {
+                OfflineScreen(
+                    vm = vm,
+                    connection = current,
+                    servers = servers.servers,
+                    error = accessError,
+                    tailnetHint = current.session.profile.proxy.type == ProxyType.NONE,
+                )
+            }
             return
         }
         Access.UNKNOWN -> if (chat == null) {
@@ -191,7 +217,7 @@ private fun MainScreen(vm: MainViewModel) {
         onShowList = vm::showList,
         onAdmin = { vm.push(Screen.Admin()); closeDrawer() },
         onSettings = { vm.push(Screen.Settings); closeDrawer() },
-        onSwitchServer = { id -> scope.launch { container.servers.activate(id) }; closeDrawer() },
+        onSwitchServer = { id -> vm.switchServer(id); closeDrawer() },
         onEditServer = { id -> vm.push(Screen.ServerEdit(id)); closeDrawer() },
     )
 
@@ -230,12 +256,48 @@ private fun MainScreen(vm: MainViewModel) {
     }
 }
 
+/**
+ * The recovery screens: the server on them does not work, so the way to another saved server and to
+ * the local settings stays on the screen, under the content and outside its scroll.
+ */
 @Composable
-private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: () -> Unit) {
+private fun RecoveryScaffold(
+    vm: MainViewModel,
+    connection: Connection,
+    servers: List<ServerProfile>,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight)
+                    .padding(horizontal = 32.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                content = content,
+            )
+        }
+        HorizontalDivider(color = ChatTheme.colors.divider)
+        ServerFooter(
+            servers = servers,
+            active = connection.session.profile,
+            onSwitchServer = vm::switchServer,
+            onEditServer = { vm.push(Screen.ServerEdit(it)) },
+            onSettings = { vm.push(Screen.Settings) },
+        )
+    }
+}
+
+@Composable
+private fun SignInScreen(vm: MainViewModel, connection: Connection, servers: List<ServerProfile>) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val route = remember { vm.signInRoute() }
+    val profile = connection.session.profile
+    val route = remember { vm.signInRoute(profile) }
     var job by remember { mutableStateOf<Job?>(null) }
     var webUrl by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -245,7 +307,7 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
         error = null
         job = scope.launch {
             try {
-                vm.signIn { url ->
+                vm.signIn(connection) { url ->
                     if (inApp) webUrl = url else CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url))
                 }
             } catch (e: CancellationException) {
@@ -264,8 +326,8 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
         WebSignIn(url, route ?: ProxySettings(), onCancel = { job?.cancel() })
         return
     }
-    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(stringResource(R.string.setup_signin_title, serverName), color = colors.text, fontSize = 24.sp)
+    RecoveryScaffold(vm, connection, servers) {
+        Text(stringResource(R.string.setup_signin_title, profile.name), color = colors.text, fontSize = 24.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(
             stringResource(if (route == null) R.string.setup_signin_browser_hint else R.string.setup_signin_inapp_hint),
@@ -285,16 +347,22 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
             Spacer(Modifier.height(12.dp))
             Text(it, color = colors.dangerText, textAlign = TextAlign.Center)
         }
-        TextButton(onClick = onEditServer) { Text(stringResource(R.string.setup_server_settings)) }
+        TextButton(onClick = { vm.push(Screen.ServerEdit(profile.id)) }) { Text(stringResource(R.string.setup_server_settings)) }
     }
 }
 
 @Composable
-private fun OfflineScreen(error: String?, tailnetHint: Boolean, onRetry: () -> Unit, onEditServer: () -> Unit) {
+private fun OfflineScreen(
+    vm: MainViewModel,
+    connection: Connection,
+    servers: List<ServerProfile>,
+    error: String?,
+    tailnetHint: Boolean,
+) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
-    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(stringResource(R.string.setup_offline_title), color = colors.text, fontSize = 24.sp)
+    RecoveryScaffold(vm, connection, servers) {
+        Text(stringResource(R.string.setup_offline_title), color = colors.text, fontSize = 24.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(error.orEmpty(), color = colors.secondaryText, textAlign = TextAlign.Center)
         if (tailnetHint) {
@@ -310,7 +378,7 @@ private fun OfflineScreen(error: String?, tailnetHint: Boolean, onRetry: () -> U
             }) { Text(stringResource(R.string.setup_open_tailscale)) }
         }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast)) { Text(stringResource(R.string.setup_retry)) }
-        OutlinedButton(onClick = onEditServer) { Text(stringResource(R.string.setup_server_settings)) }
+        Button(onClick = vm::checkAccess, colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast)) { Text(stringResource(R.string.setup_retry)) }
+        OutlinedButton(onClick = { vm.push(Screen.ServerEdit(connection.session.profile.id)) }) { Text(stringResource(R.string.setup_server_settings)) }
     }
 }

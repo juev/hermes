@@ -270,6 +270,9 @@ class ChatController(
     @Volatile
     private var warmed = false
 
+    /** Guarded by lock: a real history has been installed, rather than only a local send. */
+    private var historyShown = false
+
     /**
      * A turn was sent and has not started. The server may report the session idle meanwhile: a new
      * session announces its agent once built, and that can happen before the prompt reaches it.
@@ -456,6 +459,11 @@ class ChatController(
         try {
             coroutineScope {
                 val head = async { runCatching { session.chat.get(id) } }
+                // A history response must not replace live transcript changes made while it travelled.
+                val beforeHistory = synchronized(lock) {
+                    flushStreamed()
+                    _state.value.items to historyShown
+                }
                 val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
                 val summary = head.await().getOrNull()
                 summary?.let { read ->
@@ -504,7 +512,7 @@ class ChatController(
                 }
                 val read = history.await()
                 if (read.isSuccess) {
-                    showHistory(read.getOrDefault(emptyList()))
+                    showHistory(read.getOrDefault(emptyList()), beforeHistory)
                     // What is on the screen now is read: a mark in the sidebar clears, and a new
                     // answer after this will mark it again.
                     summary?.let { tellRead(id, it.lastActive) }
@@ -526,8 +534,13 @@ class ChatController(
      * sent while the history was on its way must not vanish from under them. An answer that streams
      * comes back with the join, which is applied after this.
      */
-    private fun showHistory(history: List<ChatItem>) {
+    private fun showHistory(history: List<ChatItem>, before: Pair<List<ChatItem>, Boolean>) {
         edit { state ->
+            // Once history exists, prefer the newer live transcript to this stale read. A later
+            // ordinary reload can refresh history when no transcript changes race it. The first
+            // uncached load retains its existing history/local-send merge below.
+            if (before.second && state.items !== before.first) return@edit state.copy(loading = false)
+            historyShown = true
             val known = history.mapTo(HashSet()) { it.key }
             val unsent = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
             state.copy(items = if (unsent.isEmpty()) history else history + unsent, loading = false)
@@ -539,7 +552,10 @@ class ChatController(
         try {
             val history = transcriptOf(cached.messages(id))
             val summary = runCatching { cached.get(id) }.getOrNull()
-            edit { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
+            edit { if (it.items.isEmpty()) {
+                historyShown = true
+                it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage)
+            } else it }
             summary?.let { tellRead(id, it.lastActive) }
         } catch (e: CancellationException) {
             throw e
