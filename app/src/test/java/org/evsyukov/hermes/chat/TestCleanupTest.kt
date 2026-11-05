@@ -10,6 +10,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -35,21 +40,78 @@ class TestCleanupTest {
         // Room opens lazily: touch it so `isOpen` reports whether the cleanup closed it.
         db.query("SELECT 1", null).close()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val entered = CountDownLatch(1)
         val finished = CountDownLatch(1)
         val job = scope.launch {
             try {
+                entered.countDown()
+                awaitCancellation()
+            } finally {
+                finished.countDown()
+            }
+        }
+        var primary: Throwable? = null
+        try {
+            // A DEFAULT launch may be cancelled before its body (and its finally) ever runs.
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue()
+            scope.closeWithOwnedJobs(db) {}
+            assertThat(job.isCompleted).isTrue()
+            assertThat(finished.await(1, TimeUnit.SECONDS)).isTrue()
+            assertThat(db.isOpen).isFalse()
+        } catch (failure: Throwable) {
+            primary = failure
+            throw failure
+        } finally {
+            // Also cancel and join if readiness or an assertion fails; never close under a job.
+            try {
+                scope.closeWithOwnedJobs(db) {}
+            } catch (cleanup: Throwable) {
+                val failure = primary
+                if (failure == null) throw cleanup
+                failure.addSuppressed(cleanup)
+            }
+        }
+    }
+
+    @Test
+    fun `a default child cancelled before dispatch completes without entering its body`() = runBlocking {
+        val db = LiveServer.database(context)
+        db.query("SELECT 1", null).close()
+        val dispatcher = StandardTestDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val entered = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val job = scope.launch {
+            try {
+                entered.countDown()
                 awaitCancellation()
             } finally {
                 finished.countDown()
             }
         }
         try {
-            scope.closeWithOwnedJobs(db) {}
-            assertThat(job.isCompleted).isTrue()
-            assertThat(finished.await(1, TimeUnit.SECONDS)).isTrue()
-            assertThat(db.isOpen).isFalse()
+            assertThat(entered.count).isEqualTo(1L)
+            // Run the real blocking cleanup off this thread so we can release the queued dispatch
+            // after cancellation. No child code is dispatched before that boundary.
+            val cleanup = async(Dispatchers.IO) { scope.closeWithOwnedJobs(db) {} }
+            try {
+                withTimeout(5_000) {
+                    while (!job.isCancelled) delay(1)
+                }
+                dispatcher.scheduler.runCurrent()
+                cleanup.await()
+                assertThat(job.isCompleted).isTrue()
+                assertThat(db.isOpen).isFalse()
+                assertThat(entered.count).isEqualTo(1L)
+                assertThat(finished.await(1, TimeUnit.SECONDS)).isFalse()
+            } finally {
+                scope.cancel()
+                dispatcher.scheduler.runCurrent()
+            }
         } finally {
-            finished.countDown()
+            scope.cancel()
+            dispatcher.scheduler.runCurrent()
+            job.join()
             if (db.isOpen) db.close()
         }
     }

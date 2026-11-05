@@ -202,7 +202,12 @@ class MainViewModel(
                 _chat.value = null
                 _sidebar.value = SidebarState()
                 listedByServer = false
-                if (connection == null) return@collectLatest
+                if (connection == null) {
+                    // No server answers for this one anymore: work for it must not bring its state back.
+                    loadJob?.cancel()
+                    checkAccess(null)
+                    return@collectLatest
+                }
                 showCachedChats(connection)
                 newChat()
                 pendingChat?.let { id ->
@@ -225,8 +230,24 @@ class MainViewModel(
     }
 
     /** Probes the server; a valid session keeps the socket open and loads the chats. */
-    fun checkAccess() {
-        val connection = container.connection.value ?: return
+    fun checkAccess() = checkAccess(container.connection.value)
+
+    /**
+     * Probes [connection]. An answer about a connection that is no longer the app's is dropped: the
+     * server of the screen now may be fine, and the old one's failure says nothing about it.
+     */
+    private fun checkAccess(connection: Connection?) {
+        if (connection == null) {
+            // Only a null that is still current resets; a server may have taken its place meanwhile.
+            if (container.connection.value != null) return
+            accessJob?.cancel()
+            accessJob = null
+            _access.value = Access.UNKNOWN
+            _accessError.value = null
+            return
+        }
+        // A sign-in of a retired server must not cancel or reset the probe of the current one.
+        if (container.connection.value !== connection) return
         accessJob?.cancel()
         _access.value = Access.UNKNOWN
         val since = recovery.checkStarting()
@@ -234,6 +255,7 @@ class MainViewModel(
             try {
                 val hasTokens = container.servers.load().tokens[connection.session.profile.id] != null
                 val access = checkServer(hasTokens, { connection.session.authInfo().required }, connection.session::probe, connection.socket::start)
+                if (container.connection.value !== connection) return@launch
                 _access.value = access
                 if (access != Access.OK) return@launch
                 _accessError.value = null
@@ -242,8 +264,9 @@ class MainViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SignInRequiredException) {
-                _access.value = Access.SIGN_IN
+                if (container.connection.value === connection) _access.value = Access.SIGN_IN
             } catch (e: Exception) {
+                if (container.connection.value !== connection) return@launch
                 Log.w(TAG, "Server check failed", e)
                 _accessError.value = e.message ?: e.javaClass.simpleName
                 _access.value = Access.OFFLINE
@@ -267,23 +290,42 @@ class MainViewModel(
         _draftServer.value = null
     }
 
-    /** The route the in-app sign-in page must take; null when the server is reached directly. */
-    fun signInRoute(): ProxySettings? {
-        val profile = container.servers.state.value.active ?: return null
+    /** Switches the app to another saved server; its screen replaces the recovery one at once. */
+    fun switchServer(id: String) {
+        viewModelScope.launch { container.servers.activate(id) }
+    }
+
+    /** The route the in-app sign-in page of [profile] must take; null when that server is reached directly. */
+    fun signInRoute(profile: ServerProfile): ProxySettings? {
         if (profile.proxy.type == ProxyType.NONE) return null
         return effectiveRoute(profile.proxy, container.tailnet.proxy.value)
     }
 
-    suspend fun signIn(openBrowser: (String) -> Unit) {
-        val connection = container.connection.value ?: return
+    /**
+     * Signs in to [connection], the server of the screen that asked. The sign-in and its result stay
+     * with that server: a retired one opens no browser page, and switching meanwhile never applies its
+     * answer to the new one.
+     */
+    suspend fun signIn(connection: Connection, openBrowser: (String) -> Unit) {
+        requireCurrent(connection)
         val info = connection.session.authInfo()
         val page = CallbackPageText(
             signedIn = container.strings.get(R.string.setup_page_signed_in),
             failed = container.strings.get(R.string.setup_page_failed),
             back = container.strings.get(R.string.setup_page_back),
         )
-        connection.session.signIn(info.providers.singleOrNull(), RETURN_URL, page, openBrowser)
-        checkAccess()
+        connection.session.signIn(info.providers.singleOrNull(), RETURN_URL, page) { url ->
+            // The status of the sign-in may come back after the server is replaced or gone; the page
+            // belongs to the screen that asked, and that screen is no longer this one.
+            requireCurrent(connection)
+            openBrowser(url)
+        }
+        checkAccess(connection)
+    }
+
+    /** Ends work of a server that is no longer the app's; a sign-in is not a way to bring it back. */
+    private fun requireCurrent(connection: Connection) {
+        if (container.connection.value !== connection) throw CancellationException("The server changed")
     }
 
     fun refreshChats() {
@@ -296,9 +338,11 @@ class MainViewModel(
                 val chat = connection.session.chat
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 val chats = withReads(connection, chat, withPins(connection, chat, mode.keep(page.chats), mode, forgetGone = true))
+                if (container.connection.value !== connection) return@launch
                 _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) else it }
                 listedByServer = true
             } catch (e: Exception) {
+                if (container.connection.value !== connection) return@launch
                 if (e is SignInRequiredException) _access.value = Access.SIGN_IN
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
@@ -355,8 +399,10 @@ class MainViewModel(
                 val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
                 val more = withReads(connection, connection.session.chat, mode.keep(page.chats))
                 // The first page already brought every pinned chat, so the ones met again are left out.
+                if (container.connection.value !== connection) return@launch
                 _sidebar.update { s -> s.withMore(mode, more, page.total, page.chats.size) }
             } catch (e: Exception) {
+                if (container.connection.value !== connection) return@launch
                 _sidebar.update { it.copy(loading = false, error = e.message) }
             }
         }
