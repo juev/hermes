@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -203,6 +204,105 @@ class QuestionChatTest {
         assertThat(again.prefilled).containsExactly("q0", "notes.md")
         chat.answerQuestion("r1", mapOf("q0" to "notes.md"))
         assertThat(gateway.responses.map { it.id }).containsExactly("r1", "r1")
+    }
+
+    @Test
+    fun `an answer lost on a closed chat is asked again by the first join of the connection that replaced it`() = runBlocking<Unit> {
+        val first = opened()
+        first.asked("r1", "Which file?")
+        gateway.losesResponses = true
+        first.answerQuestion("r1", mapOf("q0" to "notes.md"))
+        first.until { s -> s.questions.single().state == QuestionState.SUBMITTED }
+        first.close()
+
+        gateway.drop()
+        // The new connection is READY and carries the join; the gateway counts it only later.
+        gateway.establish()
+        val again = chat()
+
+        // The join lists r1 still open, and its answer came over a connection later than the one the
+        // answer went over: the card opens again before the new connection is announced.
+        settle(5_000) { !again.working.loading && again.working.questions.singleOrNull()?.state == QuestionState.PENDING }
+        val back = again.working.questions.single()
+        assertThat(back.state).isEqualTo(QuestionState.PENDING)
+        assertThat(back.prefilled).containsExactly("q0", "notes.md")
+
+        gateway.announce()
+        settle(2_000) { !again.working.loading }
+        assertThat(again.working.questions.single().state).isEqualTo(QuestionState.PENDING)
+
+        // The request the server still waits for is answered once on the connection that confirmed it.
+        gateway.losesResponses = false
+        again.answerQuestion("r1", mapOf("q0" to "notes.md"))
+        again.answerQuestion("r1", mapOf("q0" to "again"))
+        assertThat(gateway.responses.map { it.id }).containsExactly("r1", "r1")
+        assertThat(again.working.questions.single().state).isEqualTo(QuestionState.SUBMITTED)
+    }
+
+    @Test
+    fun `a connection that replaces the answer's own while its count is read is joined again`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("hi")
+        gateway.ask("r1", "clarify", questions("Which file?"))
+        // The socket takes a new connection and is counted while the chat books the count of the join
+        // it has just received; no collector has heard of the replacement yet.
+        gateway.afterResume = {
+            gateway.afterResume = null
+            gateway.replaceOnNextCount()
+        }
+        val chat = chat()
+
+        settle(5_000) { gateway.count("session.resume") >= 2 && !chat.working.loading }
+        gateway.publishReplacement()
+        delay(200)
+
+        assertThat(gateway.resumedOn.toList()).containsExactly(1, 2).inOrder()
+        assertThat(chat.joinedTransport).isEqualTo(gateway.transport.value)
+        val card = chat.state.value.questions.single()
+        assertThat(card.state).isEqualTo(QuestionState.PENDING)
+        assertThat(card.confirmed).isTrue()
+        chat.answerQuestion("r1", mapOf("q0" to "notes.md"))
+        chat.answerQuestion("r1", mapOf("q0" to "again"))
+        assertThat(gateway.responses.map { it.id }).containsExactly("r1")
+    }
+
+    @Test
+    fun `a stored chat whose join is replaced before the first count is joined again although the count matches`() = runBlocking<Unit> {
+        gateway.start("hi")
+        // A is READY but the gateway has never counted it: the chat opens with no count behind it.
+        gateway.establish()
+        val first = chat()
+        gateway.ask("r1", "clarify", questions("Which file?"))
+        first.until { s -> s.questions.singleOrNull()?.confirmed == true }
+        first.close()
+
+        // A load whose count of connections is 0 falls back to the count after its resume answers. B
+        // replaces A and is counted as 1 during that read, so the fallback finds a count of B's.
+        val secondJoin = CompletableDeferred<Unit>()
+        var resumes = 0
+        gateway.afterResume = {
+            when (++resumes) {
+                1 -> gateway.replaceOnNextCount()
+                2 -> secondJoin.await()
+            }
+        }
+        val second = chat()
+
+        settle(5_000) { gateway.count("session.resume") >= 3 }
+        // The join the chat holds came over A and is retired; r1 comes back only with B's join.
+        assertThat(second.working.questions.single().confirmed).isFalse()
+        second.answerQuestion("r1", mapOf("q0" to "stale"))
+        assertThat(gateway.responses).isEmpty()
+
+        gateway.publishReplacement()
+        secondJoin.complete(Unit)
+        settle(5_000) { !second.working.loading && second.working.questions.singleOrNull()?.confirmed == true }
+
+        assertThat(gateway.resumedOn.toList()).containsExactly(0, 0, 1).inOrder()
+        assertThat(second.joinedTransport).isEqualTo(gateway.transport.value)
+        second.answerQuestion("r1", mapOf("q0" to "notes.md"))
+        second.answerQuestion("r1", mapOf("q0" to "again"))
+        assertThat(gateway.responses.map { it.id }).containsExactly("r1")
     }
 
     @Test
