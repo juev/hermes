@@ -145,7 +145,7 @@ fun Sidebar(
                 item {
                     Text(
                         stringResource(R.string.sidebar_load_failed, error),
-                        color = colors.danger, fontSize = 13.sp,
+                        color = colors.dangerText, fontSize = 13.sp,
                         modifier = Modifier.padding(16.dp).clickable(onClick = actions.onRefresh),
                     )
                 }
@@ -305,7 +305,7 @@ internal fun ChatRow(
                 onClick = { menu = false; actions.onArchive(chat.id, !chat.archived) },
             )
             DropdownMenuItem(
-                text = { Text(stringResource(R.string.common_delete), color = colors.danger) },
+                text = { Text(stringResource(R.string.common_delete), color = colors.dangerText) },
                 leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = colors.danger) },
                 onClick = { menu = false; deleting = true },
             )
@@ -317,7 +317,7 @@ internal fun ChatRow(
             onDismissRequest = { deleting = false },
             title = { Text(stringResource(R.string.sidebar_delete_title)) },
             text = { Text(stringResource(R.string.sidebar_delete_text, label)) },
-            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text(stringResource(R.string.common_delete), color = colors.danger) } },
+            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text(stringResource(R.string.common_delete), color = colors.dangerText) } },
             dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }

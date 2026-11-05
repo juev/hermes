@@ -102,7 +102,7 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit, onMainModelChanged: () -> Uni
             ordered?.providers?.forEach { provider ->
                 item(key = "p:${provider.slug}") {
                     SectionTitle(provider.name + if (provider.current) stringResource(R.string.admin_model_current) else "")
-                    provider.warning?.let { Text(it, color = colors.warning, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
+                    provider.warning?.let { Text(it, color = colors.warningText, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
                 }
                 items(provider.models, key = { "${provider.slug}/$it" }) { model ->
                     val current = model == info.value?.string("model") && provider.slug == info.value.string("provider")
@@ -233,7 +233,7 @@ private fun FieldEditor(field: ConfigField, current: JsonElement, onDismiss: () 
                     )
                 }
                 if (structured) Text(stringResource(R.string.admin_config_json), color = colors.faintText, fontSize = 12.sp)
-                error?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
             }
         },
         confirmButton = {
@@ -264,14 +264,14 @@ private fun RawConfigDialog(api: AdminApi, onDismiss: () -> Unit, onSaved: () ->
         title = { Text("config.yaml") },
         text = {
             Column {
-                Text(stringResource(R.string.admin_config_raw_warning), color = colors.warning, fontSize = 13.sp)
+                Text(stringResource(R.string.admin_config_raw_warning), color = colors.warningText, fontSize = 13.sp)
                 Spacer(Modifier.size(8.dp))
                 OutlinedTextField(
                     text, { text = it },
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 520.dp),
                 )
-                (error ?: loaded.error)?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                (error ?: loaded.error)?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
             }
         },
         confirmButton = { TextButton(enabled = loaded.value != null && text != loaded.value, onClick = { confirm = true }) { Text(stringResource(R.string.common_save)) } },

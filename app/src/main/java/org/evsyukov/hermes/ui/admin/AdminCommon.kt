@@ -140,7 +140,7 @@ fun AdminScaffold(
 
 @Composable
 fun ErrorText(error: String?) {
-    if (error != null) Text(error, color = ChatTheme.colors.danger, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+    if (error != null) Text(error, color = ChatTheme.colors.dangerText, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
 }
 
 @Composable
@@ -181,7 +181,7 @@ fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () ->
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = { Text(text) },
-        confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = ChatTheme.colors.danger) } },
+        confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = ChatTheme.colors.dangerText) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }

@@ -109,7 +109,7 @@ fun AgentQuestion(card: QuestionCard, answers: SnapshotStateMap<String, String>,
             // Until the chat's join confirms the request, it may be one the server has ended: the words stay, the buttons wait.
             val open = connected && card.confirmed
             when {
-                !connected -> Text(stringResource(R.string.chat_question_offline), color = colors.warning, fontSize = 13.sp)
+                !connected -> Text(stringResource(R.string.chat_question_offline), color = colors.warningText, fontSize = 13.sp)
                 !card.confirmed -> Text(stringResource(R.string.chat_question_checking), color = colors.secondaryText, fontSize = 13.sp)
             }
             Button(
@@ -119,7 +119,7 @@ fun AgentQuestion(card: QuestionCard, answers: SnapshotStateMap<String, String>,
                 colors = ButtonDefaults.buttonColors(containerColor = colors.contrast, contentColor = colors.onContrast),
             ) { Text(stringResource(R.string.chat_answer)) }
             TextButton(onClick = { actions.cancel(card.id) }, enabled = open, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.chat_question_cancel), color = if (open) colors.danger else colors.faintText)
+                Text(stringResource(R.string.chat_question_cancel), color = if (open) colors.dangerText else colors.faintText)
             }
         } else {
             val outcome = when (card.state) {

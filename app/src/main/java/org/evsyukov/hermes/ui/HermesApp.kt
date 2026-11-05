@@ -283,7 +283,7 @@ private fun SignInScreen(vm: MainViewModel, serverName: String, onEditServer: ()
         if (job != null) TextButton(onClick = { job?.cancel() }) { Text(stringResource(R.string.setup_signin_cancel)) }
         error?.let {
             Spacer(Modifier.height(12.dp))
-            Text(it, color = colors.danger, textAlign = TextAlign.Center)
+            Text(it, color = colors.dangerText, textAlign = TextAlign.Center)
         }
         TextButton(onClick = onEditServer) { Text(stringResource(R.string.setup_server_settings)) }
     }
