@@ -4,12 +4,15 @@ import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.evsyukov.hermes.data.remote.SessionUsage
 import org.evsyukov.hermes.ui.theme.HermesTheme
 import org.junit.Rule
@@ -75,6 +78,20 @@ class ChatSubtitleTest {
     }
 
     @Test
+    fun `a long model gives way before the next-turn note, and the totals stay whole`() {
+        show(240.dp, codex, priced, pending = true)
+
+        // The name may ellipsize on its own line; the note that the switch waits for the next turn
+        // and every number of the spent line stay readable beside it.
+        compose.onNodeWithText(codex).assertExists()
+        compose.onNodeWithText("next turn").assertExists()
+        compose.onNodeWithText("Chat: 1.2 M in · 987.0 K out · $12.34").assertExists()
+        assertThat(topOf("next turn")).isAtLeast(bottomOf(codex))
+        assertNoOverflow("next turn")
+        assertNoOverflow("Chat: 1.2 M in · 987.0 K out · $12.34")
+    }
+
+    @Test
     fun `the spent line goes beside the model only while the room lasts`() {
         // A model 3 px wide, a spent line 4 and 5, a separator of 3.
         assertThat(spentBesideModel(modelWidth = 3, spentWidth = 4, separatorWidth = 3, available = 10)).isTrue()
@@ -96,6 +113,17 @@ class ChatSubtitleTest {
     private fun bottomOf(text: String): Float = compose.onNodeWithText(text, substring = true).fetchSemanticsNode().boundsInRoot.bottom
 
     private fun rightOf(text: String): Float = compose.onNodeWithText(text, substring = true).fetchSemanticsNode().boundsInRoot.right
+
+    private fun assertNoOverflow(text: String) {
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(text).fetchSemanticsNode()
+            .config[SemanticsActions.GetTextLayoutResult].action?.invoke(results)
+        assertThat(results).isNotEmpty()
+        val result = results.last()
+        val ellipsized = (0 until result.lineCount).any { result.isLineEllipsized(it) }
+        assertWithMessage("$text: size=${result.size} constraints=${result.layoutInput.constraints} lines=${result.lineCount}")
+            .that(ellipsized).isFalse()
+    }
 
     private val width: Float get() = compose.density.run { shown.toPx() }
 }

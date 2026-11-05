@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.ui.chat
 
 import android.app.Application
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -121,5 +122,24 @@ class ModelFilterTest {
         compose.onNodeWithText("gpt-5-mini").performClick()
 
         assertThat(picked).isEqualTo("openai" to "gpt-5-mini")
+    }
+
+    @Test
+    fun `the picker says the choice applies to this chat and when`() {
+        show()
+
+        compose.onNodeWithText(app.getString(R.string.chat_models_scope)).assertIsDisplayed()
+        compose.onNodeWithTag("model-scope").assertHasNoClickAction()
+        compose.onNodeWithTag("model-filter").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "ru-rRU-w411dp-h891dp")
+    fun `the Russian picker gives the same scope and timing`() {
+        val localized = ApplicationProvider.getApplicationContext<Application>()
+        show()
+
+        compose.onNodeWithText(localized.getString(R.string.chat_models_scope)).assertIsDisplayed()
+        compose.onNodeWithTag("model-filter").assertIsDisplayed()
     }
 }

@@ -143,6 +143,13 @@ internal fun ModelList(choices: ModelChoices, current: String?, onPick: (String,
     val colors = ChatTheme.colors
     var query by remember { mutableStateOf("") }
     Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+        // A pick belongs to this chat, may wait for the next turn and does not change the default
+        // a new chat starts from; the sheet says so before the list rather than only in settings.
+        Text(
+            stringResource(R.string.chat_models_scope),
+            color = colors.faintText, fontSize = 13.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).testTag("model-scope"),
+        )
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },

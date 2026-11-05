@@ -42,6 +42,10 @@ internal fun usageText(usage: SessionUsage): String {
  * the two lines is one line at most, so a name too long even for its own line gives way, not the
  * numbers.
  *
+ * The note that a picked model waits for the next turn is a line of its own whenever the model line
+ * gives way: a name too long for its line never hides when the pick applies, and the note wraps
+ * rather than loses a word when even its own line is narrow.
+ *
  * The totals are the chat's, not the model's: the server keeps one running total for the session,
  * and it keeps growing when the chat switches model. [pending] marks a model picked while a turn
  * runs, which the server applies at the next turn.
@@ -51,7 +55,8 @@ internal fun ChatSubtitle(model: String?, usage: SessionUsage?, pending: Boolean
     if (model == null && usage == null) return
     val style = TextStyle(color = ChatTheme.colors.faintText, fontSize = 12.sp)
     val spent = usage?.let { usageText(it) }
-    val shownModel = model?.let { if (pending) it + SEPARATOR + stringResource(R.string.chat_model_next_turn) else it }
+    val timing = if (pending && model != null) stringResource(R.string.chat_model_next_turn) else null
+    val shownModel = model?.let { if (timing != null) it + SEPARATOR + timing else it }
     val measurer = rememberTextMeasurer()
     BoxWithConstraints(modifier) {
         val beside = shownModel == null || spent == null || !constraints.hasBoundedWidth || spentBesideModel(
@@ -62,9 +67,19 @@ internal fun ChatSubtitle(model: String?, usage: SessionUsage?, pending: Boolean
         )
         when {
             shownModel == null -> Line(spent.orEmpty(), style)
-            spent == null || beside -> Line(if (spent == null) shownModel else shownModel + SEPARATOR + spent, style)
-            else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            spent == null && timing == null -> Line(shownModel, style)
+            spent == null -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Line(model.orEmpty(), style)
+                Wrapped(timing.orEmpty(), style)
+            }
+            beside -> Line(shownModel + SEPARATOR + spent, style)
+            timing == null -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Line(shownModel, style)
+                Line(spent, style)
+            }
+            else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Line(model.orEmpty(), style)
+                Wrapped(timing, style)
                 Line(spent, style)
             }
         }
@@ -74,4 +89,10 @@ internal fun ChatSubtitle(model: String?, usage: SessionUsage?, pending: Boolean
 @Composable
 private fun Line(text: String, style: TextStyle) {
     Text(text, style = style, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+/** The timing note: the one part that wraps instead of giving way. */
+@Composable
+private fun Wrapped(text: String, style: TextStyle) {
+    Text(text, style = style, textAlign = TextAlign.Center)
 }

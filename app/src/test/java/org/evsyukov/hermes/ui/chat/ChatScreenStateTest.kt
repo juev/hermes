@@ -21,7 +21,6 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -32,6 +31,7 @@ import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LiveGateway
 import org.evsyukov.hermes.chat.LiveServer
+import org.evsyukov.hermes.chat.closeWithOwnedJobs
 import org.evsyukov.hermes.chat.LocalAttachment
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.settings.Settings
@@ -62,9 +62,7 @@ class ChatScreenStateTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        scope.closeWithOwnedJobs(db) { server.close() }
     }
 
     private fun chat(id: String?) = ChatController(server.session(app, scope, db), gateway, scope, strings, id)
