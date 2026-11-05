@@ -225,7 +225,7 @@ private fun McpRow(connection: ConnectionOp, target: ConnectionTarget, actions: 
                 }
                 target.state == TargetState.INITIATED || target.state == TargetState.PENDING -> Waiting(verb)
                 target.state == TargetState.FAILED || target.state == TargetState.EXPIRED -> {
-                    target.detail.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                    target.detail.takeIf { it.isNotBlank() }?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                     RowButton(stringResource(R.string.connect_try_again)) { actions.retry(connection.opId, target.name) }
                 }
             }
@@ -306,7 +306,7 @@ private fun CatalogRow(connection: ConnectionOp, target: ConnectionTarget, actio
                     target.tools.size.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.connect_tools, it, it) },
                     catalog.skill?.let { stringResource(R.string.connect_skill_name, it) },
                 )
-                Text(parts.joinToString(" · "), color = colors.success, fontSize = 13.sp)
+                Text(parts.joinToString(" · "), color = colors.successText, fontSize = 13.sp)
                 if (target.tools.isNotEmpty()) ToolNames(target.tools)
                 catalog.serverErrors.forEach { (name, error) -> Note(stringResource(R.string.connect_server_error, name, error)) }
                 if (catalog.enabled == false) Note(stringResource(R.string.connect_not_enabled))
@@ -314,7 +314,7 @@ private fun CatalogRow(connection: ConnectionOp, target: ConnectionTarget, actio
                 if (catalog.alreadyInstalled) Note(stringResource(R.string.connect_already_installed))
             }
             target.state == TargetState.FAILED || target.state == TargetState.EXPIRED -> {
-                Text(listOf(stringResource(R.string.connect_failed), target.detail).filter { it.isNotBlank() }.joinToString(" · "), color = colors.danger, fontSize = 13.sp)
+                Text(listOf(stringResource(R.string.connect_failed), target.detail).filter { it.isNotBlank() }.joinToString(" · "), color = colors.dangerText, fontSize = 13.sp)
                 when {
                     !connection.settled -> RowButton(stringResource(R.string.connect_try_again)) { actions.answer(connection.opId, listOf(TargetAnswer(target.name, approved = true))) }
                     plugin -> RowButton(stringResource(R.string.connect_try_again)) { actions.reinstall(connection.opId, target.name) }
@@ -350,7 +350,7 @@ private fun Pill(text: String) {
 }
 
 @Composable
-private fun Note(text: String) = Text(text, color = ChatTheme.colors.warning, fontSize = 13.sp)
+private fun Note(text: String) = Text(text, color = ChatTheme.colors.warningText, fontSize = 13.sp)
 
 @Composable
 private fun ToolNames(tools: List<String>) {
@@ -424,7 +424,7 @@ private fun AdvancedDialog(target: ConnectionTarget, actions: ConnectionActions,
                         "warnings" -> stringResource(R.string.connect_scan_warnings)
                         else -> stringResource(R.string.connect_scan_failed)
                     }
-                    Text(listOf(word, summary).filter { it.isNotBlank() }.joinToString(" · "), color = if (status == "passed") colors.success else colors.warning, fontSize = 13.sp)
+                    Text(listOf(word, summary).filter { it.isNotBlank() }.joinToString(" · "), color = if (status == "passed") colors.successText else colors.warningText, fontSize = 13.sp)
                 }
                 val requires = listOfNotNull(catalog.requiresHermes?.let { "Hermes $it" }) +
                     target.requiredEnv.map { stringResource(R.string.connect_env_var, it.name) }
@@ -501,7 +501,7 @@ private fun DirectoryCard(connection: ConnectionOp, suggested: List<String>, act
     val result = apps
     when {
         result == null -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        result.isFailure -> Text(result.exceptionOrNull()?.message.orEmpty(), color = colors.danger, fontSize = 13.sp)
+        result.isFailure -> Text(result.exceptionOrNull()?.message.orEmpty(), color = colors.dangerText, fontSize = 13.sp)
         else -> {
             val all = result.getOrThrow()
             val bySlug = all.associateBy { it.slug }

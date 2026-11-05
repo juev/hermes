@@ -286,7 +286,7 @@ private fun HostedRow(connector: HostedConnector, onClick: () -> Unit) {
                 .joinToString(" · "),
             color = colors.faintText, fontSize = 13.sp,
         )
-        connector.reason?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
+        connector.reason?.let { Text(it, color = colors.dangerText, fontSize = 12.sp) }
     }
 }
 
@@ -303,7 +303,7 @@ private fun McpRow(server: McpServer, test: McpTest?, onClick: () -> Unit, trail
             ).joinToString(" · "),
             color = colors.faintText, fontSize = 13.sp,
         )
-        test?.error?.let { Text(it, color = colors.danger, fontSize = 12.sp, maxLines = 3) }
+        test?.error?.let { Text(it, color = colors.dangerText, fontSize = 12.sp, maxLines = 3) }
     }
 }
 
@@ -361,13 +361,13 @@ private fun HostedDialog(
                                 ).joinToString(" · "),
                                 color = colors.faintText, fontSize = 13.sp,
                             )
-                            account.reason?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
+                            account.reason?.let { Text(it, color = colors.dangerText, fontSize = 12.sp) }
                         }
                     }
                     if (!account.disabled) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (account.broken) TextButton(onClick = { onConnect(account) }) { Text(stringResource(R.string.integrations_reconnect)) }
-                            TextButton(onClick = { onRemove(account) }) { Text(stringResource(R.string.integrations_remove), color = colors.danger) }
+                            TextButton(onClick = { onRemove(account) }) { Text(stringResource(R.string.integrations_remove), color = colors.dangerText) }
                         }
                     }
                 }
@@ -376,7 +376,7 @@ private fun HostedDialog(
                 tools.value?.forEach { tool ->
                     Text(
                         "${tool.name} · ${facetText(tool.facet)}",
-                        color = if (tool.facet == "destructive") colors.danger else colors.text, fontSize = 13.sp,
+                        color = if (tool.facet == "destructive") colors.dangerText else colors.text, fontSize = 13.sp,
                     )
                     if (tool.description.isNotBlank()) Text(tool.description, color = colors.faintText, fontSize = 12.sp, maxLines = 2)
                 }

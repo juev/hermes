@@ -139,7 +139,7 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
                 SectionTitle("Hermes")
                 Card {
                     KeyValue(stringResource(R.string.admin_overview_version), "${s.string("version").orEmpty()} (${s.string("release_date").orEmpty()})")
-                    KeyValue("Gateway", s.string("gateway_state") ?: "?", if (s.bool("gateway_running") == true) colors.success else colors.danger)
+                    KeyValue("Gateway", s.string("gateway_state") ?: "?", if (s.bool("gateway_running") == true) colors.successText else colors.dangerText)
                     KeyValue(stringResource(R.string.admin_overview_agents), (s.long("active_agents") ?: 0).toString())
                     KeyValue(stringResource(R.string.admin_overview_sessions), (s.long("active_sessions") ?: 0).toString())
                     KeyValue(stringResource(R.string.admin_overview_profiles), (s["profiles"] as? kotlinx.serialization.json.JsonArray)?.joinToString { it.toString().trim('"') }.orEmpty())
@@ -158,7 +158,7 @@ private fun OverviewScreen(api: AdminApi, onBack: () -> Unit) {
                             Text(name, color = colors.text, modifier = Modifier.weight(1f))
                             Text(p.string("state").orEmpty(), color = colors.secondaryText, fontSize = 13.sp)
                         }
-                        p.string("error_message")?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
+                        p.string("error_message")?.let { Text(it, color = colors.dangerText, fontSize = 12.sp) }
                     }
                 }
                 SectionTitle(stringResource(R.string.admin_overview_components))
@@ -236,6 +236,6 @@ internal fun GatewayButtons(onRestart: () -> Unit, onStart: () -> Unit, onStop: 
     FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(onClick = onRestart) { Text(stringResource(R.string.admin_restart)) }
         OutlinedButton(onClick = onStart) { Text(stringResource(R.string.admin_start)) }
-        OutlinedButton(onClick = onStop) { Text(stringResource(R.string.admin_stop), color = ChatTheme.colors.danger) }
+        OutlinedButton(onClick = onStop) { Text(stringResource(R.string.admin_stop), color = ChatTheme.colors.dangerText) }
     }
 }

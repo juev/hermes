@@ -189,7 +189,7 @@ internal fun ServerEditContent(
                 }
             }
             if (!tailnetStatus.available) {
-                Text(tailnetMissing, color = ChatTheme.colors.danger, fontSize = 13.sp)
+                Text(tailnetMissing, color = ChatTheme.colors.dangerText, fontSize = 13.sp)
             }
             when (proxyType) {
                 ProxyType.NONE -> Text(

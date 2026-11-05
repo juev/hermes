@@ -318,7 +318,7 @@ fun ChatScreen(
         if (!connected) {
             Text(
                 stringResource(R.string.chat_reconnecting),
-                color = colors.onContrast, fontSize = 13.sp, textAlign = TextAlign.Center,
+                color = colors.onWarning, fontSize = 13.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().background(colors.warning).padding(4.dp),
             )
         }

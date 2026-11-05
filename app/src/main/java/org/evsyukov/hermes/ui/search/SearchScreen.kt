@@ -79,7 +79,7 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String)
             }
         }
         if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
-        state.error?.let { Text(it, color = colors.danger, modifier = Modifier.padding(16.dp)) }
+        state.error?.let { Text(it, color = colors.dangerText, modifier = Modifier.padding(16.dp)) }
         if (state.query.isNotBlank() && !state.searching && state.hits.isEmpty() && state.error == null) {
             Text(stringResource(R.string.search_empty), color = colors.faintText, modifier = Modifier.padding(16.dp))
         }

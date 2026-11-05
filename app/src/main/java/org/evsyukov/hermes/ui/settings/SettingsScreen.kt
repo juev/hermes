@@ -162,7 +162,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
                     Text(stringResource(R.string.settings_tailnet_state, tailnet.state), color = colors.text)
                     tailnet.name?.let { Text(it, color = colors.secondaryText, fontSize = 13.sp) }
                     if (tailnet.ips.isNotEmpty()) Text(tailnet.ips.joinToString(), color = colors.secondaryText, fontSize = 13.sp)
-                    tailnet.error?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                    tailnet.error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                 }
                 ClickRow(stringResource(R.string.settings_node_log), null, onClick = { tailnetLogs = container.tailnet.logs() })
                 ClickRow(stringResource(R.string.settings_tailnet_leave), stringResource(R.string.settings_tailnet_leave_hint), onClick = { container.tailnet.reset() })

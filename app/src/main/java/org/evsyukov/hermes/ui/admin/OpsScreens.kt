@@ -124,7 +124,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
                     KeyValue(stringResource(R.string.admin_cron), job.string("schedule_display").orEmpty())
                     KeyValue(stringResource(R.string.admin_cron_deliver), job.string("deliver").orEmpty())
                     KeyValue(stringResource(R.string.admin_cron_last_run), time(job.string("last_run_at")))
-                    job.string("last_error")?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                    job.string("last_error")?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                     job.string("prompt")?.takeIf { it.isNotBlank() }?.let {
                         Text(stringResource(R.string.admin_cron_task), color = colors.faintText, fontSize = 12.sp)
                         Text(it, color = colors.text, fontSize = 14.sp)
@@ -151,7 +151,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
                         confirm = resources.getString(R.string.admin_cron_delete_confirm, job.string("name") ?: id) to {
                             scope.attempt(snackbar, resources.getString(R.string.admin_cron_deleted)) { api.deleteCron(id); open = null; jobs.reload() }
                         }
-                    }) { Text(stringResource(R.string.common_delete), color = colors.danger) }
+                    }) { Text(stringResource(R.string.common_delete), color = colors.dangerText) }
                 }
             },
             dismissButton = { TextButton(onClick = { open = null }) { Text(stringResource(R.string.common_close)) } },
@@ -279,7 +279,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
                             listOfNotNull(state, p.string("home_channel")?.let { stringResource(R.string.admin_platforms_home, it) }).joinToString(" · "),
                             color = colors.faintText, fontSize = 13.sp,
                         )
-                        p.string("error_message")?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
+                        p.string("error_message")?.let { Text(it, color = colors.dangerText, fontSize = 12.sp) }
                     }
                     if (p.bool("enabled") == true) {
                         TextButton(onClick = {
@@ -341,8 +341,8 @@ fun LogsScreen(api: AdminApi, onBack: () -> Unit) {
                         line,
                         fontFamily = FontFamily.Monospace, fontSize = 11.sp,
                         color = when {
-                            " ERROR " in line || "Traceback" in line -> colors.danger
-                            " WARNING " in line -> colors.warning
+                            " ERROR " in line || "Traceback" in line -> colors.dangerText
+                            " WARNING " in line -> colors.warningText
                             else -> colors.secondaryText
                         },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp),
