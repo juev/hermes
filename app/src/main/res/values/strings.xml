@@ -85,6 +85,7 @@
     <string name="common_cancel">Cancel</string>
     <string name="sidebar_rename_title">Chat name</string>
     <string name="common_save">Save</string>
+    <string name="common_saving">Saving…</string>
     <string name="sidebar_no_server">No server</string>
     <string name="sidebar_configure">Set up “%1$s”</string>
     <string name="sidebar_add_server">Add server</string>
@@ -361,6 +362,8 @@
     <string name="admin_model_expensive">The model is expensive.</string>
     <string name="admin_model_new_chats">Saved: new chats use %1$s</string>
     <string name="admin_model_expensive_title">Expensive model</string>
+    <string name="admin_form_connection_lost">Connection lost. Check the connection and try again.</string>
+    <string name="admin_form_unknown_outcome">Connection lost. The change may have gone through — check the list before trying again.</string>
     <string name="admin_config_raw">The whole config.yaml</string>
     <string name="admin_config_search">Search keys and descriptions</string>
     <string name="admin_config_saved">Saved: %1$s</string>
