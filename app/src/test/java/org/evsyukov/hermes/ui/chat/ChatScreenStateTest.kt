@@ -29,9 +29,11 @@ import kotlinx.coroutines.withTimeout
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
+import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LiveGateway
 import org.evsyukov.hermes.chat.LiveServer
 import org.evsyukov.hermes.chat.LocalAttachment
+import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.theme.HermesTheme
 import org.junit.After
@@ -76,14 +78,20 @@ class ChatScreenStateTest {
 
     private fun field(text: String) = compose.onNode(hasSetTextAction() and hasText(text))
 
-    /** A live chat with a turn already submitted, as the gateway has it after the first message. */
+    /** A live chat with a turn started on the fake server, as the gateway has it after the first message. */
     private suspend fun runningChat(): ChatController {
         gateway.connect()
         val chat = chat("s1")
-        withTimeout(5_000) { chat.state.first { !it.loading } }
+        // The chat's own join has been applied: the history is on the screen and the live model is
+        // known. `!loading` alone is true before the load even starts.
+        withTimeout(5_000) { chat.state.first { it.model == "live-model" && !it.loading } }
         chat.send("first", emptyList())
-        withTimeout(5_000) { chat.state.first { it.running } }
         withTimeout(5_000) { while (gateway.count("prompt.submit") < 1) delay(10) }
+        // A recorded submit is not a running server: the fake starts the turn and the chat takes its
+        // start, which opens the streaming answer under the message.
+        gateway.start("first")
+        withTimeout(5_000) { chat.state.first { (it.items.lastOrNull() as? ChatItem.Assistant)?.streaming == true } }
+        assertThat(chat.state.value.running).isTrue()
         return chat
     }
 
@@ -160,6 +168,9 @@ class ChatScreenStateTest {
         withTimeout(5_000) { chat.state.first { !it.running } }
 
         assertThat(gateway.count("prompt.submit")).isEqualTo(submitted)
+        val interrupts = gateway.calls.filter { it.first == "session.interrupt" }
+        assertThat(interrupts).hasSize(1)
+        assertThat(interrupts.single().second.string("session_id")).isEqualTo("live1")
         assertThat(draft.text).isEqualTo("follow-up")
         assertThat(draft.attachments.map { it.name }).containsExactly("note.pdf")
         field("follow-up").assertExists()

@@ -9,7 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -51,6 +56,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
 
@@ -110,9 +117,7 @@ class ConnectionChatTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        scope.closeWithOwnedJobs(db) { server.close() }
     }
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
@@ -126,17 +131,39 @@ class ConnectionChatTest {
     }
 
     /** Another stored chat on the same gateway, opened while the connection is already up. */
-    private suspend fun openChatFor(id: String): ChatController {
+    private suspend fun openChatFor(
+        id: String,
+        onRead: (String, Double) -> Unit = { _, _ -> },
+        onHistoryReady: () -> Unit = {},
+    ): ChatController {
         if (gateway.state.value != SocketState.READY) gateway.connect()
-        val chat = chatFor(id)
-        withTimeout(10_000) { chat.state.first { it.storedId == id && it.model != null && !it.loading } }
-        return chat
+        val adopted = CompletableDeferred<Unit>()
+        val chat = chatFor(id, onRead, onLive = { live, stored, _ ->
+            if (stored == id && live.isNotEmpty()) adopted.complete(Unit)
+        })
+        try {
+            // History is published before adoption; a non-null stored model is not live readiness.
+            // Both phases share the original deadline, and the callback belongs to this controller.
+            withTimeout(10_000) {
+                chat.state.first { it.storedId == id && it.model != null && !it.loading }
+                onHistoryReady()
+                adopted.await()
+            }
+            return chat
+        } catch (failure: Throwable) {
+            chat.close()
+            throw failure
+        }
     }
 
-    private fun chatFor(id: String, onRead: (String, Double) -> Unit = { _, _ -> }): ChatController {
+    private fun chatFor(
+        id: String,
+        onRead: (String, Double) -> Unit = { _, _ -> },
+        onLive: (String, String, String) -> Unit = { _, _, _ -> },
+    ): ChatController {
         val profile = ServerProfile("home", "Home", server.url("/").toString())
         val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        return ChatController(session, gateway, scope, strings, id, onRead = onRead)
+        return ChatController(session, gateway, scope, strings, id, onRead = onRead, onLive = onLive)
     }
 
     /** The params of the next call of [method]; other calls before it are skipped. */
@@ -463,6 +490,53 @@ class ConnectionChatTest {
         chat.close()
 
         assertThat(two.connections.map { it.opId }).containsExactly("op1", "op2").inOrder()
+    }
+
+    @Test
+    fun `opening another chat waits for live adoption after history is visible`() = runBlocking<Unit> {
+        val held = CompletableDeferred<Unit>()
+        val historyReady = CompletableDeferred<Unit>()
+        val gate = CountDownLatch(1)
+        val opening = async(start = CoroutineStart.UNDISPATCHED) {
+            openChatFor(
+                "s2",
+                onRead = { id, _ ->
+                    check(id == "s2")
+                    held.complete(Unit)
+                    check(gate.await(5, TimeUnit.SECONDS)) { "read gate was not released" }
+                },
+                onHistoryReady = { historyReady.complete(Unit) },
+            )
+        }
+        var chat: ChatController? = null
+        var primary: Throwable? = null
+        try {
+            withTimeout(5_000) {
+                held.await()
+                historyReady.await()
+            }
+            // The actual helper reached its readiness wait while onRead still holds adoption.
+            assertThat(opening.isCompleted).isFalse()
+            gate.countDown()
+            chat = withTimeout(5_000) { opening.await() }
+            assertThat(chat.state.value.loading).isFalse()
+            assertThat(chat.state.value.model).isEqualTo("other-live-model")
+            assertThat(chat.state.value.usage).isEqualTo(SessionUsage(7, 3, null, false))
+        } catch (failure: Throwable) {
+            primary = failure
+            throw failure
+        } finally {
+            gate.countDown()
+            try {
+                withContext(NonCancellable) {
+                    withTimeout(5_000) { opening.cancelAndJoin() }
+                }
+            } catch (cleanup: Throwable) {
+                if (primary != null) primary.addSuppressed(cleanup) else throw cleanup
+            } finally {
+                chat?.close()
+            }
+        }
     }
 
     private object PlainCipher : TokenCipher {
