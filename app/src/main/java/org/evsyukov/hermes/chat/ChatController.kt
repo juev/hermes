@@ -325,6 +325,12 @@ class ChatController(
             socket.connections.collect { generation ->
                 if (closed || _state.value.storedId == null) return@collect
                 if (generation == joinedGeneration.get()) return@collect
+                // The gateway counts a connection only after `client.capabilities`, so the count of the
+                // connection the chat has already joined can arrive later. It is not one that replaced it.
+                if (validJoin() != 0L) {
+                    joinedGeneration.updateAndGet { maxOf(it, generation) }
+                    return@collect
+                }
                 // The load that opens a chat joins the connection it finds; only a later one needs it again.
                 if (joinedGeneration.get() == 0 && generation <= connectedWhenMade) return@collect
                 if (_state.value.loading) {
@@ -425,7 +431,9 @@ class ChatController(
             performLoad()
             val queued = reloadRequests.tryReceive().isSuccess
             val rejoin = rejoinPending.getAndSet(false)
-            if (rejoin && socket.connections.value != joinedGeneration.get()) continue
+            // A count equal to the joined one does not say the chat is joined to the connection it
+            // counts: the join may have come over a connection this one replaced before it was counted.
+            if (rejoin && (socket.connections.value != joinedGeneration.get() || validJoin() == 0L)) continue
             if (queued) continue
             return
         }
@@ -708,10 +716,19 @@ class ChatController(
         // nothing once the socket is on another one: the join over that one brings its own answer.
         val current = joinAnswer.transport != 0L && socket.transport.value == joinAnswer.transport
         takeLive(live, if (current) joinAnswer.transport else 0L)
-        joinedGeneration.set(generation)
+        // A count read now may already include a connection that took the socket while this answer was
+        // on its way. It is the chat's only if the socket is still on the connection the answer came
+        // over, which is read after the count: the socket may change between the two reads.
+        val counted = if (current) socket.connections.value else generation
+        val stillCurrent = joinAnswer.transport != 0L && socket.transport.value == joinAnswer.transport
+        // The connection the answer came over is the one the chat is joined to. Its count may already
+        // have caught up while the answer was on its way; it is never lower than when the join asked.
+        joinedGeneration.updateAndGet { maxOf(it, generation) }
+        if (current && stillCurrent) joinedGeneration.updateAndGet { maxOf(it, counted) }
         // The answer came over `generation`; a connection that came meanwhile may have moved the
-        // card or the turn, so that one is joined as well.
-        if (socket.connections.value != generation) rejoinPending.set(true)
+        // card or the turn, so that one is joined as well. A count that caught up on the answer's own
+        // connection is not such a connection.
+        if (!stillCurrent || (!current && socket.connections.value != generation)) rejoinPending.set(true)
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
         val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
@@ -733,7 +750,7 @@ class ChatController(
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
         edit { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
-        if (current) {
+        if (current && stillCurrent) {
             val listed = HashSet<String>()
             (result["open_requests"] as? JsonArray)?.forEach { request ->
                 val obj = request as? JsonObject ?: return@forEach
@@ -1009,6 +1026,7 @@ class ChatController(
             val (settled, result) = settle(card)
             if (!socket.respondOn(on, id, result)) return
             questionMemory.heard(chat, id, socket.connections.value)
+            questionMemory.answered(chat, id, on)
             edit(flush = false) { state -> state.copy(questions = state.questions.map { if (it.id == id) settled else it }) }
         }
     }
@@ -1019,15 +1037,17 @@ class ChatController(
      * request comes again with every join while it waits: a card the chat has stays one card, with
      * what the user wrote on it. A request the server ended stays ended, whatever an older answer
      * still lists: its card shows how it ended, also when the chat had not shown it yet. A card the
-     * user settled opens again only when the server still holds the request over a later connection
+     * user settled opens again only when the server still holds the request over a connection later
      * than the one its answer went over, which lost the answer. [ordinal] is the place a live request
-     * came in among all [observe] took.
+     * came in among all [observe] took. The connection, not a count of connections, tells which join
+     * came later: another connection can carry the same count.
      */
     private fun showQuestion(request: ServerRequest, generation: Int, listed: Boolean, ordinal: Long) = edit(flush = false) { state ->
         val chat = state.storedId.orEmpty()
         if (!listed) seenLive[request.id] = maxOf(seenLive[request.id] ?: 0L, ordinal)
         val known = state.questions.firstOrNull { it.id == request.id }
         val heard = questionMemory.heardOn(chat, request.id)
+        val answeredOn = questionMemory.answeredOn(chat, request.id)
         val ended = questionMemory.ended(chat, request.id)
         fun replaced(card: QuestionCard) = state.copy(questions = state.questions.map { if (it.id == request.id) card else it })
         // Confirmed only by a join the chat can still trust: one over the connection the socket is on now.
@@ -1043,7 +1063,7 @@ class ChatController(
                 questionMemory.heard(chat, request.id, maxOf(heard ?: 0, generation))
                 if (known.confirmed == valid) state else replaced(known.copy(confirmed = valid))
             }
-            heard != null && heard < generation -> {
+            answeredOn != null && answeredOn < request.transport -> {
                 questionMemory.heard(chat, request.id, generation)
                 val given = known.answers.mapNotNull { (qid, answer) -> answer?.let { qid to it } }.toMap()
                 replaced(known.copy(state = QuestionState.PENDING, answers = emptyMap(), prefilled = known.prefilled + given, confirmed = valid))
