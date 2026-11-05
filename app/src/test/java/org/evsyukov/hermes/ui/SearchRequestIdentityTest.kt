@@ -1,451 +1,354 @@
 package org.evsyukov.hermes.ui
 
-import android.app.Application
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.work.Configuration
-import androidx.work.WorkManager
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
-import mockwebserver3.Dispatcher
-import mockwebserver3.MockResponse
-import mockwebserver3.MockWebServer
-import mockwebserver3.RecordedRequest
-import org.evsyukov.hermes.AppContainer
-import org.evsyukov.hermes.Connection
-import org.evsyukov.hermes.data.auth.TokenCipher
-import org.evsyukov.hermes.data.remote.ChatSummary
-import org.evsyukov.hermes.data.remote.SearchHit
-import org.evsyukov.hermes.data.server.ServerProfile
-import org.junit.After
-import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.annotation.Config
+import org.junit.rules.TestRule
+import org.junit.runners.model.Statement
 import java.io.IOException
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 
-/**
- * A search result belongs to one server and one attempt. A changed query, a replaced connection or a
- * cleared field ends the request before its answer lands: no stale hit stays actionable, no late
- * answer or failure rewrites the state of the request now shown, and an old row cannot open its chat
- * on another server. The tests drive the real [MainViewModel] and the real container; only the
- * search call itself waits for the test to answer it.
- */
-@OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(AndroidJUnit4::class)
-@Config(sdk = [36], application = Application::class)
+/** All transitions run in the production SearchOwner; no container, disk, socket or service exists here. */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class SearchRequestIdentityTest {
-    private val context = ApplicationProvider.getApplicationContext<Application>()
-    private val main = StandardTestDispatcher()
-    private val lock = Any()
-    private val calls = mutableListOf<SearchCall>()
+    private val state = SearchStateFixture()
+    private val main get() = state.main
+    private val calls get() = state.answers.calls
+    @get:Rule val fixture = TestRule { base, _ -> object : Statement() {
+        override fun evaluate() = state.run { base.evaluate() }
+    } }
+    private fun connection(endpoint: String) = SearchInput("home", endpoint)
+    private fun viewModel(connections: MutableStateFlow<SearchInput?>) = state.owner(connections)
+    private fun hit(id: String) = searchHit(id)
+    private fun queries() = calls.map { it.query }
+    private fun callCount() = calls.size
+    private fun advance(millis: Long) { main.scheduler.advanceTimeBy(millis); main.scheduler.runCurrent() }
+    private companion object { const val LOCAL_OLD = "https://old.example.test" }
 
-    private lateinit var container: AppContainer
-    private lateinit var serverA: MockWebServer
-    private lateinit var serverB: MockWebServer
-
-    private object PlainCipher : TokenCipher {
-        override fun encrypt(plain: String) = plain
-        override fun decrypt(sealed: String) = sealed
-    }
-
-    /** One search the ViewModel made; the test answers it, early or late, as a server might. */
-    private class SearchCall(val connection: Connection, val query: String, val continuation: Continuation<List<SearchHit>>)
-
-    @Before
-    fun setUp() {
-        Dispatchers.setMain(main)
-        serverA = server()
-        serverB = server()
-        // The container schedules the activity check through WorkManager at start.
-        runCatching { WorkManager.initialize(context, Configuration.Builder().build()) }
-        container = AppContainer(context, PlainCipher)
-        runBlocking {
-            val saved = profile(serverA)
-            container.servers.save(saved)
-            // The DataStore keeps the previous test's server, so "some connection" is not this one.
-            awaitConnection { it?.session?.profile == saved }
-        }
-    }
-
-    @After
-    fun tearDown() {
-        container.scope.cancel()
-        serverA.close()
-        serverB.close()
-        Dispatchers.resetMain()
-    }
+    // --- the eleven logical cases ---
 
     @Test
     fun `a new query clears the old hits at once and shows its own loading`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
         assertThat(queries()).containsExactly("alpha")
         calls[0].succeed(listOf(hit("s1")))
 
-        vm.setQuery("beta")
+        viewModel.setQuery("beta")
 
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isTrue()
-        assertThat(vm.search.value.error).isNull()
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.error).isNull()
         advance(299)
         assertThat(queries()).containsExactly("alpha")
         advance(1)
         assertThat(queries()).containsExactly("alpha", "beta")
         calls[1].succeed(listOf(hit("s2")))
 
-        assertThat(vm.search.value.hits).containsExactly(hit("s2"))
-        assertThat(vm.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.hits).containsExactly(hit("s2"))
+        assertThat(viewModel.search.value.searching).isFalse()
     }
 
     @Test
     fun `a query reaches the server once, then appears as its own results`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
+        assertThat(callCount()).isEqualTo(1)
+        assertThat(queries()).containsExactly("alpha")
+        assertThat(calls[0].connection).isSameInstanceAs(viewModel.search.value.request?.connection)
         calls[0].succeed(emptyList())
 
-        assertThat(vm.search.value.query).isEqualTo("alpha")
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isFalse()
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.request).isNotNull()
+        assertThat(viewModel.search.value.query).isEqualTo("alpha")
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.request).isNotNull()
     }
 
     @Test
     fun `a failure belongs to the query shown, and a later success clears it`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
         calls[0].fail(IOException("boom"))
 
-        assertThat(vm.search.value.error).isEqualTo("boom")
-        assertThat(vm.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.error).isEqualTo("boom")
+        assertThat(viewModel.search.value.searching).isFalse()
 
-        vm.setQuery("beta")
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.searching).isTrue()
+        viewModel.setQuery("beta")
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.searching).isTrue()
         advance(300)
         calls[1].succeed(listOf(hit("s2")))
 
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.hits).containsExactly(hit("s2"))
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.hits).containsExactly(hit("s2"))
     }
 
     @Test
     fun `an old failure cannot replace the loading or the results of the new query`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
-        vm.setQuery("beta")
+        viewModel.setQuery("beta")
         advance(300)
         assertThat(queries()).containsExactly("alpha", "beta")
 
         calls[0].fail(IOException("alpha failed"))
         runCurrent()
 
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.searching).isTrue()
         calls[1].succeed(listOf(hit("s2")))
 
-        assertThat(vm.search.value.hits).containsExactly(hit("s2"))
-        assertThat(vm.search.value.error).isNull()
+        assertThat(viewModel.search.value.hits).containsExactly(hit("s2"))
+        assertThat(viewModel.search.value.error).isNull()
     }
 
     @Test
     fun `an old cancellation cannot hide the loading or mark the new query failed`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
-        vm.setQuery("beta")
+        viewModel.setQuery("beta")
         advance(300)
 
         calls[0].cancel()
         runCurrent()
 
-        assertThat(vm.search.value.searching).isTrue()
-        assertThat(vm.search.value.error).isNull()
+        assertThat(viewModel.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.error).isNull()
         calls[1].succeed(listOf(hit("s2")))
 
-        assertThat(vm.search.value.hits).containsExactly(hit("s2"))
+        assertThat(viewModel.search.value.hits).containsExactly(hit("s2"))
     }
 
     @Test
     fun `alpha to beta to alpha rejects the first alpha even when the text is back`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
-        vm.setQuery("beta")
+        viewModel.setQuery("beta")
         runCurrent()
-        vm.setQuery("alpha")
+        viewModel.setQuery("alpha")
         advance(300)
         assertThat(queries()).containsExactly("alpha", "alpha")
 
         calls[0].succeed(listOf(hit("first-alpha")))
         runCurrent()
 
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isTrue()
         calls[1].succeed(listOf(hit("second-alpha")))
 
-        assertThat(vm.search.value.hits).containsExactly(hit("second-alpha"))
+        assertThat(viewModel.search.value.hits).containsExactly(hit("second-alpha"))
     }
 
     @Test
     fun `clearing the query drops the hits at once without a request`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
         calls[0].succeed(listOf(hit("s1")))
         val before = callCount()
 
-        vm.setQuery("")
+        viewModel.setQuery("")
 
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isFalse()
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.request).isNull()
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.request).isNull()
         advance(300)
         assertThat(callCount()).isEqualTo(before)
     }
 
     @Test
     fun `a whitespace query clears like an empty one`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val viewModel = viewModel(MutableStateFlow(connection(LOCAL_OLD)))
+        viewModel.setQuery("alpha")
         advance(300)
         calls[0].succeed(listOf(hit("s1")))
         val before = callCount()
 
-        vm.setQuery("   ")
+        viewModel.setQuery("   ")
 
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isFalse()
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.request).isNull()
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.request).isNull()
         advance(300)
         assertThat(callCount()).isEqualTo(before)
     }
 
+    /**
+     * A completed answer of the old connection is replaced, not merged: the same query is asked again
+     * on the actual new connection after the same debounce, and the old row is never actionable.
+     */
     @Test
     fun `the same query runs again after the connection is replaced`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val old = connection("http://127.0.0.1:9")
+        val new = connection("http://127.0.0.1:9")
+        assertThat(new).isNotSameInstanceAs(old)
+        assertThat(new.profile).isEqualTo(old.profile)
+        assertThat(new.endpoint).isEqualTo(old.endpoint)
+        val connections = MutableStateFlow<SearchInput?>(old)
+        val viewModel = viewModel(connections)
+
+        viewModel.setQuery("alpha")
         advance(300)
+        assertThat(callCount()).isEqualTo(1)
+        assertThat(calls[0].connection).isSameInstanceAs(old)
+        assertThat(calls[0].query).isEqualTo("alpha")
         calls[0].succeed(listOf(hit("old-server")))
 
-        val replaced = replaceConnectionSameProfile()
+        val oldIdentity = viewModel.search.value.request
+        assertThat(oldIdentity).isNotNull()
+        assertThat(oldIdentity!!.connection).isSameInstanceAs(old)
+        assertThat(viewModel.search.value.hits).containsExactly(hit("old-server"))
 
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isTrue()
-        advance(300)
-        assertThat(queries()).containsExactly("alpha", "alpha")
-        assertThat(calls[1].connection).isSameInstanceAs(replaced)
+        // The replacement is emitted now; the owner's collector task is queued, not applied.
+        connections.value = new
+        assertThat(viewModel.search.value.request).isSameInstanceAs(oldIdentity)
+
+        assertThat(viewModel.admits(hit("old-server"), oldIdentity)).isFalse()
+
+        val before = main.scheduler.currentTime
+        main.scheduler.runCurrent() // drain the controlled owner event boundary
+
+        assertThat(main.scheduler.currentTime).isEqualTo(before)
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.query).isEqualTo("alpha")
+        val replacement = viewModel.search.value.request
+        assertThat(replacement).isNotNull()
+        assertThat(replacement!!.connection).isSameInstanceAs(new)
+        assertThat(replacement.generation).isNotEqualTo(oldIdentity.generation)
+        assertThat(callCount()).isEqualTo(1)
+
+        advance(299)
+        assertThat(callCount()).isEqualTo(1)
+        advance(1)
+        assertThat(callCount()).isEqualTo(2)
+        assertThat(calls[1].connection).isSameInstanceAs(new)
+        assertThat(calls[1].query).isEqualTo("alpha")
+
         calls[1].succeed(listOf(hit("new-server")))
+        assertThat(viewModel.search.value.hits).containsExactly(hit("new-server"))
+        assertThat(viewModel.search.value.request).isSameInstanceAs(replacement)
+        assertThat(viewModel.search.value.searching).isFalse()
+    }
 
-        assertThat(vm.search.value.hits).containsExactly(hit("new-server"))
+    /**
+     * An answer that comes back after the old request was replaced does not rewrite the state of the
+     * request now shown, even though the query text is the same.
+     */
+    @Test
+    fun `a late answer of the previous connection does not land on the replacement`() = runTest(main.scheduler) {
+        val old = connection("http://127.0.0.1:9")
+        val new = connection("http://127.0.0.1:10")
+        val connections = MutableStateFlow<SearchInput?>(old)
+        val viewModel = viewModel(connections)
+
+        viewModel.setQuery("alpha")
+        advance(300)
+        assertThat(callCount()).isEqualTo(1)
+
+        connections.value = new
+        main.scheduler.runCurrent()
+
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.request?.connection).isSameInstanceAs(new)
+
+        // The old answer lands after the owner moved on: it must be dropped.
+        calls[0].succeed(listOf(hit("old-server")))
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.request?.connection).isSameInstanceAs(new)
+
+        advance(300)
+        assertThat(callCount()).isEqualTo(2)
+        assertThat(calls[1].connection).isSameInstanceAs(new)
+        assertThat(calls[1].query).isEqualTo("alpha")
+        calls[1].succeed(listOf(hit("new-server")))
+        assertThat(viewModel.search.value.hits).containsExactly(hit("new-server"))
     }
 
     @Test
     fun `another server cannot keep the hits of the previous one even with the same query and chat id`() =
         runTest(main.scheduler) {
-            val vm = viewModel()
-            vm.setQuery("alpha")
+            val old = SearchInput("server-a", "https://a.example.test")
+            val new = SearchInput("server-b", "https://b.example.test")
+            assertThat(new.profile).isNotEqualTo(old.profile)
+            assertThat(new.endpoint).isNotEqualTo(old.endpoint)
+            val connections = MutableStateFlow<SearchInput?>(old)
+            val viewModel = viewModel(connections)
+            viewModel.setQuery("alpha")
             advance(300)
             calls[0].succeed(listOf(hit("s1")))
-            val oldIdentity = vm.search.value.request
+            val oldIdentity = viewModel.search.value.request
             assertThat(oldIdentity).isNotNull()
-
-            val previous = container.connection.value
-            container.servers.save(profile(serverB, trailingSlash = false))
-            val onB = awaitConnection { it !== previous && it != null }!!
+            assertThat(oldIdentity!!.connection).isSameInstanceAs(old)
 
             // The collector of the ViewModel has not seen the new connection yet: the action boundary
             // must still know the result was rendered for the old server.
-            vm.openSearchHit(hit("s1"), oldIdentity)
+            connections.value = new
+            assertThat(viewModel.admits(hit("s1"), oldIdentity)).isFalse()
 
-            assertThat(vm.chat.value?.state?.value?.storedId).isNull()
+            main.scheduler.runCurrent()
 
-            main.scheduler.advanceUntilIdle()
-
-            assertThat(vm.search.value.request?.connection).isSameInstanceAs(onB)
-            assertThat(vm.search.value.hits).isEmpty()
-            assertThat(vm.search.value.searching).isTrue()
-            assertThat(calls[1].connection).isSameInstanceAs(onB)
+            assertThat(viewModel.search.value.request?.connection).isSameInstanceAs(new)
+            assertThat(viewModel.search.value.hits).isEmpty()
+            assertThat(viewModel.search.value.searching).isTrue()
+            assertThat(callCount()).isEqualTo(1)
+            advance(300)
+            assertThat(callCount()).isEqualTo(2)
+            assertThat(calls[1].connection).isSameInstanceAs(new)
             calls[1].succeed(listOf(hit("s1")))
 
-            vm.openSearchHit(hit("s1"), vm.search.value.request)
-
-            assertThat(vm.chat.value?.state?.value?.storedId).isEqualTo("s1")
+            assertThat(viewModel.admits(hit("s1"), viewModel.search.value.request)).isTrue()
         }
 
     @Test
     fun `a connection lost and another one found reruns the query and clears the old hits`() = runTest(main.scheduler) {
-        val vm = viewModel()
-        vm.setQuery("alpha")
+        val old = connection("http://127.0.0.1:9")
+        val new = connection("http://127.0.0.1:10")
+        val connections = MutableStateFlow<SearchInput?>(old)
+        val viewModel = viewModel(connections)
+        viewModel.setQuery("alpha")
         advance(300)
         calls[0].succeed(listOf(hit("s1")))
-
-        val previous = container.connection.value
-        container.servers.remove(PROFILE_ID)
-        withContext(Dispatchers.Default) { withTimeout(10_000) { container.connection.first { it == null } } }
-        // The ViewModel applies the missing connection on the test dispatcher, after the flow saw it.
-        awaitSearchCleared(vm)
-
-        assertThat(vm.search.value.hits).isEmpty()
-        assertThat(vm.search.value.searching).isFalse()
-        assertThat(vm.search.value.error).isNull()
-        assertThat(vm.search.value.request).isNull()
-
         val before = main.scheduler.currentTime
+
+        connections.value = null
+        main.scheduler.runCurrent()
+
+        assertThat(viewModel.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isFalse()
+        assertThat(viewModel.search.value.error).isNull()
+        assertThat(viewModel.search.value.request).isNull()
         assertThat(callCount()).isEqualTo(1)
-        val save = async(Dispatchers.Default) { container.servers.save(profile(serverB)) }
-        val onB = awaitSearchRequest(vm, previous, save)
-        save.await()
-        runCurrent()
+        assertThat(main.scheduler.currentTime).isEqualTo(before)
+
+        connections.value = new
+        main.scheduler.runCurrent()
 
         assertThat(main.scheduler.currentTime).isEqualTo(before)
         assertThat(callCount()).isEqualTo(1)
-        assertThat(vm.search.value.searching).isTrue()
-        assertThat(vm.search.value.request?.connection).isSameInstanceAs(onB)
-        assertThat(vm.search.value.query).isEqualTo("alpha")
-        assertThat(vm.search.value.hits).isEmpty()
+        assertThat(viewModel.search.value.searching).isTrue()
+        assertThat(viewModel.search.value.request?.connection).isSameInstanceAs(new)
+        assertThat(viewModel.search.value.query).isEqualTo("alpha")
+        assertThat(viewModel.search.value.hits).isEmpty()
         advance(299)
         assertThat(callCount()).isEqualTo(1)
         advance(1)
         assertThat(callCount()).isEqualTo(2)
 
-        assertThat(calls[1].connection).isSameInstanceAs(onB)
+        assertThat(calls[1].connection).isSameInstanceAs(new)
         assertThat(calls[1].query).isEqualTo("alpha")
     }
 
-    private fun viewModel() = MainViewModel(container, ::search)
-
-    private suspend fun search(connection: Connection, query: String): List<SearchHit> =
-        suspendCoroutine { continuation ->
-            synchronized(lock) { calls += SearchCall(connection, query, continuation) }
-        }
-
-    private fun SearchCall.succeed(hits: List<SearchHit>) {
-        continuation.resume(hits)
-        main.scheduler.runCurrent()
-    }
-
-    private fun SearchCall.fail(error: Exception) {
-        continuation.resumeWithException(error)
-        main.scheduler.runCurrent()
-    }
-
-    private fun SearchCall.cancel() {
-        continuation.resumeWithException(CancellationException("late cancellation"))
-        main.scheduler.runCurrent()
-    }
-
-    private fun queries(): List<String> = synchronized(lock) { calls.map { it.query } }
-
-    private fun callCount(): Int = synchronized(lock) { calls.size }
-
-    private fun advance(millis: Long) {
-        main.scheduler.advanceTimeBy(millis)
-        main.scheduler.runCurrent()
-    }
-
-    /** The same server and profile id, rebuilt as a new [Connection]: the address gains a slash. */
-    private suspend fun replaceConnectionSameProfile(): Connection {
-        val previous = container.connection.value
-        container.servers.save(profile(serverA, trailingSlash = false))
-        return awaitConnection { it !== previous && it != null }!!.also { main.scheduler.runCurrent() }
-    }
-
-    private suspend fun awaitConnection(predicate: (Connection?) -> Boolean): Connection? =
-        withContext(Dispatchers.Default) {
-            withTimeout(10_000) { container.connection.filterNotNull().first(predicate) }
-        }
-
-    /**
-     * Waits until the ViewModel has applied the missing connection to the search, without advancing
-     * virtual time. Its collector runs on the test dispatcher, which can receive the task just after
-     * the flow reports the change, so yielding is what lets that task run at the current time.
-     */
-    private suspend fun awaitSearchCleared(vm: MainViewModel) {
-        val deadline = System.nanoTime() + 10_000_000_000L
-        while (vm.search.value.request != null || vm.search.value.hits.isNotEmpty()) {
-            check(System.nanoTime() < deadline) { "the missing connection did not clear the search" }
-            yield()
-        }
-    }
-
-    /**
-     * Waits until the real save has completed and the ViewModel has applied the replacement
-     * connection, without advancing virtual time. The test body stays runnable at the current time
-     * while the save runs on another dispatcher and the collector delivers the connection, so
-     * runTest cannot jump ahead to the search debounce.
-     */
-    private suspend fun awaitSearchRequest(vm: MainViewModel, previous: Connection?, save: Deferred<Unit>): Connection {
-        val deadline = System.nanoTime() + 10_000_000_000L
-        while (true) {
-            val connection = container.connection.value
-            if (save.isCompleted && connection != null && connection !== previous &&
-                vm.search.value.request?.connection === connection
-            ) {
-                return connection
-            }
-            check(System.nanoTime() < deadline) { "the replacement connection was not applied to the search" }
-            yield()
-        }
-    }
-
-    private fun profile(server: MockWebServer, trailingSlash: Boolean = true): ServerProfile {
-        val url = server.url("/").toString()
-        return ServerProfile(PROFILE_ID, "Home", if (trailingSlash) url else url.trimEnd('/'))
-    }
-
-    private fun server(): MockWebServer = MockWebServer().apply {
-        dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.url.encodedPath == "/api/status" -> json("""{"auth_required":true}""")
-                request.url.encodedPath.endsWith("/messages") -> json("""{"messages":[]}""")
-                else -> json("{}")
-            }
-        }
-        start()
-    }
-
-    private fun json(body: String): MockResponse =
-        MockResponse.Builder().code(200).addHeader("Content-Type", "application/json").body(body).build()
-
-    private fun hit(id: String) = SearchHit(
-        ChatSummary(
-            id = id, title = "Chat $id", preview = "", source = "telegram", model = null,
-            startedAt = 1.0, lastActive = 2.0, messageCount = 1,
-            pinned = false, archived = false, active = false,
-        ),
-        "snippet of $id",
-        null,
-    )
-
-    private companion object {
-        const val PROFILE_ID = "home"
-    }
 }
