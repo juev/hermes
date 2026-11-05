@@ -8,7 +8,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -42,9 +41,9 @@ class QuestionChatTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        // Cache writes run on this scope; one still in its DAO call would outlive a cancelled job and
+        // hit the database after it closed. The database is closed only once those jobs are over.
+        scope.closeWithOwnedJobs(db) { server.close() }
     }
 
     /** The questions of this connection, as the app keeps them for every chat it opens on it. */

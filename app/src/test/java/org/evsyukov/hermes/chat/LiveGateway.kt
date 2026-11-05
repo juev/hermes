@@ -33,6 +33,8 @@ import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
 import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -115,6 +117,13 @@ internal class LiveGateway : GatewayChannel {
     /** Runs inside `session.resume` after its answer is taken and before it is sent. */
     @Volatile
     var afterResume: (suspend () -> Unit)? = null
+
+    /**
+     * Held while `session.active_list` is answered: a test keeps the initial load before its join,
+     * so a message can be sent before the join is asked. Null answers at once.
+     */
+    @Volatile
+    var activeListGate: CountDownLatch? = null
 
     /** Returns once the chat has taken every event sent before: an event of another session follows them. */
     suspend fun deliver() {
@@ -273,6 +282,19 @@ internal class LiveGateway : GatewayChannel {
         event("message.complete", buildJsonObject { put("text", text); put("status", "complete") })
     }
 
+    /**
+     * The turn ends on the server while no chat is connected: its outcome is not sent to anyone.
+     * The server's state is idle as a fresh join reports it.
+     */
+    fun finishWithoutEvent() {
+        synchronized(lock) {
+            running = false
+            inflight.clear()
+            persisted = 0
+            turnStartedAt = null
+        }
+    }
+
     /** The turn fails: the agent reports the error and the turn is over. */
     suspend fun fail(message: String) {
         synchronized(lock) {
@@ -343,7 +365,8 @@ internal class LiveGateway : GatewayChannel {
                     buildJsonObject {
                         put("session_id", "live1")
                         put("stored_session_id", "s1")
-                        put("running", running)
+                        // The gateway reports the flag as 0 or 1, not as a boolean (docs/fixtures/socket/resume.json).
+                        put("running", if (running) 1 else 0)
                         put("info", buildJsonObject { put("model", "live-model") })
                         if (running) put("inflight", buildJsonObject { put("assistant", inflight.toString()) })
                         turnStartedAt?.let { put("turn_started_at", it) }
@@ -358,7 +381,10 @@ internal class LiveGateway : GatewayChannel {
                 createdOn += _transport.value
                 buildJsonObject { put("session_id", "live1") }
             }
-            "session.active_list" -> HermesJson.parseToJsonElement(if (hosted) """{"sessions":[{"id":"live1","session_key":"s1"}]}""" else """{"sessions":[]}""")
+            "session.active_list" -> {
+                activeListGate?.let { runCatching { it.await(30, TimeUnit.SECONDS) } }
+                HermesJson.parseToJsonElement(if (hosted) """{"sessions":[{"id":"live1","session_key":"s1"}]}""" else """{"sessions":[]}""")
+            }
             else -> JsonObject(emptyMap())
         }
     }
@@ -387,6 +413,13 @@ internal class LiveServer(private val gateway: LiveGateway) {
     @Volatile
     var historyDelayMillis = 0L
 
+    /**
+     * Held while a history answer is produced: a test opens the chat with it in place, so the initial
+     * load's adoption is applied only when the test releases it. Null answers at once.
+     */
+    @Volatile
+    var historyGate: CountDownLatch? = null
+
     init {
         http.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
@@ -395,6 +428,7 @@ internal class LiveServer(private val gateway: LiveGateway) {
                 )
                 "/api/sessions/s1/messages" -> {
                     if (historyDelayMillis > 0) Thread.sleep(historyDelayMillis)
+                    historyGate?.let { runCatching { it.await(30, TimeUnit.SECONDS) } }
                     json(gateway.storedHistory())
                 }
                 else -> MockResponse.Builder().code(404).build()

@@ -25,6 +25,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
@@ -275,6 +276,15 @@ class ChatController(
      */
     @Volatile
     private var awaitingStart = false
+
+    /**
+     * The messages the user has sent that have no outcome yet, each with the point at which it last
+     * moved. A join answer is as old as the point at which it was asked: a send that entered, went to
+     * the server or started after that point is newer than the answer, and an idle answer cannot say
+     * it ended. A send still waiting for the server when the answer was asked is newer too. Intents
+     * that ended are dropped, so an old failure cannot poison a fresh idle answer.
+     */
+    private val sends = SendActivityTracker()
 
     /**
      * The questions and withdrawals that came over the connection the socket is on while the chat has
@@ -549,16 +559,18 @@ class ChatController(
         // The connection the answer comes over: a call made before the socket is up opens it, so the
         // number is read again after the call when there was none.
         val generationAtStart = socket.connections.value
+        // The point at which this answer is asked: a send that enters or moves after it is newer.
+        val activity = sends.mark()
         val joinAnswer = if (stored == null) {
             val asked = heardLive.get()
             val kept = draft
             draft = null
             // A session made in advance over a connection since lost is not this connection's: a new one is made.
             if (kept != null && draftOn != 0L && draftOn == socket.transport.value) {
-                JoinAnswer(kept, asked, draftOn)
+                JoinAnswer(kept, asked, draftOn, activity)
             } else {
                 kept?.string("session_id")?.let { old -> runCatching { socket.call("session.close", buildJsonObject { put("session_id", old) }) } }
-                onTransport { create() }.let { (answer, on) -> JoinAnswer(answer, asked, on) }
+                onTransport { create() }.let { (answer, on) -> JoinAnswer(answer, asked, on, activity) }
             }
         } else {
             resume(stored)
@@ -590,6 +602,9 @@ class ChatController(
      */
     private suspend fun resume(stored: String): JoinAnswer {
         val asked = heardLive.get()
+        // A send from here on is newer than this answer, whatever the server answers. One that
+        // entered before this point but had not gone to the server yet is newer too.
+        val activity = sends.mark()
         val (answer, transport) = onTransport {
             socket.call(
                 "session.resume",
@@ -602,7 +617,7 @@ class ChatController(
                 timeoutMillis = 120_000,
             ) as JsonObject
         }
-        return JoinAnswer(answer, asked, transport)
+        return JoinAnswer(answer, asked, transport, activity)
     }
 
     /**
@@ -701,8 +716,17 @@ class ChatController(
         joinedOn.takeIf { it != 0L && liveId != null && socket.transport.value == it } ?: 0L
     }
 
-    /** The answer of a join, the connection it came over and the count of [heardLive] when it was asked. */
-    private class JoinAnswer(val answer: JsonObject, val asked: Long, val transport: Long)
+    /**
+     * The answer of a join, the connection it came over, the count of [heardLive] when it was asked,
+     * and the point of the local sends then: a send that entered or moved after it is newer than
+     * this answer.
+     */
+    private class JoinAnswer(
+        val answer: JsonObject,
+        val asked: Long,
+        val transport: Long,
+        val activity: Long,
+    )
 
     /**
      * Applies the answer of a join: the live id, the turn that runs, its card and the questions the
@@ -731,9 +755,20 @@ class ChatController(
         if (!stillCurrent || (!current && socket.connections.value != generation)) rejoinPending.set(true)
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
-        val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
+        val serverRunning = result.runningFlag() ?: info?.runningFlag() ?: false
+        // A join may have been asked before the user sent a message, or after the message entered
+        // but before it went to the server: its idle answer is older than that send and cannot say
+        // the send ended. A join asked after the send went out is newer, so its answer stands,
+        // including a turn that finished while the chat was away.
+        val sentAfterAsk = sends.protects(joinAnswer.activity)
+        val running = starting || serverRunning || (!starting && sentAfterAsk)
+        if (!starting && !serverRunning && !sentAfterAsk) {
+            // The server is idle and this answer is newer than every local send: any turn the chat
+            // knew of has ended, including one whose outcome was lost while disconnected.
+            sends.discard(joinAnswer.activity)
+        }
         // A turn under way when the chat opens goes on in its answer, with what streamed while the chat was away.
-        val resumed = running && !starting
+        val resumed = serverRunning && !starting
         val streamed = (result["inflight"] as? JsonObject)?.string("assistant").orEmpty()
         edit {
             it.copy(
@@ -775,6 +810,7 @@ class ChatController(
 
     fun send(text: String, attachments: List<LocalAttachment>) {
         if (text.isBlank() && attachments.isEmpty()) return
+        val sendId = sends.begin()
         val key = "local${keys.incrementAndGet()}"
         val shown = attachments.map { Attachment(it.name, it.name, it.image) }
         edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
@@ -803,6 +839,7 @@ class ChatController(
                         append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
                         if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                     }
+                    sends.submitted(sendId)
                     submitted = true
                     socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
                     markDelivery(key, Delivery.SENT)
@@ -820,9 +857,14 @@ class ChatController(
                 Log.w(TAG, "Send failed", e)
                 val delivery = deliveryFor(e, submitted)
                 val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_send_failed)
-                failDelivery(key, delivery, error)
+                failDelivery(sendId, key, delivery, error)
             }
-        }.invokeOnCompletion { cause -> if (cause != null) hold.release() }
+        }.invokeOnCompletion { cause ->
+            if (cause != null) {
+                hold.release()
+                sends.finish(sendId)
+            }
+        }
     }
 
     /**
@@ -837,12 +879,15 @@ class ChatController(
     }
 
     /** The submission did not go through: the message keeps its place with the outcome, in one update. */
-    private fun failDelivery(key: String, delivery: Delivery, error: String) = edit { state ->
-        state.copy(
-            items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
-            running = false,
-            error = error,
-        )
+    private fun failDelivery(sendId: Long, key: String, delivery: Delivery, error: String) {
+        sends.finish(sendId)
+        edit { state ->
+            state.copy(
+                items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
+                running = false,
+                error = error,
+            )
+        }
     }
 
     /** Pictures go to the vision queue of the next turn; other files land in the workspace and are named in the prompt. */
@@ -882,6 +927,7 @@ class ChatController(
                 edit { it.copy(error = e.message) }
             }
             awaitingStart = false
+            sends.stopAll()
             edit { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
         }
     }
@@ -894,6 +940,7 @@ class ChatController(
 
     private fun rewriteLast(replacement: String?) {
         val lastUser = current.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
+        val sendId = sends.begin()
         val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
         val text = again.sent
         var hold: TurnHold? = null
@@ -908,6 +955,7 @@ class ChatController(
                 edit { it.copy(items = kept + again, running = true, error = null) }
                 awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
+                sends.submitted(sendId)
                 submitted = true
                 socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
                 markDelivery(again.key, Delivery.SENT)
@@ -918,9 +966,14 @@ class ChatController(
                 awaitingStart = false
                 val delivery = deliveryFor(e, submitted)
                 val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_failed)
-                failDelivery(again.key, delivery, error)
+                failDelivery(sendId, again.key, delivery, error)
             }
-        }.invokeOnCompletion { cause -> if (cause != null) hold?.release() }
+        }.invokeOnCompletion { cause ->
+            if (cause != null) {
+                hold?.release()
+                sends.finish(sendId)
+            }
+        }
     }
 
     fun rename(title: String) {
@@ -1313,7 +1366,17 @@ class ChatController(
             }
         }
         when (event.type) {
-            "message.start", "message.complete", "error" -> awaitingStart = false
+            "message.start" -> {
+                awaitingStart = false
+                sends.started()
+            }
+            // The turn this chat's send waited for is over: an idle answer taken before that send is
+            // no longer newer than the outcome, so it may speak for the chat again. An outcome of an
+            // older or adopted turn has no started local send and leaves the local sends alone.
+            "message.complete", "error" -> {
+                awaitingStart = false
+                sends.ended()
+            }
         }
         synchronized(lock) {
             // Hidden, the words of the answer go to their buffer: no transcript is rebuilt for them.
@@ -1455,3 +1518,17 @@ class ChatController(
 
 /** True when an RPC error says the live session is gone and a resume by the stored id will help. */
 fun RpcException.sessionGone(): Boolean = code == 4001
+
+/**
+ * The join answer reports `running` as 0 or 1, not as a boolean (docs/fixtures/socket/resume.json);
+ * the older boolean form is still taken. This is the wire of this one field: a general
+ * [JsonObject.bool] would read `0` as null and quietly call a running turn idle.
+ */
+private fun JsonObject.runningFlag(): Boolean? =
+    this["running"]?.let { (it as? JsonPrimitive)?.contentOrNull?.let { value ->
+        value.toBooleanStrictOrNull() ?: when (value) {
+            "0" -> false
+            "1" -> true
+            else -> null
+        }
+    } }
