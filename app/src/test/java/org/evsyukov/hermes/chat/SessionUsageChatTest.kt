@@ -5,6 +5,10 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.yield
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +47,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
@@ -106,7 +111,7 @@ class SessionUsageChatTest {
         val socket = GatewaySocket(session.http, scope, strings)
         val chat = ChatController(session, socket, scope, strings, "s1")
 
-        val opened = withTimeout(10_000) { chat.state.first { !it.loading && it.usage != null } }
+        val opened = awaitStoredHistory(chat)
         assertThat(opened.usage).isEqualTo(SessionUsage(input = 100, output = 10, costUsd = 0.01, included = false))
 
         chat.send("more", emptyList())
@@ -143,41 +148,111 @@ class SessionUsageChatTest {
     }
 
     @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `an automatic initial reread cannot consume the hold reserved for an explicit refresh`() = runBlocking<Unit> {
+        val main = StandardTestDispatcher()
+        val root = SupervisorJob(requireNotNull(scope.coroutineContext[Job]))
+        val owner = CoroutineScope(root + main)
+        val activeListAsked = CompletableDeferred<Unit>()
+        val activeListRelease = CompletableDeferred<Unit>()
+        val controlledGateway = OneTurnGateway(turns, scope = scope, activeListAsked = activeListAsked, activeListRelease = activeListRelease)
+        val entered = CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        val hold = HistoryReadHold(dispatcher(controlledGateway), entered, release)
+        server.dispatcher = hold
+        val session = ServerSession(ServerProfile("home", "Home", server.url("/").toString()), OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        val socket = GatewaySocket(session.http, scope, strings)
+        val chat = ChatController(session, socket, owner, strings, "s1")
+        val opening = owner.async { awaitStoredHistory(chat) }
+        suspend fun pumpUntil(predicate: () -> Boolean) {
+            withTimeout(10_000) { while (!predicate()) { main.scheduler.runCurrent(); yield() } }
+        }
+        preservingCleanup(body = {
+            // The real load waits on its active-list response while the real socket counts generation1.
+            pumpUntil { activeListAsked.isCompleted && socket.connections.value == 1 }
+            main.scheduler.runCurrent() // Apply that connection to the still-loading controller.
+            assertThat(chat.state.value.loading).isTrue()
+            activeListRelease.complete(Unit)
+            pumpUntil { hold.requests.get() >= 2 }
+            main.scheduler.runCurrent()
+            System.err.println("INITIAL_REREAD requests=${hold.requests.get()} held=${entered.isCompleted} " +
+                "loading=${chat.state.value.loading} usage=${chat.state.value.usage} " +
+                "connections=${socket.connections.value} joined=${chat.joinedTransport} openingDone=${opening.isCompleted}")
+            // With the old ordinal hold, the first false-loading publication was conflated with
+            // reread loading=true. Exercise that SAME initial helper's original 10-second deadline.
+            if (!entered.isCompleted) pumpUntil { opening.isCompleted }
+            main.scheduler.advanceTimeBy(10_000)
+            main.scheduler.runCurrent()
+            val initial = opening.await()
+            assertThat(initial.error).isNull()
+            assertThat(initial.usage).isEqualTo(SessionUsage(input = 100, output = 10, costUsd = 0.01, included = false))
+            assertThat(entered.isCompleted).isFalse()
+            val initialRequests = hold.requests.get()
+            hold.arm()
+            chat.reload()
+            pumpUntil { entered.isCompleted }
+            assertThat(hold.requests.get()).isEqualTo(initialRequests + 1)
+            assertThat(chat.state.value.loading).isTrue()
+            release.countDown()
+            val refreshed = owner.async { awaitStoredHistory(chat) }
+            pumpUntil { refreshed.isCompleted }
+            assertThat(refreshed.await().error).isNull()
+        }, cleanup = {
+            activeListRelease.complete(Unit)
+            release.countDown()
+            preservingCleanup(body = {
+                // Positive release uses the very same initial helper, not a copied predicate.
+                val released = owner.async { awaitStoredHistory(chat) }
+                pumpUntil { released.isCompleted }
+                val settled = released.await()
+                assertThat(settled.error).isNull()
+                assertThat(settled.usage).isEqualTo(SessionUsage(input = 100, output = 10, costUsd = 0.01, included = false))
+                System.err.println("INITIAL_REREAD_RELEASED loading=${settled.loading} error=${settled.error != null}")
+            }, cleanup = {
+                preservingCleanup(body = { chat.close() }, cleanup = {
+                    withContext(NonCancellable) {
+                        root.cancel()
+                        withTimeout(10_000) { while (!root.isCompleted) { main.scheduler.runCurrent(); yield() } }
+                    }
+                })
+            })
+        })
+    }
+
+    @Test
     fun `a history read begun before a turn cannot erase its completed answer`() = runBlocking<Unit> {
         val historyStarted = CompletableDeferred<Unit>()
         val releaseHistory = java.util.concurrent.CountDownLatch(1)
         val historyRead = CompletableDeferred<Unit>()
         val base = dispatcher(gateway)
-        val requests = AtomicInteger()
-        server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse {
-                val response = base.dispatch(request)
-                if (request.url.encodedPath.endsWith("/messages") && requests.incrementAndGet() == 2) {
-                    historyStarted.complete(Unit)
-                    check(releaseHistory.await(10, java.util.concurrent.TimeUnit.SECONDS))
-                }
-                return response
-            }
-        }
+        val historyHold = HistoryReadHold(base, historyStarted, releaseHistory)
+        server.dispatcher = historyHold
         val session = ServerSession(ServerProfile("home", "Home", server.url("/").toString()), OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
         lateinit var chat: ChatController
-        chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, "s1", onRead = { _, _ ->
-            if (historyStarted.isCompleted && !chat.state.value.loading) historyRead.complete(Unit)
-        })
-        try {
-            withTimeout(10_000) { chat.state.first { !it.loading && it.usage != null } }
+        var ownedChat: ChatController? = null
+        preservingCleanup(body = {
+            chat = openHistoryChat(session) {
+                if (historyStarted.isCompleted && !chat.state.value.loading) historyRead.complete(Unit)
+            }
+            ownedChat = chat
+            val initialReads = historyHold.requests.get()
+            historyHold.arm()
             chat.reload()
             withTimeout(10_000) { historyStarted.await() }
+            assertThat(historyHold.requests.get()).isEqualTo(initialReads + 1)
+            assertThat(chat.state.value.loading).isTrue()
+            System.err.println("ARMED_HISTORY initialReady=true initialReads=$initialReads heldRead=${historyHold.requests.get()} turns=${turns.get()}")
             chat.send("more", emptyList())
             val completed = awaitFinishedTurn(chat)
             assertThat((completed.items.last() as ChatItem.Assistant).text).isEqualTo("done")
             releaseHistory.countDown()
             withTimeout(10_000) { historyRead.await() }
             assertThat((chat.state.value.items.lastOrNull() as? ChatItem.Assistant)?.text).isEqualTo("done")
-        } finally {
+            System.err.println("ARMED_HISTORY_COMPLETED retainedDone=true")
+        }, cleanup = {
             releaseHistory.countDown()
-            chat.close()
-        }
+            ownedChat?.close()
+        })
     }
 
     @Test
@@ -196,7 +271,7 @@ class SessionUsageChatTest {
         val session = ServerSession(ServerProfile("home", "Home", server.url("/").toString()), OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
         val chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, "s1", onRead = { _, _ -> if (refreshedRequest.get()) read.complete(Unit) })
         try {
-            withTimeout(10_000) { chat.state.first { !it.loading && it.usage != null } }
+            awaitStoredHistory(chat)
             changed.set(true)
             chat.reload()
             withTimeout(10_000) { read.await() }
@@ -214,40 +289,39 @@ class SessionUsageChatTest {
         val historyStarted = CompletableDeferred<Unit>()
         val releaseHistory = java.util.concurrent.CountDownLatch(1)
         val historyRead = CompletableDeferred<Unit>()
-        val requests = AtomicInteger()
-        server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse {
-                val response = base.dispatch(request)
-                if (request.url.encodedPath.endsWith("/messages") && requests.incrementAndGet() == 2) {
-                    historyStarted.complete(Unit)
-                    check(releaseHistory.await(10, java.util.concurrent.TimeUnit.SECONDS))
-                }
-                return response
-            }
-        }
+        val historyHold = HistoryReadHold(base, historyStarted, releaseHistory)
+        server.dispatcher = historyHold
         val session = ServerSession(ServerProfile("home", "Home", server.url("/").toString()), OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
         lateinit var chat: ChatController
-        chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, "s1", onRead = { _, _ ->
-            if (historyStarted.isCompleted && !chat.state.value.loading) historyRead.complete(Unit)
-        })
-        try {
-            withTimeout(10_000) { chat.state.first { !it.loading && it.usage != null } }
+        var ownedChat: ChatController? = null
+        preservingCleanup(body = {
+            chat = openHistoryChat(session) {
+                if (historyStarted.isCompleted && !chat.state.value.loading) historyRead.complete(Unit)
+            }
+            ownedChat = chat
+            val initialReads = historyHold.requests.get()
+            historyHold.arm()
             chat.reload()
             withTimeout(10_000) { historyStarted.await() }
+            assertThat(historyHold.requests.get()).isEqualTo(initialReads + 1)
+            assertThat(chat.state.value.loading).isTrue()
+            System.err.println("ARMED_HISTORY initialReady=true initialReads=$initialReads heldRead=${historyHold.requests.get()} turns=${turns.get()}")
             chat.send("more", emptyList())
             withTimeout(10_000) { chat.state.first { (it.items.lastOrNull() as? ChatItem.Assistant)?.streaming == true } }
             releaseHistory.countDown()
             withTimeout(10_000) { historyRead.await() }
             assertThat((chat.state.value.items.lastOrNull() as? ChatItem.Assistant)?.streaming).isTrue()
+            System.err.println("ARMED_HISTORY_STREAMING retainedStreaming=true")
             completion.complete(Unit)
             val after = awaitFinishedTurn(chat)
             assertThat((after.items.last() as ChatItem.Assistant).text).isEqualTo("done")
-        } finally {
+        }, cleanup = {
             releaseHistory.countDown()
             completion.complete(Unit)
-            try { withContext(NonCancellable) { withTimeout(10_000) { requireNotNull(producer.coroutineContext[Job]).cancelAndJoin() } } }
-            finally { chat.close() }
-        }
+            preservingCleanup(body = {
+                withContext(NonCancellable) { withTimeout(10_000) { requireNotNull(producer.coroutineContext[Job]).cancelAndJoin() } }
+            }, cleanup = { ownedChat?.close() })
+        })
     }
 
     @Test
@@ -260,7 +334,7 @@ class SessionUsageChatTest {
         val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
         val chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, "s1")
         try {
-            val opened = withTimeout(10_000) { chat.state.first { !it.loading && it.usage != null } }
+            val opened = awaitStoredHistory(chat)
             assertThat(opened.usage).isEqualTo(SessionUsage(input = 100, output = 10, costUsd = 0.01, included = false))
 
             chat.send("more", emptyList())
@@ -301,6 +375,48 @@ class SessionUsageChatTest {
         }
     }
 
+    private suspend fun openHistoryChat(session: ServerSession, onRead: () -> Unit): ChatController {
+        var created: ChatController? = null
+        try {
+            return withTimeout(10_000) {
+                val socket = GatewaySocket(session.http, scope, strings)
+                socket.awaitReady()
+                socket.connections.first { it > 0 }
+                // Construct after the initial generation is counted. ChatController treats that
+                // generation as its starting connection, so it cannot schedule an initial rejoin
+                // underneath the history-read hold. This fixture reports no active session yet.
+                val chat = ChatController(session, socket, scope, strings, "s1", onRead = { _, _ -> onRead() })
+                created = chat
+                val opened = awaitStoredHistory(chat)
+                assertThat(opened.error).isNull()
+                assertThat(opened.usage).isEqualTo(SessionUsage(input = 100, output = 10, costUsd = 0.01, included = false))
+                chat
+            }
+        } catch (failure: Throwable) {
+            try { created?.close() } catch (cleanup: Throwable) {
+                if (failure !== cleanup) failure.addSuppressed(cleanup)
+            }
+            throw failure
+        }
+    }
+
+    private suspend fun awaitStoredHistory(chat: ChatController): ChatState = withTimeout(10_000) {
+        chat.state.first { !it.loading && it.usage != null }
+    }
+
+    /** Preserve a body failure if releasing/joining its real fixture also fails. */
+    private suspend fun <T> preservingCleanup(body: suspend () -> T, cleanup: suspend () -> Unit): T {
+        var primary: Throwable? = null
+        try { return body() } catch (failure: Throwable) { primary = failure; throw failure }
+        finally {
+            try { cleanup() } catch (failure: Throwable) {
+                val first = primary
+                if (first == null) throw failure
+                if (first !== failure) first.addSuppressed(failure)
+            }
+        }
+    }
+
     /**
      * The end of a turn: the stored totals, the running flag and the answer the controller finished
      * from `message.complete`. The totals alone can be published by a reload before the completion
@@ -330,6 +446,8 @@ private class OneTurnGateway(
     private val completion: CompletableDeferred<Unit>? = null,
     private val scope: CoroutineScope? = null,
     private val observations: UsageObservations = UsageObservations(),
+    private val activeListAsked: CompletableDeferred<Unit>? = null,
+    private val activeListRelease: CompletableDeferred<Unit>? = null,
 ) : WebSocketListener() {
     @Volatile
     var running = false
@@ -343,6 +461,12 @@ private class OneTurnGateway(
         val frame = HermesJson.parseToJsonElement(text).jsonObject
         val id = frame["id"]?.jsonPrimitive?.content ?: return
         when (frame["method"]?.jsonPrimitive?.content) {
+            "session.active_list" -> {
+                activeListAsked?.complete(Unit)
+                val release = activeListRelease
+                if (release == null) reply(webSocket, id, "{}")
+                else requireNotNull(scope).launch { release.await(); reply(webSocket, id, "{}") }
+            }
             "session.resume" -> {
                 observations.resume.incrementAndGet()
                 if (reply(webSocket, id, """{"session_id":"live1","stored_session_id":"s1","running":$running}""")) observations.resumeSent.incrementAndGet()
@@ -400,4 +524,27 @@ private class UsageObservations {
     fun snapshot(): String = "resume=${resume.get()}/${resumeSent.get()} submit=${submit.get()}/${submitSent.get()} " +
         "start=${start.get()}/${startSent.get()} complete=${complete.get()}/${completeSent.get()} " +
         "detailBefore=${detailBefore.get()} detailAfter=${detailAfter.get()} history=${history.get()}"
+}
+
+/** Captures and holds one response only after the test has established initial history and armed it. */
+private class HistoryReadHold(
+    private val base: Dispatcher,
+    private val entered: CompletableDeferred<Unit>,
+    private val release: java.util.concurrent.CountDownLatch,
+) : Dispatcher() {
+    val requests = AtomicInteger()
+    private val armed = AtomicBoolean()
+    fun arm() {
+        check(!entered.isCompleted && armed.compareAndSet(false, true))
+    }
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val response = base.dispatch(request)
+        if (request.url.encodedPath.endsWith("/messages")) {
+            requests.incrementAndGet()
+            if (!armed.compareAndSet(true, false)) return response
+            entered.complete(Unit)
+            check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        return response
+    }
 }
