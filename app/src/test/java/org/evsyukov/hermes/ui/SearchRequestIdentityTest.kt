@@ -81,8 +81,10 @@ class SearchRequestIdentityTest {
         runCatching { WorkManager.initialize(context, Configuration.Builder().build()) }
         container = AppContainer(context, PlainCipher)
         runBlocking {
-            container.servers.save(profile(serverA))
-            awaitConnection { it != null }
+            val saved = profile(serverA)
+            container.servers.save(saved)
+            // The DataStore keeps the previous test's server, so "some connection" is not this one.
+            awaitConnection { it?.session?.profile == saved }
         }
     }
 
@@ -308,7 +310,8 @@ class SearchRequestIdentityTest {
         val previous = container.connection.value
         container.servers.remove(PROFILE_ID)
         withContext(Dispatchers.Default) { withTimeout(10_000) { container.connection.first { it == null } } }
-        runCurrent()
+        // The ViewModel applies the missing connection on the test dispatcher, after the flow saw it.
+        awaitSearchCleared(vm)
 
         assertThat(vm.search.value.hits).isEmpty()
         assertThat(vm.search.value.searching).isFalse()
@@ -379,6 +382,19 @@ class SearchRequestIdentityTest {
         withContext(Dispatchers.Default) {
             withTimeout(10_000) { container.connection.filterNotNull().first(predicate) }
         }
+
+    /**
+     * Waits until the ViewModel has applied the missing connection to the search, without advancing
+     * virtual time. Its collector runs on the test dispatcher, which can receive the task just after
+     * the flow reports the change, so yielding is what lets that task run at the current time.
+     */
+    private suspend fun awaitSearchCleared(vm: MainViewModel) {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (vm.search.value.request != null || vm.search.value.hits.isNotEmpty()) {
+            check(System.nanoTime() < deadline) { "the missing connection did not clear the search" }
+            yield()
+        }
+    }
 
     /**
      * Waits until the real save has completed and the ViewModel has applied the replacement

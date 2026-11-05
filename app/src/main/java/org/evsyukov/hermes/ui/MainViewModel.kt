@@ -59,19 +59,28 @@ sealed interface Screen {
 
 /**
  * What the sidebar lists: conversations, the archive, or the runs of scheduled jobs. The service runs
- * of the dashboard (one-shot questions, tools, API and agent clients, webhooks) are in no list.
+ * of the dashboard (one-shot questions, tools, API and agent clients, webhooks) are in no list; a
+ * Kanban worker is a service run too. Unknown client names stay, so a new interactive client appears
+ * without an app change; a new service name needs to join [CHATS]'s exclusions.
  */
 enum class ListMode(val archived: Boolean, val sources: String?, val excludeSources: String?) {
-    CHATS(false, null, "cron,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
+    CHATS(false, null, "cron,kanban,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
     ARCHIVE(true, null, null),
     CRON(false, "cron", null),
     ;
 
-    /** Whether [chat] belongs to this list, as the server filters it. */
-    fun admits(chat: ChatSummary): Boolean =
-        chat.archived == archived &&
+    /**
+     * Whether [chat] belongs to this list, as the server filters it. A local row carries its creator
+     * in [ChatSummary.createdSource], so a service that ran through a local session is left out even
+     * though the live source is `local`; a row without that provenance is kept.
+     */
+    fun admits(chat: ChatSummary): Boolean {
+        val excluded = excludeSources?.split(',') ?: emptyList()
+        val serviceCreator = chat.createdSource != null && chat.createdSource in excluded
+        return chat.archived == archived &&
             (sources == null || chat.source in sources.split(',')) &&
-            (excludeSources == null || chat.source !in excludeSources.split(','))
+            (excludeSources == null || (chat.source !in excluded && !serviceCreator))
+    }
 
     /** The rows of a page that belong here: a server that ignores a filter puts no run among the chats. */
     fun keep(chats: List<ChatSummary>): List<ChatSummary> = chats.filter(::admits)

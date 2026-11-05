@@ -134,11 +134,21 @@ class ChatPinsTest {
 
     @Test
     fun `a list takes the chats its filters take`() {
-        assertThat(ListMode.CHATS.admits(chat("a", source = "android"))).isTrue()
-        assertThat(ListMode.CHATS.admits(chat("a", source = "telegram"))).isTrue()
-        // Cron runs have a screen of their own; the service runs are no list at all.
-        listOf("cron", "oneshot", "tool", "api_server", "acp", "hermes_flow", "vulcan_delegate", "webhook").forEach { source ->
+        // Interactive clients of any device or name stay; the list is not tied to this installation.
+        listOf("android", "telegram", "matrix", "desktop", "macos", "future-client").forEach { source ->
+            assertThat(ListMode.CHATS.admits(chat("a", source = source))).isTrue()
+        }
+        // Cron runs have a screen of their own; Kanban workers and the service runs are no list at all.
+        listOf("cron", "kanban", "oneshot", "tool", "api_server", "acp", "hermes_flow", "vulcan_delegate", "webhook").forEach { source ->
             assertThat(ListMode.CHATS.admits(chat("a", source = source))).isFalse()
+        }
+        // A local row keeps the surface that created it: an interactive one stays, a service one goes.
+        listOf("cli", "tui", "desktop").forEach { creator ->
+            assertThat(ListMode.CHATS.admits(chat("a", source = "local", createdSource = creator))).isTrue()
+        }
+        assertThat(ListMode.CHATS.admits(chat("a", source = "local"))).isTrue()
+        listOf("cron", "kanban", "oneshot", "tool", "api_server", "acp", "hermes_flow", "vulcan_delegate", "webhook").forEach { creator ->
+            assertThat(ListMode.CHATS.admits(chat("a", source = "local", createdSource = creator))).isFalse()
         }
         assertThat(ListMode.CHATS.admits(chat("a", archived = true))).isFalse()
         assertThat(ListMode.CRON.admits(chat("a", source = "cron"))).isTrue()
@@ -161,6 +171,43 @@ class ChatPinsTest {
     }
 
     @Test
+    fun `a pinned local chat joins the chats only when its creator is interactive`() = runBlocking<Unit> {
+        val far = mapOf(
+            "job" to chat("job", source = "local", createdSource = "oneshot"),
+            "talk" to chat("talk", source = "local", createdSource = "desktop"),
+            "new" to chat("new", source = "future-client"),
+        )
+        val fetched = mutableListOf<String>()
+
+        val chats = withLocalPins(emptyList(), setOf("job", "talk", "new"), ListMode.CHATS::admits) { id ->
+            fetched += id
+            far[id]
+        }
+
+        assertThat(chats.map { it.id }).containsExactly("talk", "new").inOrder()
+        assertThat(fetched).containsExactly("job", "talk", "new")
+    }
+
+    @Test
+    fun `a local chat the server lists is kept only by its creator`() = runBlocking<Unit> {
+        server.enqueue(
+            MockResponse.Builder().addHeader("Content-Type", "application/json").body(
+                """{"sessions": [
+                    {"id": "talk", "source": "local", "created_source": "desktop"},
+                    {"id": "job", "source": "local", "created_source": "oneshot"},
+                    {"id": "future", "source": "future-client"}
+                ], "total": 3}""",
+            ).build(),
+        )
+        val mode = ListMode.CHATS
+
+        val page = chats.list(archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+
+        assertThat(page.chats.map { it.createdSource }).containsExactly("desktop", "oneshot", null).inOrder()
+        assertThat(mode.keep(page.chats).map { it.id }).containsExactly("talk", "future").inOrder()
+    }
+
+    @Test
     fun `the chat list asks the server to leave out cron and the service runs`() = runBlocking<Unit> {
         server.enqueue(MockResponse.Builder().addHeader("Content-Type", "application/json").body("""{"sessions": [], "total": 0}""").build())
         val mode = ListMode.CHATS
@@ -169,7 +216,7 @@ class ChatPinsTest {
 
         val url = server.takeRequest().url
         assertThat(url.encodedPath).isEqualTo("/api/sessions")
-        assertThat(url.queryParameter("exclude_sources")).isEqualTo("cron,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook")
+        assertThat(url.queryParameter("exclude_sources")).isEqualTo("cron,kanban,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook")
         assertThat(url.queryParameter("sources")).isNull()
         assertThat(url.queryParameter("archived")).isEqualTo("exclude")
     }
@@ -191,6 +238,6 @@ class ChatPinsTest {
 
     private fun snapshot() = MockResponse.Builder().body("""{"runtime_revision": 3, "runtime_generation": 1}""").build()
 
-    private fun chat(id: String, pinned: Boolean = false, archived: Boolean = false, source: String = "android") =
-        ChatSummary(id, id, "", source, null, 0.0, 0.0, 2, pinned = pinned, archived = archived, active = false)
+    private fun chat(id: String, pinned: Boolean = false, archived: Boolean = false, source: String = "android", createdSource: String? = null) =
+        ChatSummary(id, id, "", source, null, 0.0, 0.0, 2, pinned = pinned, archived = archived, active = false, createdSource = createdSource)
 }
