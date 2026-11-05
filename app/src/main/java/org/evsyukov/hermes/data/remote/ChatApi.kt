@@ -26,6 +26,11 @@ data class ChatSummary(
     val pinned: Boolean,
     val archived: Boolean,
     val active: Boolean,
+    /**
+     * The surface that created the chat, when the server keeps it apart from [source]: a local row
+     * may have been started by a service. Null for a row without that provenance.
+     */
+    val createdSource: String? = null,
     /** Messages the user has not read yet, as the server's read watermark says. */
     val unread: Boolean = false,
     /**
@@ -214,6 +219,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 pinned = obj.flag("pinned"),
                 archived = obj.flag("archived"),
                 active = obj.flag("is_active"),
+                createdSource = obj.string("created_source")?.takeIf { it.isNotBlank() },
                 unread = obj.flag("unread"),
                 lastReadAt = obj.double("last_read_at"),
                 usage = usage(obj),

@@ -22,6 +22,7 @@ import org.evsyukov.hermes.data.remote.cacheKey
 import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
+import org.evsyukov.hermes.ui.ListMode
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -60,6 +61,36 @@ class CachedChatTest {
 
         assertThat(failed.title).isEqualTo("Plans")
         assertThat(failed.items.map { (it as ChatItem.User).text }).containsExactly("hello")
+    }
+
+    @Test
+    fun `a list kept on the phone keeps only the local chats whose creator is interactive`() = runBlocking<Unit> {
+        val strings = AppStrings(context.resources)
+        val profile = ServerProfile("home", "Home", "http://127.0.0.1:9")
+        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, cache)
+        val mode = ListMode.CHATS
+        val query = mapOf(
+            "limit" to 50,
+            "offset" to 0,
+            "order" to "recent",
+            "archived" to "exclude",
+            "min_messages" to 1,
+            "sources" to null,
+            "exclude_sources" to mode.excludeSources,
+        )
+        cache.write(
+            "home",
+            cacheKey("api/sessions", query),
+            """{"sessions": [
+                {"id": "talk", "source": "local", "created_source": "desktop"},
+                {"id": "job", "source": "local", "created_source": "oneshot"}
+            ], "total": 2}""",
+        )
+
+        val page = session.chat.cached!!.list(archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+
+        assertThat(page.chats.map { it.createdSource }).containsExactly("desktop", "oneshot").inOrder()
+        assertThat(mode.keep(page.chats).map { it.id }).containsExactly("talk")
     }
 
     private object PlainCipher : TokenCipher {
