@@ -13,6 +13,11 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.joinAll
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.Delivery
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -750,6 +755,70 @@ class DraftNavigationTest {
         fresh.text = "a fresh draft"
         open("s2")
         assertThat(draftOf(open(null)).text).isEqualTo("a fresh draft")
+    }
+
+    @Test
+    fun `completed local observations survive navigation and held signout clears only captured profile`() {
+        val first = profile("observation-navigation-a", server)
+        val model = start(first)
+        fun complete(on: LiveServer, controller: ChatController, text: String): org.evsyukov.hermes.chat.LocalObservation {
+            val writes = controller.continuationProducers
+            model.chatShown(controller, true)
+            onMain {
+                checkNotNull(controller.loadCompletion).await()
+                controller.send(text, listOf(LocalAttachment("note.txt", "text/plain", byteArrayOf(7))))
+                controller.state.first { state -> (state.items.lastOrNull() as? ChatItem.User)?.delivery == Delivery.SENT }
+            }
+            on.sendEvent("message.start", buildJsonObject {})
+            on.sendEvent("message.delta", buildJsonObject { put("text", "on-device $text") })
+            on.sendEvent("message.complete", buildJsonObject { put("text", "on-device $text"); put("status", "complete") })
+            onMain {
+                controller.state.first { it.observations.any { row -> row.completed } }
+                writes.toList().joinAll()
+            }
+            return controller.state.value.observations.single()
+        }
+        val oldChat = open("s1")
+        val retained = complete(server, oldChat, "A prompt")
+        open("s2")
+        val recovered = open("s1")
+        model.chatShown(recovered, true)
+        onMain { recovered.observationRecovery.join(); checkNotNull(recovered.loadCompletion).await() }
+        assertThat(recovered.state.value.observations.single().items).isEqualTo(retained.items)
+        assertThat(recovered.state.value.observations.single().files).isEqualTo(retained.files)
+        assertThat(server.submittedPrompts.get()).isEqualTo(1)
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        container.lifetime.beforeCleanupAdmission = { owner, removed -> if (owner.profileId == first.id && !removed) { entered.complete(Unit); release.await() } }
+        val operation = driver.async { model.signOut() }
+        var primary: Throwable? = null
+        try {
+            await { entered.isCompleted }
+            assertThat(operation.isCompleted).isFalse()
+            val second = profile("observation-navigation-b", otherServer)
+            connect(second)
+            val secondChat = open("s1")
+            val other = complete(otherServer, secondChat, "B prompt")
+            model.chatShown(secondChat, true)
+            release.complete(Unit)
+            await { operation.isCompleted }
+            onMain { operation.await() }
+            assertThat(model.chat.value).isSameInstanceAs(secondChat)
+            assertThat(container.turns.visibleChat).isEqualTo("s1")
+            onMain {
+                val saved = container.servers.observations.load(container.lifetime.owner(second.id), second.url.toString(), "s1")
+                assertThat(saved.single().id).isEqualTo(other.id)
+                assertThat(saved.single().items).isEqualTo(other.items)
+                assertThat(container.servers.observations.load(container.lifetime.owner(first.id), first.url.toString(), "s1")).isEmpty()
+            }
+            assertThat(server.submittedPrompts.get()).isEqualTo(1)
+            assertThat(otherServer.submittedPrompts.get()).isEqualTo(1)
+        } catch (failure: Throwable) { primary = failure; throw failure }
+        finally {
+            release.complete(Unit)
+            container.lifetime.beforeCleanupAdmission = null
+            try { check(joinDraftJobs(listOf(operation), 5_000, ::idle)) { "Observation signout driver did not complete" }; onMain { operation.await() } }
+            catch (cleanup: Throwable) { val firstFailure = primary; if (firstFailure == null) throw cleanup else if (firstFailure !== cleanup) firstFailure.addSuppressed(cleanup) }
+        }
     }
 
     private object PlainCipher : TokenCipher {

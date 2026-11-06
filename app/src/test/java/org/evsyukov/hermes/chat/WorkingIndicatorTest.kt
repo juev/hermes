@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -125,9 +126,14 @@ class WorkingIndicatorTest {
         try {
             channel.establish()
             chat.send("hello", emptyList())
-            channel.announce()
-            channel.idleThenThink()
-            val thinking = withTimeout(2_000) { chat.state.first { it.status == strings.get(org.evsyukov.hermes.R.string.chat_thinking) } }
+            val thinking = withTimeout(2_000) {
+                // Persistence can suspend even an Unconfined sender. The external agent can think
+                // only after the actual prompt call, while the ready count still arrives later.
+                channel.submitted.await()
+                channel.announce()
+                channel.idleThenThink()
+                chat.state.first { it.status == strings.get(org.evsyukov.hermes.R.string.chat_thinking) }
+            }
 
             assertThat(thinking.running).isTrue()
             assertThat(thinking.awaitingAnswer).isTrue()
@@ -202,6 +208,7 @@ private class BusyGateway : WebSocketListener() {
  * connection under way and its first turn answers like Hermes: idle, then thinking.
  */
 private class GatedChannel : GatewayChannel {
+    val submitted = CompletableDeferred<Unit>()
     private val _state = MutableStateFlow(SocketState.DISCONNECTED)
     override val state: StateFlow<SocketState> = _state
 
@@ -244,6 +251,7 @@ private class GatedChannel : GatewayChannel {
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement = when (method) {
         "session.create" -> HermesJson.parseToJsonElement("""{"session_id":"live1","stored_session_id":"s2"}""")
         "session.active_list" -> HermesJson.parseToJsonElement("""{"sessions":[]}""")
+        "prompt.submit" -> { submitted.complete(Unit); JsonObject(emptyMap()) }
         else -> JsonObject(emptyMap())
     }
 

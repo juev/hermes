@@ -44,6 +44,7 @@ class ServerSession(
     private val cache: ResponseCache? = null,
 ) {
     private val authority = store.authority
+    val observations get() = store.observations
 
     /** Suspension gates for actual native/cleanup boundary fixtures; absent in app use. */
     @Volatile
@@ -98,8 +99,16 @@ class ServerSession(
     suspend fun forgetChat(id: String, owner: WorkOwner = owner(), wanted: () -> Boolean = { true }) {
         if (owner.profileId != profile.id) return
         authority.withOwner(owner) {
-            cache?.drop(profile.id, cacheKey("api/sessions/$id", emptyMap()), wanted)
-            cache?.forget(profile.id, "api/sessions/$id/", wanted)
+            var failure: Exception? = null
+            suspend fun obligation(block: suspend () -> Unit) {
+                try { block() }
+                catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+                catch (error: Exception) { val first = failure; if (first == null) failure = error else if (first !== error) first.addSuppressed(error) }
+            }
+            obligation { cache?.drop(profile.id, cacheKey("api/sessions/$id", emptyMap()), wanted) }
+            obligation { cache?.forget(profile.id, "api/sessions/$id/", wanted) }
+            obligation { if (wanted()) observations.clearAdmitted(profile.id, profile.url.toString(), id) }
+            failure?.let { throw it }
         }
     }
 
@@ -188,6 +197,7 @@ class ServerSession(
         val cleaned = authority.withRetirement(profile.id, result.owner.generation) {
             retireLocalData()
             obligation { cache?.forget(profile.id) }
+            obligation { observations.clearAdmitted(profile.id) }
             obligation(clearReads)
             obligation { clearDrafts() }
             true

@@ -52,6 +52,8 @@ data class ChatSummary(
  */
 data class SessionUsage(val input: Long, val output: Long, val costUsd: Double?, val included: Boolean)
 
+data class HistoryPage(val rows: List<StoredMessage>, val session: String?, val profile: String?)
+
 /** A hit of the full-text search with the matching piece of text. */
 data class SearchHit(val chat: ChatSummary, val snippet: String, val role: String?)
 
@@ -111,9 +113,11 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
         }.orEmpty()
     }
 
-    suspend fun messages(id: String, limit: Int = 500): List<StoredMessage> {
+    suspend fun messages(id: String, limit: Int = 500): List<StoredMessage> = history(id, limit).rows
+
+    suspend fun history(id: String, limit: Int = 500): HistoryPage {
         val root = reads.kept("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
-        return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+        return HistoryPage((root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty(), root.string("session_id"), root.string("profile"))
     }
 
     /**

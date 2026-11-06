@@ -214,6 +214,11 @@ class SearchConnectionWiringTest {
                     finish(vm.accessProducer)
                     finish(vm.cachedListProducer)
                     finish(vm.listProducer)
+                    // These newly owned local reads can hold auth admission while resuming on
+                    // Main. Complete them before this fixture deliberately stops pumping Main.
+                    val chat = vm.chat.value
+                    finish(chat?.observationRecovery)
+                    finish(chat?.loadCompletion)
                     vm.readProducers.toList().forEach { finish(it) }
                 }
             }

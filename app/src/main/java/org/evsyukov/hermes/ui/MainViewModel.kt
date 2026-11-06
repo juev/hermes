@@ -819,7 +819,7 @@ class MainViewModel(
             // The exact removal marker is checked and its local effects run under the authority
             // gate. The same id added back clears the marker, so this older removal cannot erase
             // the new profile's data; it then has no effect at all.
-            var cleanupFailed = false
+            var cleanupFailed = applied.cleanupError != null || applied.cleanupSuperseded
             val cleaned = container.lifetime.withRemoval(target.id, applied.owner.generation) {
                 try {
                     container.responses.forget(target.id)

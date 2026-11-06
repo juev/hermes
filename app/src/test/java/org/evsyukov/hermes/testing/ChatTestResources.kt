@@ -15,9 +15,9 @@ internal class ChatTestResources {
     private val sockets = mutableListOf<GatewaySocket>()
     private val cleanup = FixtureCleanup()
 
-    fun store(context: Context, cipher: TokenCipher, scope: CoroutineScope, profile: ServerProfile): ServerStore {
+    fun store(context: Context, cipher: TokenCipher, scope: CoroutineScope, profile: ServerProfile, observationData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null): ServerStore {
         profiles[profile.id]?.let { return it }
-        val store = ServerStore(context, cipher, scope)
+        val store = ServerStore(context, cipher, scope, observationData)
         profiles[profile.id] = store
         runBlocking { store.save(profile) }
         return store
@@ -31,7 +31,7 @@ internal class ChatTestResources {
             sockets.mapIndexed { i, socket -> "stop socket $i" to { socket.stop() } } +
                 profiles.map { (id, store) -> "remove profile $id" to { runBlocking<Unit> {
                     when (val result = store.remove(id)) {
-                        is org.evsyukov.hermes.data.server.NativeResult.Applied -> Unit
+                        is org.evsyukov.hermes.data.server.NativeResult.Applied -> { result.cleanupError?.let { throw it }; check(!result.cleanupSuperseded) { "Fixture cleanup superseded: $id" } }
                         is org.evsyukov.hermes.data.server.NativeResult.Failed -> throw result.error
                         org.evsyukov.hermes.data.server.NativeResult.Rejected -> error("Fixture profile removal was rejected: $id")
                     }

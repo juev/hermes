@@ -2,6 +2,7 @@ package org.evsyukov.hermes.chat
 
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -74,6 +75,11 @@ data class ChatState(
     val storedId: String? = null,
     val title: String = "",
     val items: List<ChatItem> = emptyList(),
+    /** Fetched canonical lane, before any optimistic working-transcript merge. */
+    val storedHistory: List<ChatItem>? = null,
+    val observations: List<LocalObservation> = emptyList(),
+    val currentObservationId: String? = null,
+    val observationStorageError: Boolean = false,
     val loading: Boolean = false,
     val running: Boolean = false,
     val prompt: Prompt? = null,
@@ -150,17 +156,18 @@ class ChatController(
     )
 
     /** Per-operation carrier. A root without a ready transport binds once, never to its replacement. */
-    private class Work(val owner: WorkOwner, val chat: String?, transport: Long) {
+    private class Work(val owner: WorkOwner, val chat: String?, transport: Long, val observationTicket: ObservationTicket? = null, val publicObservationProducer: Boolean = false) {
         val transport = AtomicLong(transport)
     }
     private val workContext = ThreadLocal<Work?>()
-    private fun captureWork(owner: WorkOwner = session.owner()): Work {
+    private fun captureWork(owner: WorkOwner = session.owner(), inheritedTicket: ObservationTicket? = null, publicObservationProducer: Boolean = false): Work {
         val transport = socket.transport.value
         val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
         val eligibleTransport = if (real != null && real.ownerOn(transport) != owner) 0L else transport
-        return Work(owner, _state.value.storedId, eligibleTransport)
+        return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty()), publicObservationProducer)
     }
     private val initialWork = captureWork()
+    private val observationRecoveryTicket = checkNotNull(initialWork.observationTicket)
     @Volatile private var lastWork: Work? = null
     @Volatile private var draftWork: Work? = null
     private fun holds(owner: WorkOwner) = wanted() && session.holds(owner)
@@ -168,25 +175,40 @@ class ChatController(
         val origin = workContext.get()
         if (wanted() && (origin == null || origin.owner != owner || publicationEligible(origin))) block() else null
     }
-    private fun withRoot(owner: WorkOwner? = null, block: (Work) -> Unit) {
+    /** Test-only capture boundary, outside publication/controller monitors; null in production. */
+    @Volatile internal var afterPublicRootCaptured: ((String) -> Unit)? = null
+    private fun withRoot(owner: WorkOwner? = null, publicAction: String? = null, block: (Work) -> Unit) {
         if (closed) return
-        val origin = captureWork(owner ?: session.owner())
+        val origin = captureWork(owner ?: session.owner(), publicObservationProducer = publicAction != null)
+        publicAction?.let { afterPublicRootCaptured?.invoke(it) }
         publish(origin.owner) {
+            if (!observationProducerEligible(origin)) return@publish
             val prior = workContext.get()
             workContext.set(origin)
             try { block(origin) } finally { workContext.set(prior) }
         }
     }
-    private fun launchOwned(origin: Work, allowClosed: Boolean = false, block: suspend CoroutineScope.() -> Unit): Job =
-        scope.launch(workContext.asContextElement(origin)) {
+    private fun launchOwned(origin: Work, allowClosed: Boolean = false, start: kotlinx.coroutines.CoroutineStart = kotlinx.coroutines.CoroutineStart.DEFAULT, block: suspend CoroutineScope.() -> Unit): Job =
+        scope.launch(workContext.asContextElement(origin), start = start) {
             if (!holds(origin.owner) || (closed && !allowClosed)) throw CancellationException("Retired chat origin")
             block()
         }.also(::recordContinuation)
     private fun operation(): Work = checkNotNull(workContext.get()) { "Chat continuation requires its originating work" }
+    // Group content and its immutable writer must share clear admission. In particular a
+    // suspended pre-clear public root cannot edit a fresh group's working suffix, even when
+    // begin() would reuse that group or rewrite would replace its writer. Current wire input
+    // is observed independently; it is not permission for an older public producer's payload.
+    private fun observationProducerEligible(origin: Work): Boolean {
+        if (!origin.publicObservationProducer) return true
+        val target = _state.value.storedId.orEmpty()
+        val ticket = checkNotNull(origin.observationTicket)
+        if (session.observations.valid(ticket, target)) return true
+        return observationWrites.values.none { writer -> writer.owner == origin.owner && session.observations.valid(writer.ticket, target) }
+    }
     private fun publicationEligible(origin: Work): Boolean {
         val bound = origin.transport.get()
         val current = socket.transport.value
-        return holds(origin.owner) && (bound == 0L || current == 0L || bound == current)
+        return holds(origin.owner) && observationProducerEligible(origin) && (bound == 0L || current == 0L || bound == current)
     }
     private suspend fun awaitSocket(origin: Work = operation()) {
         if (!holds(origin.owner)) throw IOException("Retired chat origin")
@@ -199,9 +221,10 @@ class ChatController(
     }
     private suspend fun rpc(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement {
         val origin = operation()
+        if (!observationProducerEligible(origin)) throw CancellationException("Retired observation producer")
         awaitSocket(origin)
         val result = socket.callOn(origin.owner, origin.transport.get(), method, params, timeoutMillis)
-        if (!holds(origin.owner) || origin.transport.get() != socket.transport.value) throw IOException("Retired chat operation")
+        if (!publicationEligible(origin)) throw IOException("Retired chat operation")
         return result
     }
     private fun apiForWork() = session.chatFor(operation().owner)
@@ -260,7 +283,16 @@ class ChatController(
     private fun editNow(flush: Boolean = true, change: (ChatState) -> ChatState) = synchronized(lock) {
         if (flush) flushStreamed()
         val asked = _state.value.questions
+        val previousId = _state.value.storedId
         _state.value = change(_state.value)
+        val assignedId = _state.value.storedId
+        if (previousId != assignedId && assignedId != null) workContext.get()?.let { origin ->
+            // Bind the retained draft copy to the actual created session in the same synchronous
+            // publication, before attachment/network suspension exposes that ID to deletion.
+            observationBook.assignStoredSession(assignedId, origin.owner.generation)
+            stageObservations()
+            persistObservations()
+        }
         // The questions outlive the chat being open: opened again, it finds them as they are now.
         if (_state.value.questions !== asked) questionMemory.keep(_state.value.storedId.orEmpty(), _state.value.questions)
         if (visible) published.value = _state.value
@@ -272,7 +304,7 @@ class ChatController(
         val at = streamedAt
         var items = _state.value.items
         for ((type, text) in streamed) {
-            items = reduce(items, GatewayEvent(type, liveId, null, buildJsonObject { put("text", text.toString()) }), keyOf = { "a${keys.incrementAndGet()}" }, now = { at })
+            items = reduce(items, GatewayEvent(type, liveId, null, buildJsonObject { put("text", text.toString()) }), keyOf = { "live$localNamespace:${keys.incrementAndGet()}" }, now = { at })
         }
         streamed.clear()
         _state.value = _state.value.copy(items = items)
@@ -346,6 +378,8 @@ class ChatController(
 
     /** Loads asked for while one runs; the newest request wins. */
     private val reloadRequests = Channel<Work>(Channel.CONFLATED)
+    /** Actual admitted queue entries; observation only, never a load/rejoin decision. */
+    internal val acceptedReloadRequests = AtomicLong()
 
     /** The answer of `session.create` for a new chat that has not been sent; guarded by [joining]. */
     private var draft: JsonObject? = null
@@ -356,6 +390,19 @@ class ChatController(
     @Volatile
     private var closed = false
     private val keys = AtomicLong()
+    private val localNamespace = java.util.UUID.randomUUID().toString()
+    private val observationBook = ObservationBook()
+    private var observedHistory: org.evsyukov.hermes.data.remote.HistoryPage? = null
+    private var liveRemoteProfile: String? = null
+    private data class ObservationWrite(val owner: WorkOwner, val ticket: ObservationTicket)
+    private var currentEventRevision = 0L
+    @Volatile private var liveObservationTicket = observationRecoveryTicket
+    private val observationWrites = java.util.concurrent.ConcurrentHashMap<String, ObservationWrite>()
+    private val scheduledObservationRevision = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile internal var submitCompletion: Job? = null
+        private set
+    internal lateinit var observationRecovery: Job
+        private set
     private val jobs = mutableListOf<Job>()
 
     /** When the last message was sent, for the log of its first reply; 0 once the reply came. */
@@ -421,6 +468,8 @@ class ChatController(
     private var joinedOn = 0L
 
     init {
+        observationRecovery = launchOwned(initialWork) { restoreObservations(initialWork.owner, initialWork.chat.orEmpty()) }
+        jobs += observationRecovery
         jobs += scope.launch { socket.events.collect(::onEvent) }
         jobs += scope.launch { socket.requests.collect(::onRequest) }
         // The connection of the join is lost: nothing it confirmed takes an answer any more. The check
@@ -447,16 +496,25 @@ class ChatController(
                 // The load that opens a chat joins the connection it finds; only a later one needs it again.
                 if (joinedGeneration.get() == 0 && generation <= connectedWhenMade) return@collect
                 val owner = (socket as? org.evsyukov.hermes.data.remote.GatewaySocket)?.ownerOn(socket.transport.value) ?: liveOwner ?: lastLoadOwner ?: initialWork.owner
-                val origin = captureWork(owner)
+                val origin = captureWork(owner, liveObservationTicket)
                 beforeReconnectEnqueue?.invoke()
-                if (!holds(origin.owner)) { afterReconnectEnqueue?.invoke(); return@collect }
-                if (_state.value.loading) {
-                    rejoinPending.set(origin)
-                    afterReconnectEnqueue?.invoke()
-                    return@collect
+                // The initial observation can wait while another load joins this transport.
+                // Recheck at the actual binding/queue mutation under the same publication order
+                // as takeLive; an already settled join must not be invalidated by that old decision.
+                publish(origin.owner) {
+                    val reload = synchronized(lock) {
+                        when {
+                            closed -> false
+                            validJoin() != 0L -> {
+                                joinedGeneration.updateAndGet { maxOf(it, generation) }
+                                false
+                            }
+                            _state.value.loading -> { rejoinPending.set(origin); false }
+                            else -> { liveId = null; invalidateJoin(); true }
+                        }
+                    }
+                    if (reload && reloadRequests.trySend(origin).isSuccess) acceptedReloadRequests.incrementAndGet()
                 }
-                forgetLive()
-                enqueueReload(origin)
                 afterReconnectEnqueue?.invoke()
             }
         }
@@ -472,7 +530,7 @@ class ChatController(
             jobs += scope.launch {
                 socket.state.collect {
                     val owner = (socket as? org.evsyukov.hermes.data.remote.GatewaySocket)?.ownerOn(socket.transport.value) ?: initialWork.owner
-                    withContext(workContext.asContextElement(captureWork(owner))) { beforeDraftRenewal?.invoke(); renewDraft() }
+                    withContext(workContext.asContextElement(captureWork(owner, liveObservationTicket))) { beforeDraftRenewal?.invoke(); renewDraft() }
                 }
             }
         }
@@ -487,6 +545,8 @@ class ChatController(
     private fun recordContinuation(job: Job) { observedcontinuationProducers?.add(job) }
 
     fun close() {
+        val snapshotOwner = liveOwner ?: lastLoadOwner ?: initialWork.owner
+        publish(snapshotOwner) { synchronized(lock) { flushStreamed(); observationBook.refreshItems(_state.value.items); stageObservations(); persistObservations() } }
         closed = true
         jobs.forEach { it.cancel() }
         synchronized(lock) { early.clear() }
@@ -570,7 +630,7 @@ class ChatController(
     fun reload() = enqueueReload(captureWork())
 
     private fun enqueueReload(origin: Work) {
-        publish(origin.owner) { if (!closed) reloadRequests.trySend(origin) }
+        publish(origin.owner) { if (!closed && reloadRequests.trySend(origin).isSuccess) acceptedReloadRequests.incrementAndGet() }
     }
 
     /**
@@ -591,7 +651,7 @@ class ChatController(
             val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
             val replacement = if (holds(origin.owner) && currentTransport != 0L && origin.transport.get() != 0L &&
                 currentTransport != origin.transport.get() && validJoin() == 0L &&
-                (real == null || real.ownerOn(currentTransport) == origin.owner)) Work(origin.owner, origin.chat, currentTransport) else null
+                (real == null || real.ownerOn(currentTransport) == origin.owner)) Work(origin.owner, origin.chat, currentTransport, origin.observationTicket) else null
             origin = queued ?: rejoin?.takeIf { socket.connections.value != joinedGeneration.get() || validJoin() == 0L } ?: replacement
         }
     }
@@ -618,8 +678,9 @@ class ChatController(
         // authorization the load started in, however long the history takes.
         if (!holds(owner)) return
         lastLoadOwner = owner
+        restoreObservations(owner, id)
         lastWork = origin
-        if (liveOwner != null && liveOwner != owner) forgetLive()
+        if (liveOwner != null && liveOwner != owner) forgetLive(owner)
         val chat = session.chatFor(owner)
         publish(owner) { edit { it.copy(loading = true, error = null) } }
         if (current.items.isEmpty()) showCached(id, owner)
@@ -631,7 +692,7 @@ class ChatController(
                     flushStreamed()
                     _state.value.items to historyShown
                 }
-                val history = async { runCatching { transcriptOf(chat.messages(id)) } }
+                val history = async { runCatching { chat.history(id) } }
                 val summary = head.await().getOrElse { if (it is CancellationException) throw it; null }
                 if (!holds(owner)) return@coroutineScope
                 summary?.let { read ->
@@ -669,7 +730,7 @@ class ChatController(
                                 val generationAtStart = socket.connections.value
                                 val joinAnswer = resume(id, owner)
                                 val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
-                                joinAnswer.answer.string("session_id")?.let { takeLive(it, joinAnswer.transport, owner) }
+                                bindLoad(joinAnswer)
                                 joinAnswer to generation
 
                             }
@@ -682,7 +743,11 @@ class ChatController(
                 (read.exceptionOrNull() as? CancellationException)?.let { throw it }
                 if (!holds(owner)) return@coroutineScope
                 if (read.isSuccess) {
-                    publish(owner) { showHistory(read.getOrDefault(emptyList()), beforeHistory) }
+                    publish(owner) {
+                        observedHistory = read.getOrThrow()
+                        showHistory(transcriptOf(read.getOrThrow().rows), beforeHistory, joined?.getOrNull()?.first)
+                        syncObservations()
+                    }
                     // What is on the screen now is read: a mark in the sidebar clears, and a new
                     // answer after this will mark it again.
                     summary?.let { tellRead(id, it.lastActive, owner) }
@@ -702,18 +767,38 @@ class ChatController(
     /**
      * Puts [history] on the screen, keeping a message the server has not stored yet: one the user
      * sent while the history was on its way must not vanish from under them. An answer that streams
-     * comes back with the join, which is applied after this.
+     * stays live until an authoritative join or terminal event ends it; a join is applied after this.
      */
-    private fun showHistory(history: List<ChatItem>, before: Pair<List<ChatItem>, Boolean>) {
+    private fun showHistory(history: List<ChatItem>, before: Pair<List<ChatItem>, Boolean>, join: JoinAnswer?) {
         edit { state ->
-            // Once history exists, prefer the newer live transcript to this stale read. A later
-            // ordinary reload can refresh history when no transcript changes race it. The first
-            // uncached load retains its existing history/local-send merge below.
-            if (before.second && state.items !== before.first) return@edit state.copy(loading = false)
+            // A stored read cannot end a live answer merely because no delta arrived during it.
+            // A fresh idle join newer than the local send may still restore authoritative history.
+            val keepStreaming = state.running && state.items.any { it is ChatItem.Assistant && it.streaming } &&
+                (join == null || sends.protects(join.activity) || state.items !== join.boundItems)
+            if (before.second && (state.items !== (join?.boundItems ?: before.first) || keepStreaming)) return@edit state.copy(storedHistory = history, loading = false)
             historyShown = true
+            // The working reducer retains the legacy folded remote work context. This is a
+            // display overlay, never correlation: canonical rows remain separately visible and
+            // the unbound on-device observation cannot retire without an actual submit ACK.
+            val liveTail = state.items.lastOrNull() as? ChatItem.Assistant
+            val storedTail = history.lastOrNull() as? ChatItem.Assistant
+            val localPrompt = state.items.any { it is ChatItem.User && it.rowId == null }
+            if (!before.second && join?.boundRevision != null && !localPrompt && liveTail != null && storedTail != null && liveTail.key.startsWith("live")) {
+                val currentTools = liveTail.parts.filterIsInstance<Part.Tool>().mapTo(HashSet()) { it.run.id }
+                val context = storedTail.parts.filter { it !is Part.Text && (it !is Part.Tool || it.run.id !in currentTools) }
+                return@edit state.copy(items = history.dropLast(1) + liveTail.copy(parts = context + liveTail.parts), storedHistory = history, loading = false)
+            }
             val known = history.mapTo(HashSet()) { it.key }
-            val unsent = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
-            state.copy(items = if (unsent.isEmpty()) history else history + unsent, loading = false)
+            // The first history can arrive after a public early send, including its completed reply.
+            // Keep that local suffix, not only its user row; later ordinary reloads remain replaceable.
+            val localStart = if (!before.second) state.items.indexOfFirst { it is ChatItem.User && it.rowId == null } else -1
+            val local = state.items.filterIndexed { index, item ->
+                item.key !in known && (item is ChatItem.User && item.rowId == null ||
+                    join?.boundRevision != null && item.key.startsWith("live") ||
+                    localStart >= 0 && index >= localStart &&
+                        (item !is ChatItem.Assistant || !item.streaming || keepStreaming) || keepStreaming && item is ChatItem.Assistant && item.streaming)
+            }
+            state.copy(items = if (local.isEmpty()) history else history + local, storedHistory = history, loading = false)
         }
     }
 
@@ -735,7 +820,7 @@ class ChatController(
     private suspend fun ensureLive(starting: Boolean = false): String {
         val origin = operation()
         if (!holds(origin.owner)) throw IOException("Retired chat origin")
-        if (liveOwner != null && liveOwner != origin.owner) forgetLive()
+        if (liveOwner != null && liveOwner != origin.owner) forgetLive(origin.owner)
         liveId?.let { if (validJoin() != 0L) return it }
         return joining.withLock {
             if (!holds(origin.owner)) throw IOException("Retired chat origin")
@@ -825,6 +910,8 @@ class ChatController(
      * is already lost: what came for the session meanwhile is applied now, in the order it came, and
      * what came for any other session is dropped.
      */
+    @Volatile internal var afterLiveBound: ((Long) -> Unit)? = null
+
     private fun takeLive(live: String, transport: Long, owner: WorkOwner) = publish(owner) { synchronized(lock) {
         liveOwner = owner
         liveId = live
@@ -833,6 +920,7 @@ class ChatController(
             joinedOn = transport
             unconfirm()
         }
+        afterLiveBound?.invoke(transport)
         val heard = ArrayList(early)
         early.clear()
         // In the order they came, each with the place it came in, not the moment of this replay.
@@ -897,10 +985,10 @@ class ChatController(
      * The live session is no longer known, after a lost connection or a session the server dropped:
      * no question takes an answer until the next join confirms it is still open.
      */
-    private fun forgetLive() = synchronized(lock) {
+    private fun forgetLive(owner: WorkOwner) = publish(owner) { synchronized(lock) {
         liveId = null
         invalidateJoin()
-    }
+    } }
 
     /** The join can no longer be trusted: its connection is lost. Guarded by [lock]. */
     private fun invalidateJoin() {
@@ -928,7 +1016,39 @@ class ChatController(
         val transport: Long,
         val activity: Long,
         val owner: WorkOwner,
+        var boundItems: List<ChatItem>? = null,
+        var boundRevision: Long? = null,
     )
+
+    /** Seed the authoritative prefix before current-transport deltas can be consumed. */
+    private fun bindLoad(answer: JoinAnswer) = publish(answer.owner) { synchronized(lock) {
+        if (!sends.protects(answer.activity)) {
+            flushStreamed()
+            observationBook.refreshItems(_state.value.items)
+            observationBook.sealActive()
+            syncObservations()
+            val running = answer.answer.runningFlag() ?: (answer.answer["info"] as? JsonObject)?.runningFlag() ?: false
+            val prefix = (answer.answer["inflight"] as? JsonObject)?.string("assistant").orEmpty()
+            edit { state ->
+                val base = if (state.items.lastOrNull() is ChatItem.Assistant && (state.items.last() as ChatItem.Assistant).streaming) state.items.dropLast(1) else state.items
+                state.copy(currentObservationId = null, running = running, model = (answer.answer["info"] as? JsonObject)?.string("model") ?: state.model, items = if (running) base + ChatItem.Assistant("live$localNamespace:${keys.incrementAndGet()}", listOf(Part.Text(prefix)), true, time = nowSeconds()) else base)
+            }
+        }
+        liveRemoteProfile = (answer.answer["info"] as? JsonObject)?.string("profile_name")
+        liveObservationTicket = operation().observationTicket ?: observationRecoveryTicket
+        if (_state.value.running && observationBook.active == null) {
+            val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
+            if (tail != null) {
+                val id = observationBook.continuation(answer.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), answer.owner.generation, tail)
+                observationWrites[id] = ObservationWrite(answer.owner, liveObservationTicket)
+                edit { it.copy(currentObservationId = id, observations = observationBook.snapshot()) }
+                stageObservations(); persistObservations()
+            }
+        }
+        answer.answer.string("session_id")?.let { takeLive(it, answer.transport, answer.owner) }
+        answer.boundItems = _state.value.items
+        answer.boundRevision = currentEventRevision
+    } }
 
     /**
      * Applies the answer of a join: the live id, the turn that runs, its card and the questions the
@@ -937,6 +1057,7 @@ class ChatController(
      */
     private fun adopt(joinAnswer: JoinAnswer, stored: String?, starting: Boolean, generation: Int): String = publish(joinAnswer.owner) {
         val result = joinAnswer.answer
+        liveRemoteProfile = (result["info"] as? JsonObject)?.string("profile_name")
         val live = result.string("session_id") ?: error("No session_id in the answer")
         // What the answer says of the requests holds on the connection it came over, and confirms
         // nothing once the socket is on another one: the join over that one brings its own answer.
@@ -954,7 +1075,7 @@ class ChatController(
         // The answer came over `generation`; a connection that came meanwhile may have moved the
         // card or the turn, so that one is joined as well. A count that caught up on the answer's own
         // connection is not such a connection.
-        if (!stillCurrent || (!current && socket.connections.value != generation)) rejoinPending.set(Work(joinAnswer.owner, stored, socket.transport.value))
+        if (!stillCurrent || (!current && socket.connections.value != generation)) rejoinPending.set(Work(joinAnswer.owner, stored, socket.transport.value, operation().observationTicket))
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
         val serverRunning = result.runningFlag() ?: info?.runningFlag() ?: false
@@ -963,22 +1084,45 @@ class ChatController(
         // the send ended. A join asked after the send went out is newer, so its answer stands,
         // including a turn that finished while the chat was away.
         val sentAfterAsk = sends.protects(joinAnswer.activity)
-        val running = starting || serverRunning || (!starting && sentAfterAsk)
-        if (!starting && !serverRunning && !sentAfterAsk) {
+        val bound = joinAnswer.boundRevision != null
+        val running = if (bound) _state.value.running else starting || serverRunning || (!starting && sentAfterAsk)
+        if (!bound && !starting && !serverRunning && !sentAfterAsk) {
             // The server is idle and this answer is newer than every local send: any turn the chat
             // knew of has ended, including one whose outcome was lost while disconnected.
             sends.discard(joinAnswer.activity)
         }
         // A turn under way when the chat opens goes on in its answer, with what streamed while the chat was away.
-        val resumed = serverRunning && !starting
+        val resumed = !bound && serverRunning && !starting
         val streamed = (result["inflight"] as? JsonObject)?.string("assistant").orEmpty()
+        // A completed copy is immutable. A later authorized resume observes a new continuation,
+        // without asserting that it is the same persisted turn as that copy or the canonical row.
+        val archivedResume = resumed && observationBook.snapshot().any { it.id == observationBook.active && it.completed }
+        if (archivedResume) observationBook.sealActive()
         edit {
             it.copy(
                 storedId = storedId ?: it.storedId,
                 running = running,
-                model = info?.string("model") ?: it.model,
-                items = if (resumed) resumeTurn(it.items, streamed, keyOf = { "a${keys.incrementAndGet()}" }) else it.items,
+                model = if (bound) it.model else info?.string("model") ?: it.model,
+                items = if (resumed) {
+                    val opened = resumeTurn(it.items, streamed, keyOf = { "live$localNamespace:${keys.incrementAndGet()}" })
+                    val tail = opened.lastOrNull() as? ChatItem.Assistant
+                    if (archivedResume && tail != null) opened.dropLast(1) + tail.copy(key = "live$localNamespace:${keys.incrementAndGet()}") else opened
+                } else it.items,
             )
+        }
+        if (!bound) {
+            liveObservationTicket = operation().observationTicket ?: observationRecoveryTicket
+            synchronized(lock) {
+                if (resumed && observationBook.active == null) {
+                    val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
+                    if (tail != null) {
+                        val id = observationBook.continuation(joinAnswer.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), joinAnswer.owner.generation, tail)
+                        observationWrites[id] = ObservationWrite(joinAnswer.owner, liveObservationTicket)
+                        edit { it.copy(currentObservationId = id, observations = observationBook.snapshot()) }
+                        stageObservations(); persistObservations()
+                    }
+                }
+            }
         }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
@@ -1024,12 +1168,19 @@ class ChatController(
 
     fun send(text: String, attachments: List<LocalAttachment>) {
         var start: (() -> Unit)? = null
-        withRoot { origin ->
+        withRoot(publicAction = "send") { origin ->
             if (text.isBlank() && attachments.isEmpty()) return@withRoot
             val sendId = sends.begin()
-            val key = "local${keys.incrementAndGet()}"
+            val key = "local$localNamespace:${keys.incrementAndGet()}"
             val shown = attachments.map { Attachment(it.name, it.name, it.image) }
             edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
+            val localUser = _state.value.items.last() as ChatItem.User
+            observationBook.active?.let { id -> observationWrites[id]?.let { if (!session.observations.valid(it.ticket, _state.value.storedId.orEmpty())) observationBook.sealActive() } }
+            val observationId = observationBook.begin(origin.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.owner.generation, localUser,
+                attachments.map { ObservationFile(it.name, it.mime, Base64.getEncoder().encodeToString(it.bytes), key) })
+            observationWrites.getOrPut(observationId) { ObservationWrite(origin.owner, checkNotNull(origin.observationTicket)) }
+            stageObservations()
+            edit { it.copy(observations = observationBook.snapshot(), currentObservationId = observationId) }
             awaitingStart = true
             // The root's synchronous publication is complete before a service/caller callback runs.
             // In particular, no short authority monitor is held while it waits for a real join.
@@ -1038,11 +1189,12 @@ class ChatController(
                 val hold = onTurnStart()
                 val started = System.currentTimeMillis()
                 publish(origin.owner) { if (publicationEligible(origin)) sentAt = started }
-                launchOwned(origin) {
+                val submit = launchOwned(origin, start = kotlinx.coroutines.CoroutineStart.LAZY) {
                     // The prompt may have reached the server even when its answer does not come back: an
                     // unknown outcome is reported, never retried on its own, and the message stays visible.
                     var submitted = false
                     try {
+                        synchronized(lock) { persistObservations() }
                         // A message sent before the socket is up says so instead of waiting in silence.
                         if (socket.state.value != SocketState.READY) edit { it.copy(connecting = true) }
                         try {
@@ -1062,7 +1214,11 @@ class ChatController(
                             }
                             sends.submitted(sendId)
                             submitted = true
-                            rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                            publish(origin.owner) { synchronized(lock) { observationBook.moveSession(observationId, _state.value.storedId.orEmpty()); stageObservations() } }
+                            synchronized(lock) { persistObservations() }
+                            val proofOrigin = ReceiptOrigin(origin.owner.profileId, origin.owner.generation, live, operation().transport.get(), liveRemoteProfile)
+                            val ack = rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                            publish(origin.owner) { synchronized(lock) { observationBook.bind(observationId, key, proofOrigin, prompt, ack); syncObservations() } }
                             markDelivery(key, Delivery.SENT)
                             hold.submitted()
                             Log.i(
@@ -1079,13 +1235,17 @@ class ChatController(
                         val delivery = deliveryFor(e, submitted)
                         val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_send_failed)
                         failDelivery(sendId, key, delivery, error)
+                publish(origin.owner) { synchronized(lock) { observationBook.failed(observationId, _state.value.items, error); syncObservations() } }
                     }
-                }.invokeOnCompletion { cause ->
+                }
+                submitCompletion = submit
+                submit.invokeOnCompletion { cause ->
                     if (cause != null) {
                         hold.release()
                         sends.finish(sendId)
                     }
                 }
+                submit.start()
             }
         }
         start?.invoke()
@@ -1099,8 +1259,9 @@ class ChatController(
     private fun deliveryFor(e: Exception, submitted: Boolean): Delivery =
         if (!submitted || e is RpcException) Delivery.FAILED else if (e is IOException || e is TimeoutCancellationException) Delivery.UNKNOWN else Delivery.FAILED
 
-    private fun markDelivery(key: String, delivery: Delivery) = edit { state ->
-        state.copy(items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item })
+    private fun markDelivery(key: String, delivery: Delivery) {
+        edit { state -> state.copy(items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item }) }
+        publish(operation().owner) { synchronized(lock) { observationBook.delivery(key, delivery); syncObservations() } }
     }
 
     /** The submission did not go through: the message keeps its place with the outcome, in one update. */
@@ -1164,15 +1325,22 @@ class ChatController(
     /** Replaces the last user message with [text] and answers it anew. */
     fun editLast(text: String) = rewriteLast(text)
 
-    private fun rewriteLast(replacement: String?) = withRoot { origin ->
+    private fun rewriteLast(replacement: String?) = withRoot(publicAction = "rewrite") { origin ->
         val lastUser = current.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return@withRoot
         val sendId = sends.begin()
-        val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
+        val again = lastUser.rewritten(replacement, "local$localNamespace:${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
         val text = again.sent
+        val oldFiles = observationBook.snapshot().flatMap { it.files }.filter { it.userKey == lastUser.key }.map { it.copy(userKey = again.key) }
+        observationBook.active?.let { id -> observationWrites[id]?.let { if (!session.observations.valid(it.ticket, _state.value.storedId.orEmpty())) observationBook.sealActive() } }
+            val observationId = observationBook.begin(origin.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.owner.generation, again, oldFiles)
+        observationWrites[observationId] = ObservationWrite(origin.owner, checkNotNull(origin.observationTicket))
+        stageObservations()
+        edit { it.copy(observations = observationBook.snapshot(), currentObservationId = observationId) }
         var hold: TurnHold? = null
         launchOwned(origin) {
             var submitted = false
             try {
+                synchronized(lock) { persistObservations() }
                 val live = ensureLive()
                 if (_state.value.running) rpc("session.interrupt", buildJsonObject { put("session_id", live) })
                 rpc("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
@@ -1183,7 +1351,9 @@ class ChatController(
                 hold = onTurnStart().also { it.live(live) }
                 sends.submitted(sendId)
                 submitted = true
-                rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+                val proofOrigin = ReceiptOrigin(origin.owner.profileId, origin.owner.generation, live, operation().transport.get(), liveRemoteProfile)
+                val ack = rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+                publish(origin.owner) { synchronized(lock) { observationBook.bind(observationId, again.key, proofOrigin, text, ack); syncObservations() } }
                 markDelivery(again.key, Delivery.SENT)
                 hold?.submitted()
             } catch (e: Exception) {
@@ -1193,6 +1363,7 @@ class ChatController(
                 val delivery = deliveryFor(e, submitted)
                 val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_failed)
                 failDelivery(sendId, again.key, delivery, error)
+                publish(origin.owner) { synchronized(lock) { observationBook.failed(observationId, _state.value.items, error); syncObservations() } }
             }
         }.invokeOnCompletion { cause ->
             if (cause != null) {
@@ -1573,10 +1744,10 @@ class ChatController(
     private fun incomingWork(transport: Long): Work? {
         if (transport == 0L || transport != socket.transport.value) return null
         val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
-        if (real != null) return real.ownerOn(transport)?.let { Work(it, _state.value.storedId, transport) }
+        if (real != null) return real.ownerOn(transport)?.let { Work(it, _state.value.storedId, transport, liveObservationTicket) }
         // Synthetic GatewayChannel peers carry the actual join's already-captured work.
         return lastWork?.takeIf { it.transport.get() == transport }
-            ?: liveOwner?.let { Work(it, _state.value.storedId, transport) }
+            ?: liveOwner?.let { Work(it, _state.value.storedId, transport, liveObservationTicket) }
     }
 
     private fun withWork(origin: Work, block: () -> Unit) {
@@ -1595,6 +1766,8 @@ class ChatController(
         }
     }
 
+    @Volatile internal var afterCurrentEvent: ((String) -> Unit)? = null
+
     private fun applyEvent(event: GatewayEvent, origin: WorkOwner) {
         val live = liveId
         when (event.type) {
@@ -1607,6 +1780,7 @@ class ChatController(
             return
         }
         if (live == null || event.sessionId != live) return
+        if (event.type in TRANSCRIPT_EVENTS || event.type in setOf("session.info", "error", "thinking.delta")) currentEventRevision++
         val sent = sentAt
         if (sent != 0L) {
             when (event.type) {
@@ -1662,7 +1836,26 @@ class ChatController(
                 "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
                 "connection.update" -> edit(flush = false) { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
             }
-            if (event.type in TRANSCRIPT_EVENTS) edit { it.copy(items = reduce(it.items, event, keyOf = { "a${keys.incrementAndGet()}" })) }
+            if (event.type in TRANSCRIPT_EVENTS) edit { it.copy(items = reduce(it.items, event, keyOf = { "live$localNamespace:${keys.incrementAndGet()}" })) }
+            if (event.type in setOf("message.start", "message.interim", "reasoning.available", "tool.start", "tool.complete", "message.complete", "error")) {
+                val observed = observationBook.snapshot()
+                if (observed.none { it.id == observationBook.active && !it.completed }) {
+                    val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
+                    if (tail != null && observed.none { row -> row.items.any { it.key == tail.key } }) {
+                        val id = observationBook.continuation(origin.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.generation, tail)
+                        observationWrites[id] = ObservationWrite(origin, operation().observationTicket ?: liveObservationTicket)
+                        edit { it.copy(currentObservationId = id) }
+                    }
+                }
+                observationBook.semantic(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.type, event.payload)
+                observationBook.refreshItems(_state.value.items)
+                syncObservations()
+            }
+            if (event.type == "message.complete" || event.type == "error") {
+                observationBook.terminal(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.payload, _state.value.items, _state.value.error)
+                syncObservations()
+            }
+            afterCurrentEvent?.invoke(event.type)
         }
     }
 
@@ -1681,6 +1874,70 @@ class ChatController(
         val last = streamed.lastOrNull()
         if (last != null && last.first == event.type) last.second.append(text) else streamed += event.type to StringBuilder(text)
         return true
+    }
+
+    private fun syncObservations() {
+        val page = observedHistory
+        val groups = if (page == null) observationBook.snapshot() else observationBook.reconcile(page.rows, page.session, page.profile, operation().owner.generation)
+        val retired = groups.filter { it.reconciled }.flatMap { it.items }.mapTo(HashSet()) { it.key }
+        edit { it.copy(observations = groups, items = if (retired.isEmpty()) it.items else it.items.filterNot { item -> item.key in retired }) }
+        stageObservations()
+        persistObservations()
+    }
+
+    private fun stageObservations() {
+        observationBook.snapshot().forEach { row -> observationWrites[row.id]?.let { session.observations.stage(it.owner, it.ticket, row) } }
+    }
+    private fun observationWarning(owner: WorkOwner) = session.observations.hasFailures(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty())
+    private suspend fun saveObservation(pair: Pair<ObservationWrite, LocalObservation>) {
+        val id = pair.second.id
+        try {
+            session.observations.put(pair.first.owner, pair.first.ticket, pair.second)
+            publish(pair.first.owner) { synchronized(lock) { if (!closed) edit(flush = false) { it.copy(observationStorageError = observationWarning(pair.first.owner)) } } }
+        }
+        catch (cancel: CancellationException) { throw cancel }
+        catch (_: Exception) { publish(pair.first.owner) { synchronized(lock) {
+            if ((scheduledObservationRevision[id] ?: -1) <= pair.second.revision) scheduledObservationRevision.remove(id)
+            if (!closed) edit(flush = false) { it.copy(observationStorageError = observationWarning(pair.first.owner)) }
+        } } }
+    }
+    private fun persistObservations() {
+        observationBook.snapshot().forEach { row ->
+            if (!observationWrites.containsKey(row.id) || (scheduledObservationRevision[row.id] ?: -1) >= row.revision) return@forEach
+            val writer = observationWrites[row.id] ?: return@forEach
+            val payload = writer to row
+            scheduledObservationRevision[row.id] = row.revision
+            recordContinuation(scope.launch(Dispatchers.IO) { saveObservation(payload) })
+        }
+    }
+    private suspend fun restoreObservations(owner: WorkOwner, id: String) {
+        val lineage = session.profile.url.toString()
+        val saved = try { session.observations.load(owner, lineage, id) }
+        catch (cancel: CancellationException) { throw cancel }
+        catch (_: Exception) { session.observations.pending(owner, lineage, id) }
+        val recoveryTicket = operation().observationTicket ?: observationRecoveryTicket
+        publish(owner) { synchronized(lock) {
+            if (closed) return@synchronized
+            val keep = observationBook.snapshot().filter { row -> observationWrites[row.id]?.let { session.holds(it.owner) && session.observations.valid(it.ticket, row.session) } == true }.mapTo(HashSet()) { it.id }
+            val admitted = if (session.observations.valid(recoveryTicket, id)) saved else emptyList()
+            observationBook.restore(admitted, keep)
+            admitted.forEach { row -> observationWrites.putIfAbsent(row.id, ObservationWrite(owner, recoveryTicket)) }
+            val groups = observationBook.snapshot()
+            edit(flush = false) { it.copy(observations = groups, currentObservationId = it.currentObservationId?.takeIf { key -> groups.any { row -> row.id == key } }, observationStorageError = session.observations.hasFailures(owner.profileId, lineage, id)) }
+        } }
+    }
+    fun reviewObservation(id: String, collapsed: Boolean) = withRoot { origin ->
+        synchronized(lock) {
+            val row = observationBook.snapshot().firstOrNull { it.id == id } ?: return@synchronized
+            val ticket = session.observations.capture(origin.owner.profileId, session.profile.url.toString(), row.session)
+            observationBook.collapse(id, collapsed)
+            edit { it.copy(observations = observationBook.snapshot()) }
+            recordContinuation(scope.launch(Dispatchers.IO) {
+                try { session.observations.presentation(origin.owner, ticket, id, collapsed); publish(origin.owner) { synchronized(lock) { if (!closed) edit(flush = false) { it.copy(observationStorageError = observationWarning(origin.owner)) } } } }
+                catch (cancel: CancellationException) { throw cancel }
+                catch (_: Exception) { publish(origin.owner) { if (!closed) edit(flush = false) { it.copy(observationStorageError = observationWarning(origin.owner)) } } }
+            })
+        }
     }
 
     /**

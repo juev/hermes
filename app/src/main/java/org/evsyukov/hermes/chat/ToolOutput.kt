@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.data.remote.HermesJson
 
 /** What a tool returned, ready to show: prose as Markdown, or what a program printed, as it was. */
+@kotlinx.serialization.Serializable
 data class ToolOutput(val text: String, val markdown: Boolean)
 
 private const val OUTPUT_LIMIT = 2000

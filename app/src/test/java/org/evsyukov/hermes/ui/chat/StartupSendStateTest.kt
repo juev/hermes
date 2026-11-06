@@ -368,6 +368,7 @@ class StartupSendStateTest {
                     "running=${chat.state.value.running} stops=${stops()}",
             ).that(chat.state.value.running).isFalse()
             assertThat(stops()).isEqualTo(0)
+            assertThat(chat.state.value.items.filterIsInstance<ChatItem.Assistant>().any { it.streaming }).isFalse()
             // Neither the failed send nor the fresh idle answer submitted anything again.
             assertThat(gateway.count("prompt.submit")).isEqualTo(1)
             val first = chat.state.value.items.filterIsInstance<ChatItem.User>().single { it.text == "first" }

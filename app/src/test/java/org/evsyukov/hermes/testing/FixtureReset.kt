@@ -8,7 +8,7 @@ import org.evsyukov.hermes.data.server.ServerStore
 /** An absent synthetic profile is idempotent only when both disk and authority establish absence. */
 internal suspend fun requireFixtureRemoval(store: ServerStore, id: String, result: NativeResult) {
     when (result) {
-        is NativeResult.Applied -> Unit
+        is NativeResult.Applied -> { result.cleanupError?.let { throw it }; check(!result.cleanupSuperseded) { "Fixture cleanup was superseded: $id" } }
         is NativeResult.Failed -> throw result.error
         NativeResult.Rejected -> when (val disk = store.loadDurable()) {
             Persisted.Unreadable -> error("Fixture reset rejected with unreadable durable state: $id")

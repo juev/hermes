@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +52,7 @@ class QuestionChatTest {
     private val memory = QuestionMemory()
 
     /** A chat as the app opens it: a new controller each time, over the memory of the connection. */
-    private fun chat(id: String = "s1") = ChatController(server.session(context, scope, db), gateway, scope, AppStrings(context.resources), id, questionMemory = memory)
+    private fun chat(id: String = "s1", channel: org.evsyukov.hermes.data.remote.GatewayChannel = gateway, own: CoroutineScope = scope) = ChatController(server.session(context, own, db), channel, own, AppStrings(context.resources), id, questionMemory = memory)
 
     private suspend fun ChatController.until(condition: (ChatState) -> Boolean): ChatState =
         withTimeout(5_000) { state.first(condition) }
@@ -573,6 +575,116 @@ class QuestionChatTest {
         assertThat(gateway.count("session.resume")).isEqualTo(1)
         again.answerQuestion("r1", mapOf("q0" to "late"))
         assertThat(gateway.responses).isEmpty()
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi::class)
+    private class HeldCountCollection(private val source: kotlinx.coroutines.flow.StateFlow<Int>, private val release: CompletableDeferred<Unit>) : kotlinx.coroutines.flow.StateFlow<Int> by source {
+        override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Int>): Nothing {
+            release.await()
+            source.collect(object : kotlinx.coroutines.flow.FlowCollector<Int> {
+                override suspend fun emit(value: Int) {
+                    println("QUESTION_COUNT_ENTER $value")
+                    collector.emit(value)
+                    println("QUESTION_COUNT_RETURN $value")
+                }
+            })
+        }
+    }
+
+    @Test fun `a confirmed first card can precede completion of its actual history load`() = runBlocking<Unit> {
+        gateway.start("hi"); gateway.establish()
+        val history = server.holdHistory(); val summary = server.holdSummary()
+        val own = CoroutineScope(SupervisorJob(scope.coroutineContext.job) + Dispatchers.IO + CoroutineName("held-first"))
+        val first = chat(own = own)
+        val bound = CompletableDeferred<Unit>(); first.afterLiveBound = { bound.complete(Unit) }
+        var primary: Throwable? = null
+        try {
+            check(history.entered.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "First actual history did not enter" }
+            summary.release.countDown(); withTimeout(5_000) { bound.await() }
+            gateway.ask("r1", "clarify", questions("Which file?"))
+            first.until { it.questions.singleOrNull()?.confirmed == true }
+            val load = checkNotNull(first.loadCompletion)
+            assertThat(load.isCompleted).isFalse()
+            assertThat(gateway.resumedOn.toList()).containsExactly(0)
+            history.release.countDown(); withTimeout(5_000) { load.await() }
+            assertThat(first.state.value.questions.single().confirmed).isTrue()
+        } catch (error: Throwable) { primary = error; throw error }
+        finally {
+            history.release.countDown(); summary.release.countDown()
+            var cleanup: Throwable? = null
+            try { first.close() } catch (error: Throwable) { cleanup = error }
+            try { withTimeout(5_000) { own.coroutineContext.job.cancelAndJoin() } }
+            catch (error: Throwable) { val old = cleanup; if(old == null) cleanup = error else if(old !== error) old.addSuppressed(error) }
+            cleanup?.let { error -> if(primary == null) throw error else if(primary !== error) primary.addSuppressed(error) }
+        }
+    }
+
+    @Test fun `a delayed replacement count decision cannot invalidate an already settled replacement join`() = runBlocking<Unit> {
+        val firstScope = CoroutineScope(SupervisorJob(scope.coroutineContext.job) + Dispatchers.IO + CoroutineName("first"))
+        val secondScope = CoroutineScope(SupervisorJob(scope.coroutineContext.job) + Dispatchers.IO + CoroutineName("second"))
+        val collection = CompletableDeferred<Unit>(); val secondJoin = CompletableDeferred<Unit>(); val joined = CompletableDeferred<Unit>()
+        val decision = CompletableDeferred<Unit>(); val releaseDecision = CompletableDeferred<Unit>(); val decided = CompletableDeferred<Unit>()
+        val controllers = mutableListOf<ChatController>()
+        val trace = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        var primary: Throwable? = null
+        try {
+            gateway.start("hi"); gateway.establish()
+            val first = chat(own = firstScope).also { controllers += it }
+            gateway.ask("r1", "clarify", questions("Which file?"))
+            first.until { it.questions.singleOrNull()?.confirmed == true }
+            withTimeout(5_000) { checkNotNull(first.loadCompletion).await() }
+            trace += "first-load-complete"
+            first.close(); withTimeout(5_000) { firstScope.coroutineContext.job.cancelAndJoin() }
+            trace += "first-root-joined"
+            var resumes = 0
+            gateway.afterResume = {
+                trace += "resume:${kotlin.coroutines.coroutineContext[CoroutineName]?.name}:${gateway.resumedOn.toList()}:transport=${gateway.transport.value}"
+                when (++resumes) { 1 -> gateway.replaceOnNextCount(); 2 -> { joined.complete(Unit); secondJoin.await() } }
+            }
+            val wire = object : org.evsyukov.hermes.data.remote.GatewayChannel by gateway {
+                override val connections = HeldCountCollection(gateway.connections, collection)
+            }
+            val second = chat(channel = wire, own = secondScope).also { controllers += it }
+            second.beforeReconnectEnqueue = { trace += "initial-count-decision-enter"; decision.complete(Unit); releaseDecision.await() }
+            second.afterReconnectEnqueue = { trace += "initial-count-decision-return"; decided.complete(Unit) }
+            withTimeout(5_000) { joined.await() }
+            val replacementLoad = checkNotNull(second.loadCompletion)
+            collection.complete(Unit); gateway.publishReplacement()
+            withTimeout(5_000) { decision.await() }
+            assertThat(second.working.questions.single().confirmed).isFalse()
+            second.answerQuestion("r1", mapOf("q0" to "stale")); assertThat(gateway.responses).isEmpty()
+            secondJoin.complete(Unit)
+            withTimeout(5_000) { replacementLoad.await() }
+            second.until { !it.loading && it.questions.singleOrNull()?.confirmed == true }
+            trace += "second-replacement-load-complete:${second.joinedTransport}"
+            val requests = second.acceptedReloadRequests.get()
+            val extra = server.holdSummary()
+            releaseDecision.complete(Unit); withTimeout(5_000) { decided.await() }
+            val accepted = second.acceptedReloadRequests.get() - requests
+            trace += "accepted-after-settled=$accepted"
+            if (accepted > 0) {
+                check(extra.entered.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "Admitted diagnostic load did not enter actual HTTP" }
+                val load = checkNotNull(second.loadCompletion)
+                assertThat(load).isNotSameInstanceAs(replacementLoad)
+                extra.release.countDown(); withTimeout(5_000) { load.await() }
+                trace += "extra-load-complete"
+            }
+            // Original exact transport/count expectation and response assertions, not >= or duplicate tolerance.
+            assertThat(gateway.resumedOn.toList()).containsExactly(0, 0, 1).inOrder()
+            assertThat(second.joinedTransport).isEqualTo(gateway.transport.value)
+            second.answerQuestion("r1", mapOf("q0" to "notes.md"))
+            second.answerQuestion("r1", mapOf("q0" to "again"))
+            assertThat(gateway.responses.map { it.id }).containsExactly("r1")
+        } catch (error: Throwable) { primary = error; throw error }
+        finally {
+            println("QUESTION_JOIN_TRACE " + trace.joinToString(" | "))
+            collection.complete(Unit); secondJoin.complete(Unit); releaseDecision.complete(Unit); server.releaseGates(); gateway.afterResume = null
+            var cleanup: Throwable? = null
+            fun failed(error: Throwable) { val old = cleanup; if(old == null) cleanup = error else if(old !== error) old.addSuppressed(error) }
+            controllers.forEach { try { it.close() } catch(error: Throwable) { failed(error) } }
+            listOf(firstScope, secondScope).forEach { try { withTimeout(5_000) { it.coroutineContext.job.cancelAndJoin() } } catch(error: Throwable) { failed(error) } }
+            cleanup?.let { error -> if(primary == null) throw error else if(primary !== error) primary.addSuppressed(error) }
+        }
     }
 
     /** Waits up to [millis] for [condition] without failing: the checks that follow say what went wrong. */

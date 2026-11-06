@@ -508,3 +508,40 @@ Source: the Android client's issues, and the tests under `../app/src/test/`.
 ## 15. Change log
 
 Dated entries: the server version, what changed in behaviour, and the sections it touched.
+
+### Optional persisted-turn correlation on Android
+
+The pinned gateway v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`)
+can include a positive numeric `user_row_id` in the **actual** `prompt.submit` RPC
+result with the supported `status: "streaming"`. Other or malformed statuses,
+including queued, steered and redirected results, do not establish that binding.
+A same-owner/live-session `message.complete` can independently carry
+`persisted_turn: {complete, user_row_id, final_assistant_row_id, row_ids}`.
+Neither field is guaranteed on deployed gateways; completion can arrive before
+its submit result. Android retains both observations without selecting a turn by
+arrival order, text, timestamp or UI key.
+
+Android retires an ordinary local copy only after one nonconflicting complete
+receipt matches that submit's exact ACK and every addressed raw row is present in
+the fetched session/profile, with consistent roles, final body and tool lineage.
+Membership is checked **before** folding assistant/tool rows. A partial receipt,
+missing ACK, malformed/conflicting IDs, another authorization/session/profile, or
+a missing row keeps the local copy. The existing oldest-500 request is unchanged;
+a missing row does not mean it was never stored. There is no assumed snapshot,
+next-event, `after_id` or shared HTTP/socket cut guarantee.
+
+Without that proof, fetched history stays visible in its existing order and a
+separately labelled on-device observation retains the local prompt, selected file
+bytes, answer parts, semantic tool frames and outcome. It may overlap history;
+it is not asserted to be another historical turn. A dedicated client DataStore
+keeps semantic checkpoints and completed copies independently of the evictable
+GET cache. Token deltas are not journaled individually. Normal controller close
+captures the current partial transcript; abrupt process loss can precede that
+checkpoint. Local write failures keep an in-memory pending copy and show a
+storage warning. Refresh only reads history and retries pending persistence;
+it never resubmits. Collapse/reopen changes presentation only, including after
+correlation. Explicit chat clear, profile removal and sign-out clear only their
+admitted captured targets through the existing serialized ownership boundary;
+retired or pre-clear writers cannot recreate their records.
+
+A bound join publishes its turn snapshot before accepting current frames; delayed history/adoption cannot replay that older turn state. The working transcript may carry folded server work context as an explicitly uncorrelated display overlay; raw fetched history and on-device evidence remain separate, and this never supplies receipt identity. Producer clear provenance is captured before enqueue/launch and inherited by continuation frames. Journal transforms construct candidate bytes only; memory acknowledgements follow successful DataStore commit. Pending work is not a storage failure, and journal IO does not precede submit admission. Recovery tests cover wrappers/controllers in one process, not durable numeric authority identity across process recreation.

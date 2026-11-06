@@ -175,7 +175,20 @@ fun ChatScreen(
     }
     val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
     // The rows are reversed with their day separators, so a separator stays above the messages of its day.
-    val reversed = remember(state.items, state.questions) { transcriptRows(state.items, questions = state.questions).asReversed() }
+    val currentObservation = state.observations.firstOrNull { it.id == state.currentObservationId && !it.reconciled && !it.completed }
+    val completedObservation = state.observations.firstOrNull { it.id == state.currentObservationId && it.completed && !it.reconciled }
+    // A live question keeps its existing compact surface. The live answer still carries its
+    // unmatched label; every completed retained copy has the full disclosure in its own panel.
+    val showObservationDisclosure = state.observationStorageError || (currentObservation != null && state.questions.isEmpty())
+    val localKeys = currentObservation?.items?.mapTo(HashSet()) { it.key }.orEmpty()
+    val storedHistory = state.storedHistory
+    val archivedKeys = state.observations.filter { it.id != currentObservation?.id }.flatMap { it.items }.mapTo(HashSet()) { it.key }
+    val displayedItems = if (storedHistory == null) state.items.filterNot { it.key in archivedKeys } else {
+        val storedKeys = storedHistory.mapTo(HashSet()) { it.key }
+        val working = state.items.filterNot { it.key in archivedKeys }.associateBy { it.key }
+        storedHistory.map { working[it.key] ?: it } + state.items.filterNot { it.key in storedKeys || it.key in archivedKeys }
+    }
+    val reversed = remember(displayedItems, state.questions) { transcriptRows(displayedItems, questions = state.questions).asReversed() }
     // Only the last message of the chat can be answered again, and only the last of the user edited.
     val lastAnswer = (state.items.lastOrNull() as? ChatItem.Assistant)?.key
     val lastUser = state.items.lastOrNull { it is ChatItem.User }?.key
@@ -253,6 +266,11 @@ fun ChatScreen(
     // not count as seen.
     val waitingKeys = remember(state.questions) { state.questions.filter { it.state == QuestionState.PENDING }.map { "question:${it.id}" }.toSet() }
     val seenPart = with(LocalDensity.current) { 48.dp.toPx() }
+    val questionKeys = state.questions.mapTo(HashSet()) { "question:${it.id}" }
+    val questionInView by remember(questionKeys) { derivedStateOf {
+        val layout = listState.layoutInfo
+        layout.visibleItemsInfo.any { item -> item.key in questionKeys && minOf(item.offset + item.size, layout.viewportEndOffset) > maxOf(item.offset, layout.viewportStartOffset) }
+    } }
     val questionAway by remember(waitingKeys) {
         derivedStateOf {
             val layout = listState.layoutInfo
@@ -263,7 +281,8 @@ fun ChatScreen(
         }
     }
     // The rows before the transcript in the list: the waiting reply and the cards no answer holds.
-    val leading = (if (state.awaitingAnswer) 1 else 0) + cardsOf[null].orEmpty().size
+    val leading = (if (state.awaitingAnswer) 1 else 0) + cardsOf[null].orEmpty().size +
+        (if (completedObservation != null) 1 else 0) + (if (showObservationDisclosure) 1 else 0)
     val waitingAt = reversed.indexOfFirst { it is TranscriptRow.Ask && it.card.state == QuestionState.PENDING }.let { if (it < 0) -1 else leading + it }
     // A card settled by its own button gets shorter: its end, with how it ended, stays in view rather
     // than slipping under the edge of the list.
@@ -326,7 +345,7 @@ fun ChatScreen(
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (state.items.isEmpty() && state.questions.isEmpty() && !state.loading) {
+            if (displayedItems.isEmpty() && state.observations.isEmpty() && state.questions.isEmpty() && !state.loading) {
                 // A suggestion would replace what was shared, so the quick actions stand in for them.
                 EmptyChat(serverName, suggestions = !quickActions) { draft.text = it }
             } else {
@@ -336,6 +355,17 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) }.testTag("transcript"),
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
+                    completedObservation?.let { observation ->
+                        item(key = "observation:${observation.id}") {
+                            ObservationPanel(observation, actions, controller::reload, { controller.reviewObservation(observation.id, it) }, openLocal, active = true)
+                        }
+                    }
+                    if (showObservationDisclosure) {
+                        item(key = "observation-disclosure") { Column {
+                            ObservationDisclosure(state.observationStorageError, controller::reload)
+                            currentObservation?.let { ObservationFiles(it, openLocal) }
+                        } }
+                    }
                     // The turn runs without an open answer, e.g. while the socket connects or the agent starts.
                     if (state.awaitingAnswer) {
                         item(key = "pending") { PendingReply(if (state.connecting) stringResource(R.string.chat_connecting) else state.status) }
@@ -351,14 +381,24 @@ fun ChatScreen(
                             is TranscriptRow.Ask -> Column(Modifier.padding(horizontal = 16.dp)) {
                                 AgentQuestion(row.card, controller.answersOf(row.card), connected, questionActions)
                             }
-                            is TranscriptRow.Message -> when (val item = row.item) {
+                            is TranscriptRow.Message -> Column {
+                                if (row.item.key in localKeys) Text(stringResource(R.string.chat_local_copy), color = colors.secondaryText, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                                when (val item = row.item) {
                                 is ChatItem.User -> UserBubble(item, last = item.key == lastUser, actions = actions)
                                 is ChatItem.CronReport -> CronReportMessage(item)
                                 is ChatItem.Assistant -> AssistantMessage(
                                     item, last = item.key == lastAnswer, showReasoning = settings.showReasoning, status = state.status, actions = actions,
                                     connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,
                                 )
+                                }
                             }
+                        }
+                    }
+                    // Older retained copies must not displace the single current question/action
+                    // surface at the bottom of this reverse list. They remain inspectable above it.
+                    state.observations.filter { it.id != currentObservation?.id && it.id != completedObservation?.id }.asReversed().forEach { observation ->
+                        item(key = "observation:${observation.id}") {
+                            ObservationPanel(observation, actions, controller::reload, { controller.reviewObservation(observation.id, it) }, openLocal)
                         }
                     }
                 }
@@ -399,7 +439,7 @@ fun ChatScreen(
             }
             // The arrow to the end would cover the buttons of a question on the screen; one off the screen has its own button.
             androidx.compose.animation.AnimatedVisibility(
-                visible = !atBottom && waitingKeys.isEmpty() && state.items.isNotEmpty() && pull.distance == 0f,
+                visible = !atBottom && waitingKeys.isEmpty() && !questionInView && state.items.isNotEmpty() && pull.distance == 0f,
                 enter = fadeIn(), exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             ) {

@@ -38,7 +38,7 @@ data class ServerState(
     val active: ServerProfile? get() = servers.firstOrNull { it.id == activeId } ?: servers.firstOrNull()
 }
 
-class ServerStore(private val context: Context, private val cipher: TokenCipher, scope: CoroutineScope) {
+class ServerStore(private val context: Context, private val cipher: TokenCipher, scope: CoroutineScope, observationData: DataStore<Preferences>? = null) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /** The actual backing store; the authority registry is keyed by this identity, not by a tag. */
@@ -46,6 +46,7 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
 
     /** The one generation and credential authority of [backing], shared by every wrapper. */
     val authority: ProfileLifetime = ProfileLifetime.forStore(backing)
+    val observations = org.evsyukov.hermes.chat.LocalObservationStore(context, authority, observationData)
 
     private val _loaded = MutableStateFlow(false)
 
@@ -99,7 +100,18 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
         state.copy(servers = others + profile, activeId = if (makeActive) profile.id else state.activeId)
     }
 
-    suspend fun remove(id: String, expected: WorkOwner = authority.owner(id)): NativeResult = authority.removeProfile(this, id, expected)
+    suspend fun remove(id: String, expected: WorkOwner = authority.owner(id)): NativeResult {
+        val result = authority.removeProfile(this, id, expected)
+        if (result !is NativeResult.Applied) return result
+        var error: Exception? = result.cleanupError
+        val cleaned = authority.withRemoval(id, result.owner.generation) {
+            try { observations.clearAdmitted(id) }
+            catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+            catch (failure: Exception) { val first = error; if (first == null) error = failure else first.addSuppressed(failure) }
+            true
+        }
+        return result.copy(cleanupError = error, cleanupSuperseded = result.cleanupSuperseded || cleaned == null)
+    }
 
     suspend fun activate(id: String) = update { it.copy(activeId = id) }
 

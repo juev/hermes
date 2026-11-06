@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -112,11 +113,11 @@ class HiddenChatTest {
 
     private lateinit var lastSession: ServerSession
 
-    private fun chat(visible: Boolean = true): ChatController {
+    private fun chat(visible: Boolean = true, onLive: (String, String, String) -> Unit = { _, _, _ -> }): ChatController {
         lastSession = ServerSession(home, OkHttpClient(), store, strings, cache)
         return ChatController(
             lastSession, gateway, scope, strings, "s1",
-            onRead = { id, at, owner -> reads += id to at; readOwners += owner }, visible = visible,
+            onRead = { id, at, owner -> reads += id to at; readOwners += owner }, onLive = onLive, visible = visible,
         ).also { it.continuationProducers }
     }
 
@@ -131,11 +132,11 @@ class HiddenChatTest {
         withTimeout(timeoutMillis) { state.first(condition) }
 
     /** A chat opened on a turn under way: "Hello" streamed before it opened, " there" while it is on the screen. */
-    private suspend fun openMidTurn(): ChatController {
+    private suspend fun openMidTurn(adoptions: Channel<Unit>? = null): ChatController {
         gateway.connect()
         gateway.start("hi")
         gateway.delta("Hello")
-        val chat = chat()
+        val chat = chat(onLive = { _, _, _ -> adoptions?.trySend(Unit) })
         chat.until { answer(it)?.text == "Hello" && !it.loading }
         gateway.delta(" there")
         chat.until { answer(it)?.text == "Hello there" }
@@ -253,7 +254,7 @@ class HiddenChatTest {
             }
         }
         chat.send("earlier submit", emptyList())
-        val earlier = chat.continuationProducers.last()
+        val earlier = checkNotNull(chat.submitCompletion)
         try {
             withTimeout(10_000) { entered.await() }
             if (stale) {
@@ -268,7 +269,7 @@ class HiddenChatTest {
                 assertThat(chat.working.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.UNKNOWN)
             }
             chat.send("fresh submit", emptyList())
-            val current = chat.continuationProducers.last()
+            val current = checkNotNull(chat.submitCompletion)
             withTimeout(10_000) { current.join() }
             assertThat(gateway.calls.count { it.first == "prompt.submit" }).isEqualTo(2)
             assertThat(chat.working.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.SENT)
@@ -663,6 +664,29 @@ class HiddenChatTest {
     }
 
     @Test
+    fun `a fresh running join restores its inflight suffix after hidden history publication`() = runBlocking<Unit> {
+        val adoptions = Channel<Unit>(Channel.UNLIMITED)
+        val chat = openMidTurn(adoptions)
+        try {
+            // Consume this controller's initial adoption before requesting the next one.
+            withTimeout(5_000) { adoptions.receive() }
+            chat.setVisible(false)
+            val published = chat.state.value
+            gateway.drop()
+            gateway.lostDelta(" lost")
+            gateway.connect()
+            // The actual fresh adoption publishes its inflight text before this callback.
+            withTimeout(5_000) { adoptions.receive() }
+            System.err.println("HIDDEN_FRESH_JOIN resumes=${gateway.count("session.resume")} joined=${chat.joinedTransport} text=${answer(chat.working)?.text}")
+            assertThat(gateway.count("session.resume")).isEqualTo(2)
+            assertThat(answer(chat.working)?.text).isEqualTo("Hello there lost")
+            assertThat(chat.state.value).isSameInstanceAs(published)
+            chat.setVisible(true)
+            assertThat(answer(chat.state.value)?.text).isEqualTo("Hello there lost")
+        } finally { try { chat.close() } finally { adoptions.close() } }
+    }
+
+    @Test
     fun `a reconnect while hidden joins again and converges, and the return asks nothing more`() = runBlocking<Unit> {
         val chat = openMidTurn()
         chat.setVisible(false)
@@ -723,7 +747,10 @@ class HiddenChatTest {
 
         chat.setVisible(false)
         val published = chat.state.value
-        withTimeout(5_000) { while (answer(chat.working)?.text != "Hel") delay(10) }
+        // The fresh prefix may now bind before HTTP history returns. Join the actual load;
+        // observing that prefix alone does not establish completion of the hidden load.
+        withTimeout(5_000) { checkNotNull(chat.loadCompletion).await() }
+        assertThat(answer(chat.working)?.text).isEqualTo("Hel")
         gateway.delta("lo")
         gateway.deliver()
         assertThat(chat.state.value).isSameInstanceAs(published)

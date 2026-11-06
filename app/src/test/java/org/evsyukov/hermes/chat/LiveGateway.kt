@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -509,6 +510,17 @@ internal class LiveServer(private val gateway: LiveGateway) {
      * new chat while the screen moves on.
      */
     private val openSockets = java.util.concurrent.CopyOnWriteArrayList<WebSocket>()
+    val submittedPrompts = AtomicInteger()
+
+    /** Synthetic external input, delivered through the actual production socket collector. */
+    fun sendEvent(type: String, payload: JsonObject) {
+        check(openSockets.isNotEmpty()) { "No synthetic wire client" }
+        val frame = buildJsonObject {
+            put("jsonrpc", "2.0"); put("method", "event")
+            putJsonObject("params") { put("type", type); put("session_id", "live1"); put("payload", payload) }
+        }.toString()
+        openSockets.forEach { check(it.send(frame)) { "Synthetic wire refused input" } }
+    }
 
     private val socketGateway = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -520,6 +532,7 @@ internal class LiveServer(private val gateway: LiveGateway) {
             val frame = runCatching { HermesJson.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return
             val id = (frame["id"] as? JsonPrimitive)?.content ?: return
             val method = (frame["method"] as? JsonPrimitive)?.content
+            if (method == "prompt.submit") submittedPrompts.incrementAndGet()
             val result = when (method) {
                 "session.create" -> {
                     runBlocking { kotlinx.coroutines.withTimeout(5_000) { gateway.awaitCreate() } }

@@ -125,7 +125,7 @@ class ReviewOriginTest {
         withTimeout(10_000) { renewalEntered.await(); socket.state.first { it == SocketState.READY && socket.transport.value != prior } }
         chat.continuationProducers
         chat.send("fresh empty-chat send", emptyList())
-        val send = chat.continuationProducers.last()
+        val send = checkNotNull(chat.submitCompletion)
         withTimeout(10_000) { send.join() }
         assertThat(frames.filter { it.first == "session.close" }.map { it.second.string("session_id") }).doesNotContain(oldId)
         assertThat(frames.last { it.first == "prompt.submit" }.second.string("session_id")).isNotEqualTo(oldId)
@@ -140,7 +140,7 @@ class ReviewOriginTest {
         withTimeout(10_000) { while (chat.retainedDraftId == null) delay(5) }
         val id = chat.retainedDraftId
         chat.continuationProducers; chat.send("current send", emptyList())
-        withTimeout(10_000) { chat.continuationProducers.last().join() }
+        withTimeout(10_000) { checkNotNull(chat.submitCompletion).join() }
         assertThat(created.get()).isEqualTo(1)
         assertThat(frames.last { it.first == "prompt.submit" }.second.string("session_id")).isEqualTo(id)
     }
@@ -154,7 +154,7 @@ class ReviewOriginTest {
             }
         }
         chat.send("old prompt", emptyList())
-        val old = chat.continuationProducers.last()
+        val old = checkNotNull(chat.submitCompletion)
         assertThat(terminalEntered.await(10, TimeUnit.SECONDS)).isTrue()
         promptError = null
         replaceAuthorization()
@@ -170,7 +170,7 @@ class ReviewOriginTest {
         assertThat(chat.joinedTransport).isEqualTo(on)
         val count = resumed.get()
         chat.send("fresh next prompt", emptyList())
-        withTimeout(10_000) { chat.continuationProducers.last().join() }
+        withTimeout(10_000) { checkNotNull(chat.submitCompletion).join() }
         assertThat(resumed.get()).isEqualTo(count)
         assertThat(frames.last { it.first == "prompt.submit" }.second.string("session_id")).isEqualTo(fresh)
     }
@@ -180,7 +180,7 @@ class ReviewOriginTest {
         promptError = 4001
         socket.beforeTerminalCompletion = { reply -> if (reply["error"] != null) promptError = null }
         chat.send("current recover", emptyList())
-        withTimeout(10_000) { chat.continuationProducers.last().join() }
+        withTimeout(10_000) { checkNotNull(chat.submitCompletion).join() }
         assertThat(resumed.get()).isEqualTo(2)
         assertThat(chat.boundLiveId).isNotEqualTo(old)
         assertThat(chat.working.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.SENT)
@@ -198,12 +198,12 @@ class ReviewOriginTest {
         }
         chat.beforeLiveRecovery = { if (first.compareAndSet(true, false)) { entered.complete(Unit); release.await() } }
         chat.send("earlier admitted 4001", emptyList())
-        val earlier = chat.continuationProducers.last()
+        val earlier = checkNotNull(chat.submitCompletion)
         try {
             withTimeout(10_000) { entered.await() }
             val on = socket.transport.value
             chat.send("new current 4001 recovery", emptyList())
-            val current = chat.continuationProducers.last()
+            val current = checkNotNull(chat.submitCompletion)
             withTimeout(10_000) { current.join() }
             val fresh = chat.boundLiveId
             assertThat(fresh).isNotNull()
@@ -215,7 +215,7 @@ class ReviewOriginTest {
             assertThat(chat.boundLiveId).isEqualTo(fresh)
             assertThat(chat.joinedTransport).isEqualTo(on)
             chat.send("next current action", emptyList())
-            withTimeout(10_000) { chat.continuationProducers.last().join() }
+            withTimeout(10_000) { checkNotNull(chat.submitCompletion).join() }
             assertThat(resumed.get()).isEqualTo(count)
             assertThat(frames.last { it.first == "prompt.submit" }.second.string("session_id")).isEqualTo(fresh)
         } finally {

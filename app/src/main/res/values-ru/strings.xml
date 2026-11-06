@@ -167,7 +167,7 @@
     <string name="settings_sign_out">Выйти с сервера</string>
     <string name="settings_sign_out_hint">Токены этого сервера удалятся с телефона</string>
     <string name="settings_sign_out_confirm_title">Выйти с сервера %1$s?</string>
-    <string name="settings_sign_out_confirm_text">С телефона удалятся токены сервера %1$s, сохранённые ответы, отметки о прочтении и неотправленные черновики. Скачанные файлы вложений останутся в кэше. Если сервер требует входа, авторизоваться понадобится заново.</string>
+    <string name="settings_sign_out_confirm_text">С телефона удалятся токены сервера %1$s, сохранённые ответы, отметки о прочтении, неотправленные черновики и копии ответов на устройстве. Скачанные файлы вложений останутся в кэше. Если сервер требует входа, авторизоваться понадобится заново.</string>
     <string name="settings_sign_out_confirm_action">Выйти</string>
     <string name="settings_sign_out_failed">Не получилось выйти с сервера %1$s. Попробуйте ещё раз.</string>
     <string name="settings_about">О приложении</string>
@@ -187,7 +187,7 @@
     <string name="setup_server">Сервер</string>
     <string name="setup_delete_server">Удалить сервер</string>
     <string name="setup_remove_confirm_title">Убрать %1$s с телефона?</string>
-    <string name="setup_remove_confirm_text">Профиль, его токены, сохранённые ответы, отметки о прочтении и неотправленные черновики удалятся с телефона. Сервер и его данные не затрагиваются. Скачанные вложения останутся на телефоне.</string>
+    <string name="setup_remove_confirm_text">Профиль, его токены, сохранённые ответы, отметки о прочтении, неотправленные черновики и копии ответов на устройстве удалятся с телефона. Сервер и его данные не затрагиваются. Скачанные вложения останутся на телефоне.</string>
     <string name="setup_remove_confirm_action">Убрать</string>
     <string name="setup_remove_failed">Не получилось убрать %1$s. Профиль остался на телефоне.</string>
     <string name="setup_remove_cleanup_failed">Профиль %1$s убран, но часть его локальных данных удалить не удалось.</string>
@@ -601,5 +601,14 @@
     <string name="connect_opening">Открываем вход…</string>
     <string name="connect_tap_retry">Не подключилось. Нажмите, чтобы повторить</string>
     <string name="connect_directory_closed">Карточка закрыта</string>
-    <string name="settings_sign_out_cleanup_failed">Вы вышли из %1$s. Не удалось полностью очистить локальные ответы из кэша, отметки о прочтении или неотправленные черновики.</string>
+    <string name="settings_sign_out_cleanup_failed">Вы вышли из %1$s. Не удалось полностью очистить локальные ответы из кэша, отметки о прочтении, неотправленные черновики или копии ответов на устройстве.</string>
+    <string name="chat_local_copy">Ответ на устройстве · связь с историей не установлена</string>
+    <string name="chat_local_overlap">Недавние ответы на устройстве могут совпадать с сохранённой историей, но сопоставить их пока нельзя. Обе копии сохранены. Обновление только читает историю и не отправляет сообщения.</string>
+    <string name="chat_local_unsaved">Не удалось сохранить часть ответов на устройстве. Не закрывайте чат, пока локальное хранилище недоступно.</string>
+    <string name="chat_local_refresh">Обновить сохранённую историю</string>
+    <string name="chat_local_matched">Копия на устройстве · сопоставлена с историей</string>
+    <string name="chat_local_reopen">Открыть копию на устройстве</string>
+    <string name="chat_local_collapse">Свернуть копию на устройстве</string>
+    <string name="chat_local_file">Открыть вложение с устройства: %1$s</string>
+    <string name="chat_local_file_failed">Не удалось прочитать вложение на устройстве.</string>
 </resources>

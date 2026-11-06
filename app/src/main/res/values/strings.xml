@@ -165,7 +165,7 @@
     <string name="settings_sign_out">Sign out of the server</string>
     <string name="settings_sign_out_hint">This server\'s tokens will be removed from the phone</string>
     <string name="settings_sign_out_confirm_title">Sign out of %1$s?</string>
-    <string name="settings_sign_out_confirm_text">This removes the tokens of %1$s, its cached responses, read marks and unsent drafts from the phone. Downloaded attachment files stay in the cache. If the server requires a sign-in, you will need to sign in again.</string>
+    <string name="settings_sign_out_confirm_text">This removes the tokens of %1$s, its cached responses, read marks, unsent drafts and on-device reply copies from the phone. Downloaded attachment files stay in the cache. If the server requires a sign-in, you will need to sign in again.</string>
     <string name="settings_sign_out_confirm_action">Sign out</string>
     <string name="settings_sign_out_failed">Could not sign out of %1$s. Try again.</string>
     <string name="settings_about">About</string>
@@ -185,7 +185,7 @@
     <string name="setup_server">Server</string>
     <string name="setup_delete_server">Delete server</string>
     <string name="setup_remove_confirm_title">Remove %1$s from this phone?</string>
-    <string name="setup_remove_confirm_text">The profile, its tokens, cached responses, read marks and unsent drafts are deleted from this phone. The server and its data are not touched. Downloaded attachments stay on the phone.</string>
+    <string name="setup_remove_confirm_text">The profile, its tokens, cached responses, read marks, unsent drafts and on-device reply copies are deleted from this phone. The server and its data are not touched. Downloaded attachments stay on the phone.</string>
     <string name="setup_remove_confirm_action">Remove</string>
     <string name="setup_remove_failed">Could not remove %1$s. The profile is still on this phone.</string>
     <string name="setup_remove_cleanup_failed">Removed %1$s, but some of its local data could not be deleted.</string>
@@ -591,5 +591,14 @@
     <string name="connect_opening">Opening sign-in…</string>
     <string name="connect_tap_retry">Couldn\'t connect. Tap to retry</string>
     <string name="connect_directory_closed">The card is closed</string>
-    <string name="settings_sign_out_cleanup_failed">Signed out of %1$s. Some local cached responses, read marks or unsent drafts could not be cleared.</string>
+    <string name="settings_sign_out_cleanup_failed">Signed out of %1$s. Some local cached responses, read marks, unsent drafts or on-device reply copies could not be cleared.</string>
+    <string name="chat_local_copy">On-device reply · not matched to stored history</string>
+    <string name="chat_local_overlap">Recent on-device replies may overlap stored history and cannot yet be matched. Both copies are kept. Refresh reads history only; it never sends a message.</string>
+    <string name="chat_local_unsaved">Some on-device replies could not be saved. Keep this chat open until local storage is available.</string>
+    <string name="chat_local_refresh">Refresh stored history</string>
+    <string name="chat_local_matched">On-device copy · matched to stored history</string>
+    <string name="chat_local_reopen">Reopen on-device copy</string>
+    <string name="chat_local_collapse">Collapse on-device copy</string>
+    <string name="chat_local_file">Open on-device attachment: %1$s</string>
+    <string name="chat_local_file_failed">This on-device attachment could not be read.</string>
 </resources>
