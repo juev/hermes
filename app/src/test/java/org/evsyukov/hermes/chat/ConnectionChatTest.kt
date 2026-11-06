@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -50,6 +52,8 @@ import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
+import org.evsyukov.hermes.data.server.WorkOwner
+import org.evsyukov.hermes.testing.FixtureCleanup
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -70,6 +74,9 @@ class ConnectionChatTest {
     private val server = MockWebServer()
     private val gateway = FakeGateway()
     private val strings = AppStrings(context.resources)
+    /** The persisted profile the chats are built on; a session has no authority without one. */
+    private lateinit var home: ServerProfile
+    private lateinit var store: ServerStore
 
     /** What the failing step prints beside the calls: the state of the chat under test. */
     private var stateOf: (() -> String)? = null
@@ -87,43 +94,82 @@ class ConnectionChatTest {
 
     @Before
     fun setUp() {
-        // The history of a chat comes over plain HTTP. What the cards do is the chat's own business
-        // and takes a fake gateway, so no test here waits for a socket that drops and comes back.
-        server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
-                // The real detail route has no is_active; only the list and the live-session list know.
-                "/api/sessions/s1" -> {
-                    summaryGets.incrementAndGet()
-                    json("""{"id":"s1","title":"Mail","model":"stored-model","last_active":123.0,"input_tokens":100,"output_tokens":10}""")
-                }
-                "/api/sessions/s2" -> json("""{"id":"s2","title":"Other","model":"other-stored","input_tokens":7,"output_tokens":3,"is_active":true}""")
-                "/api/sessions/s2/messages" -> json("""{"messages":[{"id":10,"role":"user","content":"hello"}]}""")
+        try {
+            db.openHelper.writableDatabase
+            // The history of a chat comes over plain HTTP. What the cards do is the chat's own business
+            // and takes a fake gateway, so no test here waits for a socket that drops and comes back.
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
+                    // The real detail route has no is_active; only the list and the live-session list know.
+                    "/api/sessions/s1" -> {
+                        summaryGets.incrementAndGet()
+                        json("""{"id":"s1","title":"Mail","model":"stored-model","last_active":123.0,"input_tokens":100,"output_tokens":10}""")
+                    }
+                    "/api/sessions/s2" -> json("""{"id":"s2","title":"Other","model":"other-stored","input_tokens":7,"output_tokens":3,"is_active":true}""")
+                    "/api/sessions/s2/messages" -> json("""{"messages":[{"id":10,"role":"user","content":"hello"}]}""")
 
-                "/api/sessions/s1/messages" -> when {
-                    historyFails -> MockResponse.Builder().code(500).build()
-                    historyEndsWithUser -> json("""{"messages":[{"id":1,"role":"user","content":"send the report"}]}""")
-                    else -> json(
-                        """{"messages":[
-                            {"id":1,"role":"user","content":"send the report"},
-                            {"id":2,"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"manage_connections","arguments":"{}"}}]}
-                        ]}""",
-                    )
+                    "/api/sessions/s1/messages" -> when {
+                        historyFails -> MockResponse.Builder().code(500).build()
+                        historyEndsWithUser -> json("""{"messages":[{"id":1,"role":"user","content":"send the report"}]}""")
+                        else -> json(
+                            """{"messages":[
+                                {"id":1,"role":"user","content":"send the report"},
+                                {"id":2,"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"manage_connections","arguments":"{}"}}]}
+                            ]}""",
+                        )
+                    }
+                    else -> MockResponse.Builder().code(404).build()
                 }
-                else -> MockResponse.Builder().code(404).build()
             }
+            server.start()
+            // The store is process-wide: this class registers its own profile and takes it away again,
+            // so a session here has a real owner and the next class starts from its own state.
+            home = ServerProfile("chat-home", "Home", server.url("/").toString())
+            store = ServerStore(context, PlainCipher, scope)
+            runBlocking { store.save(home, makeActive = true) }
+            setupFailure?.let { throw it }
+        } catch (primary: Throwable) {
+            try { tearDown() } catch (cleanup: Throwable) { if (cleanup !== primary) primary.addSuppressed(cleanup) }
+            throw primary
         }
-        server.start()
     }
+
+    private var serverClosed = false
+    internal val fixtureDependenciesClosed: Boolean get() = !fixtureDatabaseOpen && serverClosed
+    internal val fixtureCleanup = FixtureCleanup()
+    internal var setupFailure: RuntimeException? = null
+    internal var resetFailure: RuntimeException? = null
+    @Volatile internal var resetWriteFailure: Exception? = null
+    @Volatile internal var resetReadFailure: Exception? = null
+    @Volatile private var resetting = false
+    internal var resetResults = mutableListOf<org.evsyukov.hermes.data.server.NativeResult>()
+    internal var closeFailure: RuntimeException? = null
+    internal val fixtureDatabaseOpen: Boolean get() = db.isOpen
+    internal fun fixtureSeedReset() = Unit
+    internal fun fixtureRemoveResetTarget() = runBlocking { org.evsyukov.hermes.testing.resetFixtureProfiles(store, listOf(home.id)) }
+    internal fun fixtureProducerScope(): CoroutineScope = scope
 
     @After
     fun tearDown() {
-        scope.closeWithOwnedJobs(db) { server.close() }
+        val owner = scope.coroutineContext.job
+        fixtureCleanup.finish(
+            listOf(owner),
+            beforeJoin = listOf("reset profile" to {
+                resetFailure?.let { throw it }
+                if (::store.isInitialized) { resetting = true; try { runBlocking { org.evsyukov.hermes.testing.resetFixtureProfiles(store, listOf(home.id)) { resetResults += it } } } finally { resetting = false } }
+            }),
+            afterJoin = listOf(
+                "close server" to { server.close(); serverClosed = true },
+                "close Room" to { db.close() },
+                "report close failure" to { closeFailure?.let { throw it } },
+            ),
+        )
     }
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
     /** A chat with its turn waiting on the card of `op1`, opened afresh on a connected gateway. */
-    private suspend fun openChat(onRead: (String, Double) -> Unit = { _, _ -> }): ChatController {
+    private suspend fun openChat(onRead: (String, Double, WorkOwner) -> Unit = { _, _, _ -> }): ChatController {
         gateway.connect()
         val chat = chatFor("s1", onRead)
         withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
@@ -133,7 +179,7 @@ class ConnectionChatTest {
     /** Another stored chat on the same gateway, opened while the connection is already up. */
     private suspend fun openChatFor(
         id: String,
-        onRead: (String, Double) -> Unit = { _, _ -> },
+        onRead: (String, Double, WorkOwner) -> Unit = { _, _, _ -> },
         onHistoryReady: () -> Unit = {},
     ): ChatController {
         if (gateway.state.value != SocketState.READY) gateway.connect()
@@ -156,13 +202,8 @@ class ConnectionChatTest {
         }
     }
 
-    private fun chatFor(
-        id: String,
-        onRead: (String, Double) -> Unit = { _, _ -> },
-        onLive: (String, String, String) -> Unit = { _, _, _ -> },
-    ): ChatController {
-        val profile = ServerProfile("home", "Home", server.url("/").toString())
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+    private fun chatFor(id: String, onRead: (String, Double, WorkOwner) -> Unit = { _, _, _ -> }, onLive: (String, String, String) -> Unit = { _, _, _ -> }): ChatController {
+        val session = ServerSession(home, OkHttpClient(), store, strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
         return ChatController(session, gateway, scope, strings, id, onRead = onRead, onLive = onLive)
     }
 
@@ -359,7 +400,7 @@ class ConnectionChatTest {
     fun `opening a chat tells the read mark the activity it shows`() = runBlocking<Unit> {
         val seen = kotlinx.coroutines.CompletableDeferred<Pair<String, Double>>()
 
-        val chat = openChat { id, at -> seen.complete(id to at) }
+        val chat = openChat { id, at, _ -> seen.complete(id to at) }
         val (id, at) = withTimeout(5_000) { seen.await() }
         chat.close()
 
@@ -500,7 +541,7 @@ class ConnectionChatTest {
         val opening = async(start = CoroutineStart.UNDISPATCHED) {
             openChatFor(
                 "s2",
-                onRead = { id, _ ->
+                onRead = { id, _, _ ->
                     check(id == "s2")
                     held.complete(Unit)
                     check(gate.await(5, TimeUnit.SECONDS)) { "read gate was not released" }
@@ -539,9 +580,9 @@ class ConnectionChatTest {
         }
     }
 
-    private object PlainCipher : TokenCipher {
-        override fun encrypt(plain: String) = plain
-        override fun decrypt(sealed: String) = sealed
+    private val PlainCipher = object : TokenCipher {
+        override fun encrypt(plain: String): String { if (resetting) resetWriteFailure?.let { throw it }; return plain }
+        override fun decrypt(sealed: String): String { if (resetting) resetReadFailure?.let { throw it }; return sealed }
     }
 }
 
@@ -635,7 +676,7 @@ private class FakeGateway : GatewayChannel {
     }
 
     fun send(type: String, sessionId: String, payload: String) {
-        _events.tryEmit(GatewayEvent(type, sessionId, null, HermesJson.parseToJsonElement(payload).jsonObject))
+        _events.tryEmit(GatewayEvent(type, sessionId, null, HermesJson.parseToJsonElement(payload).jsonObject, transport = _transport.value))
     }
 
     override suspend fun awaitReady() {

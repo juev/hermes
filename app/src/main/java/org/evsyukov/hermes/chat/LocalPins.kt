@@ -16,8 +16,22 @@ private val Context.pinStore by preferencesDataStore(name = "pins")
 class LocalPins(private val context: Context) {
     suspend fun of(server: String): Set<String> = context.pinStore.data.first()[key(server)].orEmpty()
 
+    @Volatile
+    internal var beforeSet: (suspend () -> Unit)? = null
+
     suspend fun set(server: String, id: String, pinned: Boolean) {
+        beforeSet?.invoke()
+        setNow(server, id, pinned) { true }
+    }
+
+    suspend fun setOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, lifetime: org.evsyukov.hermes.data.server.ProfileLifetime, id: String, pinned: Boolean, wanted: () -> Boolean) {
+        beforeSet?.invoke()
+        lifetime.withOwner(owner) { setNow(owner.profileId, id, pinned, wanted) }
+    }
+
+    private suspend fun setNow(server: String, id: String, pinned: Boolean, wanted: () -> Boolean) {
         context.pinStore.edit {
+            if (!wanted()) return@edit
             val pins = it[key(server)].orEmpty()
             it[key(server)] = if (pinned) pins + id else pins - id
         }

@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,10 +47,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.BuildConfig
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.ui.LocalSignOutResult
+import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.data.settings.cacheLimitOf
 import org.evsyukov.hermes.push.PushState
@@ -62,7 +66,7 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -> Unit, onSignOut: () -> Unit) {
+fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -> Unit, onSignOut: suspend (ServerProfile) -> Boolean, prepareSignOut: ((ServerProfile) -> suspend () -> LocalSignOutResult)? = null) {
     val colors = ChatTheme.colors
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -165,7 +169,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
                     tailnet.error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                 }
                 ClickRow(stringResource(R.string.settings_node_log), null, onClick = { tailnetLogs = container.tailnet.logs() })
-                ClickRow(stringResource(R.string.settings_tailnet_leave), stringResource(R.string.settings_tailnet_leave_hint), onClick = { container.tailnet.reset() })
+                LeaveTailnetRow(onLeave = { container.tailnet.reset() })
             }
 
             SectionTitle(stringResource(R.string.settings_session))
@@ -192,7 +196,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
                     cacheTick++
                 }
             })
-            ClickRow(stringResource(R.string.settings_sign_out), stringResource(R.string.settings_sign_out_hint), onClick = onSignOut)
+            SignOutRow(active = servers.active, onSignOut = onSignOut, prepareSignOut = prepareSignOut)
 
             SectionTitle(stringResource(R.string.settings_about))
             Text(stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), color = colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
@@ -221,6 +225,135 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit, onLicenses: () -
                 }
             },
             confirmButton = { TextButton(onClick = { tailnetLogs = null }) { Text(stringResource(R.string.common_close)) } },
+        )
+    }
+}
+
+/** Signs out of the server that was active when the row was tapped, never of one selected later. */
+@Composable
+internal fun SignOutRow(active: ServerProfile?, onSignOut: suspend (ServerProfile) -> Boolean, prepareSignOut: ((ServerProfile) -> suspend () -> LocalSignOutResult)? = null) {
+    var target by remember { mutableStateOf<ServerProfile?>(null) }
+    var pending by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val currentActive by rememberUpdatedState(active)
+    val resources by rememberUpdatedState(LocalResources.current)
+    val scope = rememberCoroutineScope()
+
+    // The dialog belongs to the server it names; another server in the slot takes it away.
+    LaunchedEffect(active?.id) {
+        val shown = target ?: return@LaunchedEffect
+        if (active?.id != shown.id) {
+            target = null
+            error = null
+        }
+    }
+
+    ClickRow(
+        stringResource(R.string.settings_sign_out),
+        stringResource(R.string.settings_sign_out_hint),
+        onClick = {
+            if (!pending) {
+                error = null
+                target = active
+            }
+        },
+    )
+
+    target?.let { shown ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!pending) {
+                    target = null
+                    error = null
+                }
+            },
+            title = { Text(stringResource(R.string.settings_sign_out_confirm_title, shown.name)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.settings_sign_out_confirm_text, shown.name))
+                    error?.let {
+                        Text(it, color = ChatTheme.colors.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !pending,
+                    onClick = {
+                        if (pending) return@TextButton
+                        // The user confirmed this server; a server selected meanwhile is not signed out.
+                        if (currentActive?.id != shown.id) {
+                            target = null
+                            error = null
+                            return@TextButton
+                        }
+                        val action = prepareSignOut?.invoke(shown)
+                        pending = true
+                        error = null
+                        scope.launch {
+                            try {
+                                val result = action?.invoke() ?: if (onSignOut(shown)) LocalSignOutResult.COMPLETE else LocalSignOutResult.FAILED
+                                if (result != LocalSignOutResult.FAILED) {
+                                    // INCOMPLETE is a committed sign-out: its target-specific notice stays on Settings.
+                                    target = null
+                                    error = null
+                                } else {
+                                    error = resources.getString(R.string.settings_sign_out_failed, shown.name)
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                error = resources.getString(R.string.settings_sign_out_failed, shown.name)
+                            } finally {
+                                pending = false
+                            }
+                        }
+                    },
+                ) { Text(stringResource(R.string.settings_sign_out_confirm_action), color = ChatTheme.colors.danger) }
+            },
+            dismissButton = {
+                TextButton(enabled = !pending, onClick = {
+                    target = null
+                    error = null
+                }) { Text(stringResource(R.string.common_cancel)) }
+            },
+        )
+    }
+}
+
+/** Leaves the embedded tailnet after the user agrees; without the node the row is not shown. */
+@Composable
+internal fun LeaveTailnetRow(onLeave: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+    var fired by remember { mutableStateOf(false) }
+
+    ClickRow(
+        stringResource(R.string.settings_tailnet_leave),
+        stringResource(R.string.settings_tailnet_leave_hint),
+        onClick = {
+            fired = false
+            confirming = true
+        },
+    )
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text(stringResource(R.string.settings_tailnet_leave_confirm_title)) },
+            text = { Text(stringResource(R.string.settings_tailnet_leave_confirm_text)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (fired) return@TextButton
+                        fired = true
+                        confirming = false
+                        onLeave()
+                    },
+                ) { Text(stringResource(R.string.settings_tailnet_leave_confirm_action), color = ChatTheme.colors.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text(stringResource(R.string.common_cancel)) }
+            },
         )
     }
 }

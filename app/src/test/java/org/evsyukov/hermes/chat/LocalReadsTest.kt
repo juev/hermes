@@ -69,7 +69,7 @@ class LocalReadsTest {
     private fun failing(): suspend (String, Double) -> Double? = { _, _ -> throw IOException("offline") }
 
     private suspend fun LocalReads.unreadOf(chats: List<ChatSummary>, find: suspend (String, Double) -> Double?) =
-        unread(server, chats, find).associate { it.id to it.unread }
+        unread(server, chats, find = find).associate { it.id to it.unread }
 
     @Test
     fun `an answer found online stays unread after a restart that can only read the phone's copy`() = runBlocking<Unit> {
@@ -167,7 +167,7 @@ class LocalReadsTest {
         // A refresh of an older list is still reading when a newer one finds the answer.
         val older = async { reads.unread(server, listOf(chat("a", 120.0))) { _, _ -> started.complete(Unit); slow.await() } }
         started.await()
-        reads.unread(server, listOf(chat("a", 160.0)), Finder(mapOf("a" to 155.0))::find)
+        reads.unread(server, listOf(chat("a", 160.0)), find = Finder(mapOf("a" to 155.0))::find)
         slow.complete(115.0)
         older.await()
         reads.markRead(server, "a", 150.0)

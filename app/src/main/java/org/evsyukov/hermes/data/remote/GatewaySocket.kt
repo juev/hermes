@@ -1,5 +1,7 @@
 package org.evsyukov.hermes.data.remote
 
+import kotlinx.coroutines.ensureActive
+
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CompletableDeferred
@@ -34,6 +36,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.data.server.WorkOwner
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
@@ -42,7 +45,7 @@ import java.util.concurrent.atomic.AtomicLong
  * An event of a session. [transport] is not on the wire: it is the connection, by
  * [GatewayChannel.transport], the frame came over, 0 for one the app made itself.
  */
-data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject, val transport: Long = 0L)
+data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject, val transport: Long = 0L, val owner: WorkOwner? = null)
 
 /**
  * A question the server asks the client (approval, clarify); answered with [GatewaySocket.respond].
@@ -141,17 +144,42 @@ class GatewaySocket(
     @Volatile
     private var pings = false
 
+    @Volatile private var connectorOwner: WorkOwner? = null
+
+    fun ownerOn(transport: Long): WorkOwner? = synchronized(this) {
+        connectorOwner.takeIf { transport != 0L && _transport.value == transport }
+    }
+
     /**
      * Keeps the socket open until [stop]; safe to call many times, and does nothing after [stop]. A
      * socket whose sign-in is over stops trying until it is started again.
      */
-    @Synchronized
-    fun start() {
-        if (stopped) return
-        wanted = true
-        if (connector?.isActive == true) return
-        readyGate = CompletableDeferred()
-        connector = scope.launch { connectLoop() }
+    fun start() = start(http.owner())
+
+    fun start(owner: WorkOwner?) {
+        http.publishWork(owner) {
+            synchronized(this) {
+                if (stopped) return@synchronized
+                if (connector?.isActive == true && connectorOwner == owner) { wanted = true; return@synchronized }
+                if (connectorOwner != owner) {
+                    attempt++
+                    connector?.cancel()
+                    heartbeat?.cancel()
+                    probing?.cancel()
+                    socket?.cancel()
+                    socket = null
+                    lose()
+                    _state.value = SocketState.DISCONNECTED
+                    val error = IOException("Socket authorization replaced")
+                    pending.close().forEach { it.completeExceptionally(error) }
+                    readyGate.completeExceptionally(error)
+                }
+                connectorOwner = owner
+                wanted = true
+                readyGate = CompletableDeferred()
+                connector = scope.launch { connectLoop(owner) }
+            }
+        }
     }
 
     /**
@@ -225,16 +253,17 @@ class GatewaySocket(
         }
     }
 
-    private suspend fun connectLoop() {
+    private suspend fun connectLoop(owner: WorkOwner?) {
         var pause = firstPause
         while (true) {
+            if (!http.holds(owner)) return
             val (number, gate) = begin() ?: return
             val closed = CompletableDeferred<Unit>()
             val attemptAt = System.currentTimeMillis()
             try {
-                val request = Request.Builder().url(socketUrl()).build()
+                val request = Request.Builder().url(socketUrl(owner)).build()
                 val ticketMillis = System.currentTimeMillis() - attemptAt
-                if (!open(number, request, Listener(number, closed, gate))) return
+                if (http.publishWork(owner) { open(number, request, Listener(number, closed, gate)) } != true) return
                 withTimeout(20_000) { gate.await() }
                 Log.i(TAG, "Gateway ready in ${System.currentTimeMillis() - attemptAt} ms, $ticketMillis ms of them for the ticket")
                 pause = firstPause
@@ -310,10 +339,11 @@ class GatewaySocket(
     private fun current(number: Long): Boolean = attempt == number
 
     /** A ticket lives 30 seconds and opens one socket; a server without sign-in takes no ticket. */
-    private suspend fun socketUrl(): String {
+    private suspend fun socketUrl(owner: WorkOwner?): String {
         val url = http.endpoint("api/ws")
-        if (http.accessToken() != null) {
-            val ticket = http.postJson("api/auth/ws-ticket").jsonObject.string("ticket")
+        val token = if (owner == null) http.accessToken() else http.accessToken(owner)
+        if (token != null) {
+            val ticket = (if (owner == null) http.postJson("api/auth/ws-ticket") else http.postJson(owner, "api/auth/ws-ticket")).jsonObject.string("ticket")
             url.addQueryParameter("ticket", ticket)
         }
         val built = url.build().toString()
@@ -326,31 +356,55 @@ class GatewaySocket(
 
     /** Calls [method] and waits for its result; errors come back as [RpcException]. */
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
-        awaitReady()
-        val open = socket ?: throw IOException(strings.get(R.string.error_no_connection))
-        return request(open, method, params, timeoutMillis)
+        val origin = http.owner()
+        awaitReady(origin)
+        val open = readyOn ?: throw IOException(strings.get(R.string.error_no_connection))
+        return request(open, method, params, timeoutMillis, origin, _transport.value)
+    }
+
+    override suspend fun callOn(owner: WorkOwner, transport: Long, method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
+        val via = synchronized(this) { readyOn.takeIf { transport != 0L && _transport.value == transport && connectorOwner == owner } }
+            ?: throw IOException("Retired socket transport")
+        return request(via, method, params, timeoutMillis, owner, transport)
     }
 
     /**
      * Sends [method] over [via] alone. The socket's own calls go this way: they belong to one
      * connection and must neither wait for nor open another.
      */
-    private suspend fun request(via: WebSocket, method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long): JsonElement {
+    @Volatile internal var beforeTerminalCompletion: ((JsonObject) -> Unit)? = null
+    @Volatile internal var beforeRequestAwait: (suspend (String) -> Unit)? = null
+    @Volatile internal var onRequestEnqueued: ((String) -> Unit)? = null
+
+    private suspend fun request(via: WebSocket, method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long, owner: WorkOwner? = connectorOwner, transport: Long? = null): JsonElement {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
         val id = "a${ids.incrementAndGet()}"
         val deferred = CompletableDeferred<JsonElement>()
-        if (!pending.add(via, id, deferred)) throw IOException(strings.get(R.string.error_no_connection))
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", id)
             put("method", method)
             put("params", params)
         }
-        if (!via.send(HermesJson.encodeToString(JsonElement.serializer(), frame))) {
+        val sent = http.publishWork(owner) {
+            synchronized(this) {
+                if (readyOn !== via || (transport != null && _transport.value != transport) || !pending.add(via, id, deferred)) false
+                else via.send(HermesJson.encodeToString(JsonElement.serializer(), frame)).also { if (it) onRequestEnqueued?.invoke(method) }
+            }
+        } == true
+        if (!sent) {
             pending.take(id)
             throw IOException(strings.get(R.string.error_no_connection))
         }
         return try {
-            withTimeout(timeoutMillis) { deferred.await() }
+            beforeRequestAwait?.invoke(method)
+            val result = withTimeout(timeoutMillis) { deferred.await() }
+            if (!http.holds(owner) || (transport != null && _transport.value != transport)) throw IOException("Retired socket origin")
+            result
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (!http.holds(owner) || (transport != null && _transport.value != transport)) throw IOException("Retired socket origin", error)
+            throw error
         } finally {
             pending.take(id)
         }
@@ -367,6 +421,14 @@ class GatewaySocket(
         return via.send(answerFrame(id, result, null))
     }
 
+    override fun respondOwned(owner: WorkOwner, transport: Long, id: String, result: JsonElement?, error: String?): Boolean =
+        http.publishWork(owner) {
+            synchronized(this) {
+                readyOn?.takeIf { connectorOwner == owner && transport != 0L && _transport.value == transport }
+                    ?.send(answerFrame(id, result, error)) ?: false
+            }
+        } == true
+
     private fun answerFrame(id: String, result: JsonElement?, error: String?): String {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
@@ -381,13 +443,16 @@ class GatewaySocket(
     }
 
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
-    override suspend fun awaitReady() {
-        start()
-        withTimeout(30_000) {
+    override suspend fun awaitReady() = awaitReady(http.owner())
+
+    suspend fun awaitReady(owner: WorkOwner?) {
+        if (!http.holds(owner)) throw IOException("Retired socket origin")
+        start(owner)
+        withTimeout(20_000) {
             while (true) {
-                // The gate first: the state turns READY before the gate of that connection completes.
+                if (!http.holds(owner)) throw IOException("Retired socket origin")
                 val gate = readyGate
-                if (_state.value == SocketState.READY) return@withTimeout
+                if (_state.value == SocketState.READY && connectorOwner == owner) return@withTimeout
                 gate.await()
             }
         }
@@ -401,6 +466,24 @@ class GatewaySocket(
     }
 
     private fun handle(text: String, via: WebSocket, number: Long, gate: CompletableDeferred<Unit>) {
+        if (!current(number)) return
+        // A terminal reply must finish its original waiter even after retirement. It publishes no
+        // event/ready state; request() rechecks authority before returning the result to its caller.
+        val reply = runCatching { HermesJson.parseToJsonElement(text) as? JsonObject }.getOrNull()
+        val id = reply?.get("id")?.str()
+        if (reply != null && reply.string("method") == null && id != null) {
+            val deferred = pending.take(id) ?: return
+            beforeTerminalCompletion?.invoke(reply)
+            val error = reply["error"] as? JsonObject
+            if (error != null) deferred.completeExceptionally(RpcException(error.long("code")?.toInt() ?: -1, error.string("message") ?: strings.get(R.string.error_server), error["data"]))
+            else deferred.complete(reply["result"] ?: JsonNull)
+            return
+        }
+        val origin = connectorOwner
+        http.publishWork(origin) { handleAdmitted(text, via, number, gate, origin) }
+    }
+
+    private fun handleAdmitted(text: String, via: WebSocket, number: Long, gate: CompletableDeferred<Unit>, owner: WorkOwner?) {
         // A frame of an attempt that is over, handed over late by its listener, belongs to no connection
         // the socket has: it neither tells the app anything nor counts as a sign of life.
         if (!current(number)) return
@@ -422,6 +505,7 @@ class GatewaySocket(
                     seq = params.long("seq"),
                     payload = params["payload"] as? JsonObject ?: JsonObject(emptyMap()),
                     transport = number,
+                    owner = owner,
                 )
                 if (event.type == "gateway.ready") {
                     onReady(event.payload, via, number, gate)
@@ -446,8 +530,9 @@ class GatewaySocket(
 
     private fun onReady(payload: JsonObject, via: WebSocket, number: Long, gate: CompletableDeferred<Unit>) {
         val epoch = payload.string("replay_epoch")
+        val origin = connectorOwner
         scope.launch {
-            if (!markReady(number, via, gate, payload)) return@launch
+            if (http.publishWork(origin) { markReady(number, via, gate, payload) } != true) return@launch
             // Without this the server fails approvals of this client at once instead of asking.
             try {
                 request(via, "client.capabilities", buildJsonObject { put("server_requests", true) }, timeoutMillis = 15_000)
@@ -455,10 +540,10 @@ class GatewaySocket(
                 Log.w(TAG, "client.capabilities failed: ${e.message}")
             }
             if (pings) startHeartbeat(number, via)
-            if (current(number)) {
-                _connections.update { it + 1 }
-                _ready.emit(epoch)
-            }
+            val published = http.publishWork(origin) {
+                if (current(number)) { _connections.update { it + 1 }; true } else false
+            } == true
+            if (published) _ready.emit(epoch)
         }
     }
 

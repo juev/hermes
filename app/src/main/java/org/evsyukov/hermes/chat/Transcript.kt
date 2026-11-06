@@ -1,5 +1,6 @@
 package org.evsyukov.hermes.chat
 
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.data.remote.GatewayEvent
@@ -11,12 +12,15 @@ import org.evsyukov.hermes.data.remote.string
  * Skills or a cron run the server expanded a message into: the chat shows a chip with their names
  * and [full], the text the model got, on demand.
  */
+@Serializable
 data class Invocation(val cron: Boolean, val skills: List<String>, val full: String)
 
 /** A file the user attached: a path on the server, shown as a chip or a picture. */
+@Serializable
 data class Attachment(val path: String, val name: String, val image: Boolean)
 
 /** A tool the agent ran during a turn. */
+@Serializable
 data class ToolRun(
     val id: String,
     val name: String,
@@ -31,15 +35,21 @@ data class ToolRun(
 )
 
 /** A piece of an answer, in the order the agent produced it. */
+@Serializable
 sealed interface Part {
+    @Serializable
     data class Text(val text: String) : Part
+    @Serializable
     data class Reasoning(val text: String) : Part
+    @Serializable
     data class Tool(val run: ToolRun) : Part
 }
 
 /** How far a message of the user got; only a confirmed one needs no note under the bubble. */
+@Serializable
 enum class Delivery { SENDING, SENT, UNKNOWN, FAILED }
 
+@Serializable
 sealed interface ChatItem {
     val key: String
 
@@ -50,6 +60,7 @@ sealed interface ChatItem {
      * A message the user sent. [text] is what the bubble shows; [sent] is what goes again on
      * regenerate, which for a skill invocation is the whole message the server built from it.
      */
+    @Serializable
     data class User(
         override val key: String,
         val text: String,
@@ -75,8 +86,10 @@ sealed interface ChatItem {
     }
 
     /** The report of a cron job the server filed into the chat that scheduled the job. */
+    @Serializable
     data class CronReport(override val key: String, val job: String, val text: String, override val time: Double? = null) : ChatItem
 
+    @Serializable
     data class Assistant(
         override val key: String,
         val parts: List<Part>,
@@ -354,13 +367,13 @@ fun closeOpen(items: List<ChatItem>, interrupted: Boolean): List<ChatItem> {
  * events to come. [streamed] is all the text the turn produced so far: what the stored part lacks of
  * it is added, and text that does not continue the stored part is left out rather than shown twice.
  */
-fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String, now: () -> Double = ::nowSeconds): List<ChatItem> {
+fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String, now: () -> Double = ::nowSeconds, updateStreaming: Boolean = false): List<ChatItem> {
     val last = items.lastOrNull()
-    if (last is ChatItem.Assistant && last.streaming) return items
+    if (last is ChatItem.Assistant && last.streaming && !updateStreaming) return items
     val opened = if (last is ChatItem.Assistant) items.dropLast(1) + last.copy(streaming = true) else openAnswer(items, keyOf, now)
     val stored = (opened.last() as ChatItem.Assistant).parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
     val missing = if (streamed.startsWith(stored)) streamed.substring(stored.length) else ""
-    return if (missing.isBlank()) opened else updateOpen(opened) { it + Part.Text(missing) }
+    return if (missing.isEmpty()) opened else updateOpen(opened) { appendPart(it, missing) { previous -> Part.Text(previous + missing) } }
 }
 
 /** The clock of the phone in epoch seconds, the unit the server keeps its times in. */

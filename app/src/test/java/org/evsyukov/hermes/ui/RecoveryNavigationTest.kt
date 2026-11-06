@@ -225,7 +225,7 @@ class RecoveryNavigationTest {
                     val cleanup = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                     try {
                         onRestore()
-                        runBlocking { ServerStore(context, PlainCipher, cleanup).update { state } }
+                        runBlocking { ServerStore(context, PlainCipher, cleanup).restoreSyntheticState(state) }
                     } catch (failure: Throwable) {
                         record(failure)
                     } finally {
@@ -749,9 +749,7 @@ class RecoveryNavigationTest {
                 gate.await()
                 val own = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                 try {
-                    ServerStore(context, PlainCipher, own).update {
-                        ServerState(servers = listOf(late), activeId = late.id)
-                    }
+                    ServerStore(context, PlainCipher, own).restoreSyntheticState(ServerState(servers = listOf(late), activeId = late.id))
                 } finally {
                     runBlocking { withTimeout(JOIN_TIMEOUT_MS) { requireNotNull(own.coroutineContext[Job]).cancelAndJoin() } }
                 }
@@ -846,9 +844,7 @@ class RecoveryNavigationTest {
             val writer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             try {
                 runBlocking {
-                    ServerStore(context, PlainCipher, writer).update {
-                        ServerState(servers = listOf(late), activeId = late.id)
-                    }
+                    ServerStore(context, PlainCipher, writer).restoreSyntheticState(ServerState(servers = listOf(late), activeId = late.id))
                 }
             } finally {
                 runBlocking { withTimeout(JOIN_TIMEOUT_MS) { requireNotNull(writer.coroutineContext[Job]).cancelAndJoin() } }
@@ -906,7 +902,7 @@ class RecoveryNavigationTest {
     private fun restoreServers(state: ServerState) {
         val restore = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         try {
-            runBlocking { ServerStore(context, PlainCipher, restore).update { state } }
+            runBlocking { ServerStore(context, PlainCipher, restore).restoreSyntheticState(state) }
         } finally {
             runBlocking { withTimeout(JOIN_TIMEOUT_MS) { requireNotNull(restore.coroutineContext[Job]).cancelAndJoin() } }
         }
@@ -957,7 +953,7 @@ class RecoveryNavigationTest {
 
     private fun start(profiles: List<ServerProfile>, active: String, tokens: Map<String, Tokens> = emptyMap()): AppContainer {
         runBlocking {
-            ServerStore(context, PlainCipher, scope).update { ServerState(servers = profiles, activeId = active, tokens = tokens) }
+            ServerStore(context, PlainCipher, scope).restoreSyntheticState(ServerState(servers = profiles, activeId = active, tokens = tokens))
         }
         val app = AppContainer(context, PlainCipher)
         container = app

@@ -87,7 +87,7 @@ class ServerEditScreenTest {
                         tailnetStatus = status,
                         onCheck = onCheck,
                         onSave = onSave,
-                        onDelete = {},
+                        onDelete = { true },
                         onBack = {},
                         onSaved = onSaved,
                     )
@@ -155,7 +155,7 @@ class ServerEditScreenTest {
                     tailnetStatus = status,
                     onCheck = { string(R.string.setup_check_ok) },
                     onSave = { saved = it },
-                    onDelete = {},
+                    onDelete = { true },
                     onBack = {},
                     onSaved = {},
                 )

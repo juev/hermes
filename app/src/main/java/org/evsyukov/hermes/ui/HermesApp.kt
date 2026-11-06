@@ -86,9 +86,9 @@ fun HermesApp(vm: MainViewModel) {
                 !loaded -> Unit
                 draft != null -> {
                     BackHandler { vm.closeDraftServer() }
-                    ServerEditScreen(container, id = null, onBack = vm::closeDraftServer, onSaved = vm::closeDraftServer, draft = draft)
+                    ServerEditScreen(container, id = null, onBack = vm::closeDraftServer, onSaved = vm::closeDraftServer, onRemove = vm::removeServer, prepareRemoval = vm::prepareRemoval, draft = draft)
                 }
-                servers.servers.isEmpty() -> ServerEditScreen(container, id = null, onBack = null, onSaved = {})
+                servers.servers.isEmpty() -> ServerEditScreen(container, id = null, onBack = null, onSaved = {}, onRemove = vm::removeServer, prepareRemoval = vm::prepareRemoval)
                 else -> MainScreen(vm)
             }
         }
@@ -144,14 +144,7 @@ private fun MainScreen(vm: MainViewModel) {
             return
         }
         is Screen.Settings -> {
-            SettingsScreen(container, onBack = { vm.pop() }, onLicenses = { vm.push(Screen.Licenses) }, onSignOut = {
-                scope.launch {
-                    connection?.session?.signOut()
-                    connection?.session?.profile?.id?.let { container.reads.clear(it) }
-                    vm.pop()
-                    vm.checkAccess()
-                }
-            })
+            SettingsScreen(container, onBack = { vm.pop() }, onLicenses = { vm.push(Screen.Licenses) }, onSignOut = vm::signOut, prepareSignOut = vm::prepareSignOut)
             return
         }
         is Screen.Licenses -> {
@@ -159,7 +152,7 @@ private fun MainScreen(vm: MainViewModel) {
             return
         }
         is Screen.ServerEdit -> {
-            ServerEditScreen(container, top.id, onBack = { vm.pop() }, onSaved = { vm.pop() })
+            ServerEditScreen(container, top.id, onBack = { vm.pop() }, onSaved = { vm.pop() }, onRemove = vm::removeServer, prepareRemoval = vm::prepareRemoval)
             return
         }
         is Screen.Viewer -> {
@@ -216,7 +209,7 @@ private fun MainScreen(vm: MainViewModel) {
         onRefresh = vm::refreshChats,
         onShowList = vm::showList,
         onAdmin = { vm.push(Screen.Admin()); closeDrawer() },
-        onSettings = { vm.push(Screen.Settings); closeDrawer() },
+        onSettings = { vm.pushSettings(); closeDrawer() },
         onSwitchServer = { id -> vm.switchServer(id); closeDrawer() },
         onEditServer = { id -> vm.push(Screen.ServerEdit(id)); closeDrawer() },
     )
@@ -232,7 +225,8 @@ private fun MainScreen(vm: MainViewModel) {
         },
     ) {
         val controller = chat
-        if (controller == null || connection == null) {
+        val draft = controller?.let { vm.draftOf(it, connection) }
+        if (controller == null || connection == null || draft == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
             val c = connection!!
@@ -242,13 +236,13 @@ private fun MainScreen(vm: MainViewModel) {
                 serverName = servers.active?.name ?: "Hermes",
                 connected = socketState?.value != SocketState.DISCONNECTED || access != Access.OK,
                 onMenu = { scope.launch { drawer.open() } },
-                onNewChat = vm::newChat,
+                onNewChat = { vm.newChat() },
                 openFile = { path -> vm.openServerFile(path, controller.state.value.storedId) },
                 loadFile = { path -> vm.serverFile(path, controller.state.value.storedId) },
                 loadModels = { c.session.admin.modelOptions() },
                 openLocal = { attachment -> vm.openLocalFile(container.attachments.put(attachment.name, attachment.bytes), attachment.name, attachment.mime) },
                 onShown = vm::chatShown,
-                draft = vm.draftOf(controller),
+                draft = draft,
                 shared = vm.shared.collectAsStateWithLifecycle().value,
                 onSharedTaken = vm::sharedTaken,
             )
@@ -286,7 +280,7 @@ private fun RecoveryScaffold(
             active = connection.session.profile,
             onSwitchServer = vm::switchServer,
             onEditServer = { vm.push(Screen.ServerEdit(it)) },
-            onSettings = { vm.push(Screen.Settings) },
+            onSettings = { vm.pushSettings() },
         )
     }
 }
@@ -305,9 +299,10 @@ private fun SignInScreen(vm: MainViewModel, connection: Connection, servers: Lis
     // The system browser goes its own way; a server behind a proxy or the built-in tailnet signs in inside the app.
     fun start(inApp: Boolean) {
         error = null
+        val signIn = vm.captureSignIn()
         job = scope.launch {
             try {
-                vm.signIn(connection) { url ->
+                signIn { url ->
                     if (inApp) webUrl = url else CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url))
                 }
             } catch (e: CancellationException) {

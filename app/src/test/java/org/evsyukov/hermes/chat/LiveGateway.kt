@@ -2,7 +2,10 @@ package org.evsyukov.hermes.chat
 
 import android.app.Application
 import androidx.room.Room
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -14,11 +17,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
@@ -82,6 +89,26 @@ internal class LiveGateway : GatewayChannel {
 
     fun count(method: String) = calls.count { it.first == method }
 
+    private var createGate: CompletableDeferred<Unit>? = null
+
+    /** Completed when the next `session.create` arrives and waits for [releaseCreate]. */
+    val createArrived = CompletableDeferred<Unit>()
+
+    /** Holds the next `session.create` until [releaseCreate]. */
+    fun holdCreate() {
+        createGate = CompletableDeferred()
+    }
+
+    fun releaseCreate() {
+        createGate?.complete(Unit)
+    }
+
+    /** Waits at the `session.create` gate, if a test is holding it. */
+    suspend fun awaitCreate() {
+        createArrived.complete(Unit)
+        createGate?.await()
+    }
+
     @Volatile
     var epoch = "epoch1"
 
@@ -109,6 +136,9 @@ internal class LiveGateway : GatewayChannel {
     @Volatile
     var lastActive = 100.0
         private set
+
+    /** Synthetic server watermark supplied by ownership/coalescing scenarios. */
+    fun activity(at: Double) { lastActive = at }
 
     /** The gateway hosts the session of `s1`; off, its live list leaves the chat out. */
     @Volatile
@@ -354,9 +384,12 @@ internal class LiveGateway : GatewayChannel {
         if (_state.value != SocketState.READY) throw IOException("no connection")
     }
 
+    @Volatile var beforePrompt: (suspend (JsonObject) -> Unit)? = null
+
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
         if (_state.value != SocketState.READY) throw IOException("no connection")
         calls += method to params
+        if (method == "prompt.submit") beforePrompt?.invoke(params)
         return when (method) {
             "session.resume" -> {
                 resumedOn += _connections.value
@@ -378,6 +411,7 @@ internal class LiveGateway : GatewayChannel {
             }
             // A new chat's session; its questions are asked on `live1` like those of `s1`.
             "session.create" -> {
+                awaitCreate()
                 createdOn += _transport.value
                 buildJsonObject { put("session_id", "live1") }
             }
@@ -408,6 +442,28 @@ internal class LiveGateway : GatewayChannel {
 /** The HTTP side of the chat `s1`: its head and its stored history, as [gateway] has them now. */
 internal class LiveServer(private val gateway: LiveGateway) {
     val http = MockWebServer()
+    val requests = java.util.concurrent.CopyOnWriteArrayList<RecordedRequest>()
+    @Volatile var inputTokens = 0L
+    class Gate {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+    }
+    private val summaryGate = java.util.concurrent.atomic.AtomicReference<Gate?>()
+    private val ownedHistoryGate = java.util.concurrent.atomic.AtomicReference<Gate?>()
+    private val gates = java.util.concurrent.CopyOnWriteArrayList<Gate>()
+    fun holdSummary() = Gate().also { gates += it; summaryGate.set(it) }
+    fun holdHistory() = Gate().also { gates += it; ownedHistoryGate.set(it) }
+    fun releaseGates() = gates.forEach { it.release.countDown() }
+    private fun waitAt(gate: Gate?) {
+        if (gate == null) return
+        gate.entered.countDown()
+        check(gate.release.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "Live-server gate was not released" }
+    }
+
+    /** Set once [close] ran; a teardown regression checks that a failed reset did not skip it. */
+    @Volatile
+    var closed = false
+        private set
 
     /** How long the stored history takes to come, to let events race it. */
     @Volatile
@@ -423,18 +479,116 @@ internal class LiveServer(private val gateway: LiveGateway) {
     @Volatile
     var summary: String? = null
 
+    /** Holds a DELETE of `s1` after the request arrives; [releaseDelete] lets it answer. */
+    @Volatile
+    var deleteGate: java.util.concurrent.CountDownLatch? = null
+
+    /** Counted down when a DELETE of `s1` has arrived and is held by [deleteGate]. */
+    val deleteArrived = java.util.concurrent.CountDownLatch(1)
+
+    /** How many list requests the sidebar made over HTTP. */
+    private val lists = AtomicInteger()
+
+    val listCount: Int get() = lists.get()
+    private val searches = AtomicInteger()
+    val searchCount: Int get() = searches.get()
+
+    fun releaseDelete() {
+        deleteGate?.countDown()
+    }
+
+    /** Holds the next `session.create` of [gateway] until [releaseCreate]. */
+    fun holdCreate() = gateway.holdCreate()
+
+    fun releaseCreate() = gateway.releaseCreate()
+
+    val createArrived get() = gateway.createArrived
+
+    /**
+     * The gateway protocol over a real socket, enough for the view model's own connection: the first
+     * `session.create` waits on [LiveGateway.releaseCreate], so a test can hold the identity of a
+     * new chat while the screen moves on.
+     */
+    private val openSockets = java.util.concurrent.CopyOnWriteArrayList<WebSocket>()
+    val submittedPrompts = AtomicInteger()
+
+    /** Synthetic external input, delivered through the actual production socket collector. */
+    fun sendEvent(type: String, payload: JsonObject) {
+        check(openSockets.isNotEmpty()) { "No synthetic wire client" }
+        val frame = buildJsonObject {
+            put("jsonrpc", "2.0"); put("method", "event")
+            putJsonObject("params") { put("type", type); put("session_id", "live1"); put("payload", payload) }
+        }.toString()
+        openSockets.forEach { check(it.send(frame)) { "Synthetic wire refused input" } }
+    }
+
+    private val socketGateway = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            openSockets += webSocket
+            webSocket.send("""{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}""")
+        }
+
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            val frame = runCatching { HermesJson.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return
+            val id = (frame["id"] as? JsonPrimitive)?.content ?: return
+            val method = (frame["method"] as? JsonPrimitive)?.content
+            if (method == "prompt.submit") submittedPrompts.incrementAndGet()
+            val result = when (method) {
+                "session.create" -> {
+                    runBlocking { kotlinx.coroutines.withTimeout(5_000) { gateway.awaitCreate() } }
+                    """{"session_id":"live1","stored_session_id":"s1"}"""
+                }
+                "session.resume" -> """{"session_id":"live1","stored_session_id":"s1","running":0,"info":{"model":"live-model"}}"""
+                "session.active_list" -> if (gateway.hosted) """{"sessions":[{"id":"live1","session_key":"s1"}]}""" else """{"sessions":[]}"""
+                else -> "{}"
+            }
+            webSocket.send("""{"jsonrpc":"2.0","id":"$id","result":$result}""")
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            openSockets -= webSocket
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            openSockets -= webSocket
+        }
+    }
+
     init {
         http.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
-                "/api/sessions/s1" -> json(
-                    summary ?: """{"id":"s1","title":"Mail","model":"stored-model","last_active":${gateway.lastActive},"is_active":${gateway.running}}""",
-                )
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                return when (request.url.encodedPath) {
+                "/api/sessions/search" -> {
+                    searches.incrementAndGet()
+                    json("""{"results":[{"session_id":"s16","title":"Capacity","snippet":"found","source":"android"}]}""")
+                }
+                "/api/sessions" -> {
+                    lists.incrementAndGet()
+                    json("""{"sessions":[],"total":0}""")
+                }
+                "/api/sessions/s1" -> {
+                    if (request.method == "DELETE") {
+                        deleteArrived.countDown()
+                        deleteGate?.let { check(it.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "DELETE gate was not released" } }
+                    }
+                    val body = summary ?: """{"id":"s1","title":"Mail","model":"stored-model","last_active":${gateway.lastActive},"input_tokens":$inputTokens}"""
+                    waitAt(summaryGate.getAndSet(null))
+                    json(body)
+                }
                 "/api/sessions/s1/messages" -> {
                     if (historyDelayMillis > 0) Thread.sleep(historyDelayMillis)
-                    historyGate?.let { runCatching { it.await(30, TimeUnit.SECONDS) } }
-                    json(gateway.storedHistory())
+                    val body = gateway.storedHistory()
+                    historyGate?.let { check(it.await(30, TimeUnit.SECONDS)) { "history gate not released" } }
+                    waitAt(ownedHistoryGate.getAndSet(null))
+                    json(body)
                 }
+                "/api/sessions/s1/mutation-snapshot" -> json("{}")
+                "/api/system/stats" -> json("{}")
+                "/api/status" -> json("""{"auth_required":false,"version":"test"}""")
+                "/api/ws" -> MockResponse.Builder().webSocketUpgrade(socketGateway).build()
                 else -> MockResponse.Builder().code(404).build()
+                }
             }
         }
         http.start()
@@ -442,12 +596,28 @@ internal class LiveServer(private val gateway: LiveGateway) {
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
+    private val resources = org.evsyukov.hermes.testing.ChatTestResources()
+
+    fun finish(job: kotlinx.coroutines.Job, closures: List<Pair<String, () -> Unit>>) = resources.finish(job, closures)
+
     fun session(context: Application, scope: CoroutineScope, db: CacheDatabase): ServerSession {
         val profile = ServerProfile("home", "Home", http.url("/").toString())
-        return ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), AppStrings(context.resources), ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        return ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), AppStrings(context.resources), ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
     }
 
-    fun close() = http.close()
+    fun close() {
+        var primary: Throwable? = null
+        fun attempt(action: () -> Unit) {
+            try { action() } catch (failure: Throwable) {
+                val first = primary
+                if (first == null) primary = failure else if (first !== failure) first.addSuppressed(failure)
+            }
+        }
+        openSockets.forEach { socket -> attempt { socket.close(1000, "test over") } }
+        openSockets.clear()
+        attempt { http.close(); closed = true }
+        primary?.let { throw it }
+    }
 
     private object PlainCipher : TokenCipher {
         override fun encrypt(plain: String) = plain

@@ -5,6 +5,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,14 +15,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import okhttp3.OkHttpClient
 import org.evsyukov.hermes.AppStrings
+import org.evsyukov.hermes.data.auth.TokenCipher
+import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.remote.HermesJson
+import org.evsyukov.hermes.data.server.ServerProfile
+import org.evsyukov.hermes.data.server.ServerSession
+import org.evsyukov.hermes.data.server.ServerStore
+import org.evsyukov.hermes.testing.FixtureCleanup
 import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -39,22 +50,81 @@ class HiddenChatTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = LiveServer.database(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private lateinit var cache: ResponseCache
     private val gateway = LiveGateway()
     private val server = LiveServer(gateway)
     private val strings = AppStrings(context.resources)
 
     /** What the chat told the read mark, in order. */
     private val reads = ConcurrentLinkedQueue<Pair<String, Double>>()
+    private val readOwners = ConcurrentLinkedQueue<org.evsyukov.hermes.data.server.WorkOwner>()
+
+    /** The persisted profile the chats are built on; a session has no authority without one. */
+    private lateinit var home: ServerProfile
+    private lateinit var store: ServerStore
+
+    @Before
+    fun setUp() {
+        try {
+            db.openHelper.writableDatabase
+            cache = ResponseCache(db.responses(), scope, { Long.MAX_VALUE })
+            cache.producers
+            home = ServerProfile("hidden-chat-home", "Home", server.http.url("/").toString())
+            store = ServerStore(context, PlainCipher, scope)
+            runBlocking { store.save(home, makeActive = true) }
+            setupFailure?.let { throw it }
+        } catch (primary: Throwable) {
+            try { tearDown() } catch (cleanup: Throwable) { if (cleanup !== primary) primary.addSuppressed(cleanup) }
+            throw primary
+        }
+    }
+
+    private var serverClosed = false
+    internal val fixtureDependenciesClosed: Boolean get() = !fixtureDatabaseOpen && serverClosed
+    internal val fixtureCleanup = FixtureCleanup()
+    internal var setupFailure: RuntimeException? = null
+    internal var resetFailure: RuntimeException? = null
+    @Volatile internal var resetWriteFailure: Exception? = null
+    @Volatile internal var resetReadFailure: Exception? = null
+    @Volatile private var resetting = false
+    internal var resetResults = mutableListOf<org.evsyukov.hermes.data.server.NativeResult>()
+    internal var closeFailure: RuntimeException? = null
+    internal val fixtureDatabaseOpen: Boolean get() = db.isOpen
+    internal fun fixtureSeedReset() = Unit
+    internal fun fixtureRemoveResetTarget() = runBlocking { org.evsyukov.hermes.testing.resetFixtureProfiles(store, listOf(home.id)) }
+    internal fun fixtureProducerScope(): CoroutineScope = scope
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        fixtureCleanup.finish(
+            listOf(owner),
+            beforeJoin = listOf("release gates" to { server.releaseGates() }, "reset profile" to {
+                resetFailure?.let { throw it }
+                if (::store.isInitialized) { resetting = true; try { runBlocking { org.evsyukov.hermes.testing.resetFixtureProfiles(store, listOf(home.id)) { resetResults += it } } } finally { resetting = false } }
+            }),
+            afterJoin = listOf(
+                "close server" to { server.close(); serverClosed = true },
+                "close Room" to { db.close() },
+                "report close failure" to { closeFailure?.let { throw it } },
+            ),
+        )
     }
 
-    private fun chat(visible: Boolean = true) =
-        ChatController(server.session(context, scope, db), gateway, scope, strings, "s1", onRead = { id, at -> reads += id to at }, visible = visible)
+    private lateinit var lastSession: ServerSession
+
+    private fun chat(visible: Boolean = true, onLive: (String, String, String) -> Unit = { _, _, _ -> }): ChatController {
+        lastSession = ServerSession(home, OkHttpClient(), store, strings, cache)
+        return ChatController(
+            lastSession, gateway, scope, strings, "s1",
+            onRead = { id, at, owner -> reads += id to at; readOwners += owner }, onLive = onLive, visible = visible,
+        ).also { it.continuationProducers }
+    }
+
+    private val PlainCipher = object : TokenCipher {
+        override fun encrypt(plain: String): String { if (resetting) resetWriteFailure?.let { throw it }; return plain }
+        override fun decrypt(sealed: String): String { if (resetting) resetReadFailure?.let { throw it }; return sealed }
+    }
 
     private fun answer(state: ChatState) = state.items.lastOrNull() as? ChatItem.Assistant
 
@@ -62,11 +132,11 @@ class HiddenChatTest {
         withTimeout(timeoutMillis) { state.first(condition) }
 
     /** A chat opened on a turn under way: "Hello" streamed before it opened, " there" while it is on the screen. */
-    private suspend fun openMidTurn(): ChatController {
+    private suspend fun openMidTurn(adoptions: Channel<Unit>? = null): ChatController {
         gateway.connect()
         gateway.start("hi")
         gateway.delta("Hello")
-        val chat = chat()
+        val chat = chat(onLive = { _, _, _ -> adoptions?.trySend(Unit) })
         chat.until { answer(it)?.text == "Hello" && !it.loading }
         gateway.delta(" there")
         chat.until { answer(it)?.text == "Hello there" }
@@ -96,6 +166,324 @@ class HiddenChatTest {
                 }
             }
         }
+    }
+
+
+    private suspend fun awaitLoad(chat: ChatController, previous: kotlinx.coroutines.CompletableDeferred<Unit>? = null) {
+        withTimeout(10_000) {
+            while (chat.loadCompletion == null || chat.loadCompletion === previous) delay(5)
+            chat.loadCompletion!!.await()
+        }
+    }
+
+
+    @Test fun `D rejoin queued during held old history cannot start a retired second load`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("old accepted turn")
+        val hold = server.holdHistory()
+        val chat = chat(visible = false)
+        try {
+            assertThat(hold.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            withTimeout(10_000) { while (chat.joinedTransport != gateway.transport.value) delay(5) }
+            gateway.drop()
+            gateway.connect()
+            withTimeout(10_000) { while (!chat.pendingRejoin) delay(5) }
+            val old = lastSession.owner()
+            lastSession.signOut(home.id)
+            assertThat(store.authority.holds(home.id, old.generation)).isFalse()
+            val histories = server.requests.count { it.url.encodedPath.endsWith("/messages") }
+            hold.release.countDown()
+            withTimeout(10_000) { while (chat.completedLoadCycles.get() == 0L) delay(5) }
+            assertThat(server.requests.count { it.url.encodedPath.endsWith("/messages") }).isEqualTo(histories)
+            chat.setVisible(true)
+            assertThat(readOwners.toList().filter { it != old }).isEmpty()
+        } finally {
+            hold.release.countDown()
+        }
+    }
+
+
+    @Test fun `D stale rejoin arrival after fresh queued reload does not displace fresh work`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("old accepted turn")
+        val history = server.holdHistory()
+        val chat = chat(visible = false)
+        val reached = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val handled = kotlinx.coroutines.CompletableDeferred<Unit>()
+        chat.beforeReconnectEnqueue = { reached.complete(Unit); release.await() }
+        chat.afterReconnectEnqueue = { handled.complete(Unit) }
+        try {
+            assertThat(history.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            withTimeout(10_000) { while (chat.joinedTransport != gateway.transport.value) delay(5) }
+            gateway.drop()
+            gateway.connect()
+            withTimeout(10_000) { reached.await() }
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("fresh-queued-owner"))
+            val fresh = store.authority.owner(home.id)
+            gateway.activity(17.0)
+            chat.reload()
+            release.complete(Unit)
+            withTimeout(10_000) { handled.await() }
+            history.release.countDown()
+            withTimeout(10_000) { while (chat.completedLoadCycles.get() == 0L) delay(5) }
+            chat.setVisible(true)
+            assertThat(reads.toList()).containsExactly("s1" to 17.0)
+            assertThat(readOwners.toList()).containsExactly(fresh)
+            assertThat(server.requests.count { it.url.encodedPath.endsWith("/messages") }).isEqualTo(2)
+        } finally {
+            release.complete(Unit)
+            history.release.countDown()
+            chat.beforeReconnectEnqueue = null
+            chat.afterReconnectEnqueue = null
+        }
+    }
+
+    private suspend fun submitContinuation(stale: Boolean) {
+        gateway.connect()
+        val chat = chat()
+        awaitLoad(chat)
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val first = java.util.concurrent.atomic.AtomicBoolean(true)
+        gateway.beforePrompt = {
+            if (first.compareAndSet(true, false)) {
+                entered.complete(Unit)
+                release.await()
+                throw java.io.IOException("synthetic earlier submit failure")
+            }
+        }
+        chat.send("earlier submit", emptyList())
+        val earlier = checkNotNull(chat.submitCompletion)
+        try {
+            withTimeout(10_000) { entered.await() }
+            if (stale) {
+                store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("fresh-submit-owner"))
+                val prior = chat.loadCompletion
+                chat.reload()
+                awaitLoad(chat, prior)
+            } else {
+                release.complete(Unit)
+                withTimeout(10_000) { earlier.join() }
+                assertThat(chat.working.error).isEqualTo(strings.get(org.evsyukov.hermes.R.string.error_send_unknown))
+                assertThat(chat.working.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.UNKNOWN)
+            }
+            chat.send("fresh submit", emptyList())
+            val current = checkNotNull(chat.submitCompletion)
+            withTimeout(10_000) { current.join() }
+            assertThat(gateway.calls.count { it.first == "prompt.submit" }).isEqualTo(2)
+            assertThat(chat.working.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.SENT)
+            assertThat(chat.working.running).isTrue()
+            release.complete(Unit)
+            withTimeout(10_000) { earlier.join() }
+            gateway.event("session.info", buildJsonObject { put("running", 0) })
+            gateway.deliver()
+            assertThat(chat.working.error).isNull()
+            assertThat(chat.working.running).isTrue()
+        } finally {
+            release.complete(Unit)
+            withTimeout(10_000) { earlier.join() }
+            gateway.beforePrompt = null
+        }
+    }
+
+    @Test fun `F retired submit error cannot clear a fresh turn start latch`() = runBlocking<Unit> { submitContinuation(true) }
+    @Test fun `F current submitted turn ignores idle before its start`() = runBlocking<Unit> { submitContinuation(false) }
+
+    @Test fun `F old accepted turn completion never starts fresh-owner usage or warm reads`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("old accepted turn")
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("new-turn-owner"))
+        val before = server.requests.size
+        gateway.delta("old turn answer")
+        gateway.complete()
+        gateway.deliver()
+        withTimeout(10_000) { chat.continuationProducers.toList().forEach { it.join() } }
+        assertThat(server.requests.size).isEqualTo(before)
+    }
+
+    @Test fun `F close warm queued under old owner cannot read or keep newer bytes`() = runBlocking<Unit> {
+        gateway.connect()
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        chat.beforeCloseWarm = { entered.complete(Unit); release.await() }
+        chat.close()
+        try {
+            withTimeout(10_000) { entered.await() }
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("new-close-owner"))
+            cache.forget(home.id)
+            val before = server.requests.size
+            release.complete(Unit)
+            withTimeout(10_000) { chat.continuationProducers.toList().forEach { it.join() } }
+            withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+            assertThat(server.requests.size).isEqualTo(before)
+            assertThat(cache.size()).isEqualTo(0L)
+        } finally {
+            release.complete(Unit)
+            chat.beforeCloseWarm = null
+        }
+    }
+
+    @Test fun `F valid close warm keeps exact history body for its origin`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("current close question")
+        gateway.delta("distinct current close answer")
+        gateway.complete()
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+        cache.forget(home.id)
+        chat.close()
+        withTimeout(10_000) { chat.continuationProducers.toList().forEach { it.join() }; cache.producers.toList().forEach { it.join() } }
+        val key = org.evsyukov.hermes.data.remote.cacheKey("api/sessions/s1/messages", mapOf("limit" to 500, "order" to "oldest", "inline_images" to false))
+        assertThat(cache.read(home.id, key)).isEqualTo(gateway.storedHistory())
+    }
+
+    @Test fun `F summary and history admitted before renewal cannot publish old load state`() = runBlocking<Unit> {
+        gateway.connect()
+        server.inputTokens = 999
+        val hold = server.holdSummary()
+        val chat = chat(visible = false)
+        try {
+            assertThat(hold.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("new-load-owner"))
+            cache.forget(home.id)
+            hold.release.countDown()
+            awaitLoad(chat)
+            withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+            assertThat(chat.working.title).isEmpty()
+            assertThat(chat.working.usage).isNull()
+            assertThat(cache.size()).isEqualTo(0L)
+        } finally {
+            hold.release.countDown()
+        }
+    }
+
+
+    @Test fun `F delayed old history cannot apply transcript or read after renewal`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("old history question")
+        gateway.delta("distinct retired history answer")
+        gateway.complete()
+        val hold = server.holdHistory()
+        val chat = chat(visible = false)
+        try {
+            assertThat(hold.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("fresh-history-owner"))
+            withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+            cache.forget(home.id)
+            hold.release.countDown()
+            awaitLoad(chat)
+            withTimeout(10_000) { cache.producers.toList().forEach { it.join() } }
+            assertThat(chat.working.items).isEmpty()
+            chat.setVisible(true)
+            assertThat(reads).isEmpty()
+            assertThat(cache.size()).isEqualTo(0L)
+        } finally {
+            hold.release.countDown()
+        }
+    }
+
+    private suspend fun pendingReadOwners(old: Double, fresh: Double, lateStale: Boolean = false) {
+        gateway.connect()
+        gateway.activity(old)
+        if (lateStale) gateway.start("old accepted turn")
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        val first = chat.loadCompletion
+        assertThat(reads).isEmpty()
+        val stale = if (lateStale) server.holdSummary() else null
+        try {
+            if (stale != null) {
+                gateway.activity(old)
+                gateway.complete()
+                assertThat(stale.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            }
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("fresh-hidden-token"))
+            val freshOwner = store.authority.owner(home.id)
+            gateway.activity(fresh)
+            chat.reload()
+            awaitLoad(chat, first)
+            stale?.release?.countDown()
+            withTimeout(10_000) { chat.continuationProducers.toList().forEach { it.join() } }
+            chat.setVisible(true)
+            assertThat(reads.toList()).containsExactly("s1" to fresh)
+            assertThat(readOwners.toList()).containsExactly(freshOwner)
+        } finally {
+            stale?.release?.countDown()
+        }
+    }
+
+    @Test fun `E fresh lower hidden read replaces stale higher owner`() = runBlocking<Unit> {
+        pendingReadOwners(100.0, 20.0)
+    }
+    @Test fun `E equal hidden read replaces stale owner`() = runBlocking<Unit> {
+        pendingReadOwners(20.0, 20.0)
+    }
+    @Test fun `E late stale usage cannot displace fresh hidden pair`() = runBlocking<Unit> {
+        pendingReadOwners(100.0, 20.0, lateStale = true)
+    }
+    @Test fun `E same owner hidden reads preserve their maximum`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.activity(100.0)
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        val first = chat.loadCompletion
+        gateway.activity(20.0)
+        chat.reload()
+        awaitLoad(chat, first)
+        chat.setVisible(true)
+        assertThat(reads.toList()).containsExactly("s1" to 100.0)
+        assertThat(readOwners.toList()).containsExactly(store.authority.owner(home.id))
+    }
+
+    @Test fun `F delayed usage cannot replace a freshly loaded owner summary`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("accepted old turn")
+        server.inputTokens = 100
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        val first = chat.loadCompletion
+        server.inputTokens = 999
+        val stale = server.holdSummary()
+        try {
+            gateway.complete()
+            assertThat(stale.entered.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+            store.setTokens(home.id, org.evsyukov.hermes.data.auth.Tokens("fresh-usage-token"))
+            server.inputTokens = 7
+            chat.reload()
+            awaitLoad(chat, first)
+            assertThat(chat.working.usage!!.input).isEqualTo(7)
+            stale.release.countDown()
+            withTimeout(10_000) { chat.continuationProducers.toList().forEach { it.join() } }
+            assertThat(chat.working.usage!!.input).isEqualTo(7)
+        } finally {
+            stale.release.countDown()
+        }
+    }
+
+    @Test fun `F current completed turn applies exact usage and retained history`() = runBlocking<Unit> {
+        gateway.connect()
+        gateway.start("accepted current turn")
+        val chat = chat(visible = false)
+        awaitLoad(chat)
+        server.inputTokens = 333
+        gateway.delta("fresh current answer")
+        gateway.complete()
+        gateway.deliver()
+        withTimeout(10_000) {
+            while (chat.continuationProducers.isEmpty()) delay(5)
+            chat.continuationProducers.toList().forEach { it.join() }
+        }
+        assertThat(chat.working.usage!!.input).isEqualTo(333)
+        chat.setVisible(true)
+        assertThat(answer(chat.state.value)!!.text).contains("fresh current answer")
+        assertThat(reads.last()).isEqualTo("s1" to gateway.lastActive)
     }
 
     @Test
@@ -276,6 +664,29 @@ class HiddenChatTest {
     }
 
     @Test
+    fun `a fresh running join restores its inflight suffix after hidden history publication`() = runBlocking<Unit> {
+        val adoptions = Channel<Unit>(Channel.UNLIMITED)
+        val chat = openMidTurn(adoptions)
+        try {
+            // Consume this controller's initial adoption before requesting the next one.
+            withTimeout(5_000) { adoptions.receive() }
+            chat.setVisible(false)
+            val published = chat.state.value
+            gateway.drop()
+            gateway.lostDelta(" lost")
+            gateway.connect()
+            // The actual fresh adoption publishes its inflight text before this callback.
+            withTimeout(5_000) { adoptions.receive() }
+            System.err.println("HIDDEN_FRESH_JOIN resumes=${gateway.count("session.resume")} joined=${chat.joinedTransport} text=${answer(chat.working)?.text}")
+            assertThat(gateway.count("session.resume")).isEqualTo(2)
+            assertThat(answer(chat.working)?.text).isEqualTo("Hello there lost")
+            assertThat(chat.state.value).isSameInstanceAs(published)
+            chat.setVisible(true)
+            assertThat(answer(chat.state.value)?.text).isEqualTo("Hello there lost")
+        } finally { try { chat.close() } finally { adoptions.close() } }
+    }
+
+    @Test
     fun `a reconnect while hidden joins again and converges, and the return asks nothing more`() = runBlocking<Unit> {
         val chat = openMidTurn()
         chat.setVisible(false)
@@ -336,7 +747,10 @@ class HiddenChatTest {
 
         chat.setVisible(false)
         val published = chat.state.value
-        withTimeout(5_000) { while (answer(chat.working)?.text != "Hel") delay(10) }
+        // The fresh prefix may now bind before HTTP history returns. Join the actual load;
+        // observing that prefix alone does not establish completion of the hidden load.
+        withTimeout(5_000) { checkNotNull(chat.loadCompletion).await() }
+        assertThat(answer(chat.working)?.text).isEqualTo("Hel")
         gateway.delta("lo")
         gateway.deliver()
         assertThat(chat.state.value).isSameInstanceAs(published)

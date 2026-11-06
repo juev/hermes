@@ -41,7 +41,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -110,9 +110,8 @@ class QuestionCardTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        server.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     /** The chat screen of a turn that runs the clarify tool, after [history] finished turns. */

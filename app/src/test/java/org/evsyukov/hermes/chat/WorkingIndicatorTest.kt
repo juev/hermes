@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -55,6 +58,7 @@ import java.io.IOException
 class WorkingIndicatorTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+    private val resources = ChatTestResources()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val server = MockWebServer()
     private val gateway = BusyGateway()
@@ -81,21 +85,20 @@ class WorkingIndicatorTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        resources.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
     private fun session(): ServerSession {
         val profile = ServerProfile("home", "Home", server.url("/").toString())
-        return ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        return ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
     }
 
     private fun chat(storedId: String?): ChatController {
         val session = session()
-        return ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, storedId)
+        return ChatController(session, resources.socket(GatewaySocket(session.http, scope, strings)), scope, strings, storedId)
     }
 
     @Test
@@ -118,14 +121,19 @@ class WorkingIndicatorTest {
     @Test
     fun `a new chat keeps its waiting state when its connection is counted after the turn began`() = runBlocking<Unit> {
         val channel = GatedChannel()
-        val controlled = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val controlled = CoroutineScope(SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job]) + Dispatchers.Unconfined)
         val chat = ChatController(session(), channel, controlled, strings, null)
         try {
             channel.establish()
             chat.send("hello", emptyList())
-            channel.announce()
-            channel.idleThenThink()
-            val thinking = withTimeout(2_000) { chat.state.first { it.status == strings.get(org.evsyukov.hermes.R.string.chat_thinking) } }
+            val thinking = withTimeout(2_000) {
+                // Persistence can suspend even an Unconfined sender. The external agent can think
+                // only after the actual prompt call, while the ready count still arrives later.
+                channel.submitted.await()
+                channel.announce()
+                channel.idleThenThink()
+                chat.state.first { it.status == strings.get(org.evsyukov.hermes.R.string.chat_thinking) }
+            }
 
             assertThat(thinking.running).isTrue()
             assertThat(thinking.awaitingAnswer).isTrue()
@@ -160,6 +168,8 @@ class WorkingIndicatorTest {
  * starts, as Hermes does when the agent of the session is built after the prompt was sent.
  */
 private class BusyGateway : WebSocketListener() {
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+
     override fun onOpen(webSocket: WebSocket, response: Response) {
         webSocket.send(event("gateway.ready", null, "{}"))
     }
@@ -198,6 +208,7 @@ private class BusyGateway : WebSocketListener() {
  * connection under way and its first turn answers like Hermes: idle, then thinking.
  */
 private class GatedChannel : GatewayChannel {
+    val submitted = CompletableDeferred<Unit>()
     private val _state = MutableStateFlow(SocketState.DISCONNECTED)
     override val state: StateFlow<SocketState> = _state
 
@@ -229,8 +240,8 @@ private class GatedChannel : GatewayChannel {
 
     /** The server reports the new session idle, then the agent thinks while it is still being built. */
     suspend fun idleThenThink() {
-        _events.emit(GatewayEvent("session.info", "live1", null, buildJsonObject { put("running", false); put("model", "m") }))
-        _events.emit(GatewayEvent("thinking.delta", "live1", null, buildJsonObject { put("text", "…") }))
+        _events.emit(GatewayEvent("session.info", "live1", null, buildJsonObject { put("running", false); put("model", "m") }, transport = _transport.value))
+        _events.emit(GatewayEvent("thinking.delta", "live1", null, buildJsonObject { put("text", "…") }, transport = _transport.value))
     }
 
     override suspend fun awaitReady() {
@@ -240,6 +251,7 @@ private class GatedChannel : GatewayChannel {
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement = when (method) {
         "session.create" -> HermesJson.parseToJsonElement("""{"session_id":"live1","stored_session_id":"s2"}""")
         "session.active_list" -> HermesJson.parseToJsonElement("""{"sessions":[]}""")
+        "prompt.submit" -> { submitted.complete(Unit); JsonObject(emptyMap()) }
         else -> JsonObject(emptyMap())
     }
 

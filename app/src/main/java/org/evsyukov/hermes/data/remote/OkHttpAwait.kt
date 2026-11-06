@@ -11,10 +11,10 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Runs the call on OkHttp's dispatcher and cancels it with the coroutine. */
-internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+internal suspend fun Call.await(admit: ((() -> Unit) -> Boolean)? = null): Response = suspendCancellableCoroutine { cont ->
     cont.invokeOnCancellation { cancel() }
-    enqueue(
-        object : Callback {
+    if (!cont.isActive) return@suspendCancellableCoroutine
+    val callback = object : Callback {
             override fun onResponse(call: Call, response: Response) {
                 cont.resume(response) { _, _, _ -> response.close() }
             }
@@ -22,8 +22,9 @@ internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont
             override fun onFailure(call: Call, e: IOException) {
                 cont.resumeWithException(e)
             }
-        },
-    )
+        }
+    val accepted = admit?.invoke { enqueue(callback) } ?: run { enqueue(callback); true }
+    if (!accepted) cont.resumeWithException(SignInRequiredException("Retired request origin"))
 }
 
 /**

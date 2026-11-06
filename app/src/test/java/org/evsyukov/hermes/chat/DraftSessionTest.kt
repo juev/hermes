@@ -8,7 +8,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -45,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class DraftSessionTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+    private val resources = ChatTestResources()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val server = MockWebServer()
     private val gateway = RecordingGateway()
@@ -59,15 +61,14 @@ class DraftSessionTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        resources.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     private fun newChat(): ChatController {
         val profile = ServerProfile("home", "Home", server.url("/").toString())
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        socket = GatewaySocket(session.http, scope, strings)
+        val session = ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        socket = resources.socket(GatewaySocket(session.http, scope, strings))
         return ChatController(session, socket, scope, strings, null)
     }
 
@@ -144,6 +145,8 @@ class DraftSessionTest {
 private class RecordingGateway : WebSocketListener() {
     val calls = Channel<Pair<String, JsonObject>>(Channel.UNLIMITED)
     val created = AtomicInteger()
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
         webSocket.send("""{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}""")

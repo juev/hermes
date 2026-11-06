@@ -44,8 +44,11 @@ class LocalReads(private val context: Context) {
      * The chat is read up to [at] (the server's `last_active` of what is on the screen). A mark
      * never goes back: a slow answer cannot unsee what a later one showed.
      */
-    suspend fun markRead(server: String, id: String, at: Double) {
+    suspend fun markRead(server: String, id: String, at: Double, wanted: () -> Boolean = { true }) {
         context.readStore.edit { prefs ->
+            // The check runs inside the serialized edit: work that started before the server was
+            // signed out or removed cannot mark anything after it, and work started later can.
+            if (!wanted()) return@edit
             val reads = decode(prefs[key(server)]).toMutableMap()
             if ((reads[id] ?: Double.NEGATIVE_INFINITY) >= at) return@edit
             reads[id] = at
@@ -58,8 +61,9 @@ class LocalReads(private val context: Context) {
      * chat it never tracked. A chat the server itself reports unread is left unmarked: it stays
      * unread until the user opens it.
      */
-    suspend fun baseline(server: String, chats: List<ChatSummary>) {
+    suspend fun baseline(server: String, chats: List<ChatSummary>, wanted: () -> Boolean = { true }) {
         context.readStore.edit { prefs ->
+            if (!wanted()) return@edit
             val reads = decode(prefs[key(server)]).toMutableMap()
             var changed = false
             for (chat in chats) {
@@ -77,8 +81,9 @@ class LocalReads(private val context: Context) {
      * of the newest answer after a mark, null for none. A look that fails changes nothing, and the next
      * one tries again; what the looks found only grows, so a look that ends late takes nothing back.
      */
-    suspend fun unread(server: String, chats: List<ChatSummary>, find: suspend (id: String, after: Double) -> Double?): List<ChatSummary> {
-        baseline(server, chats)
+    suspend fun unread(server: String, chats: List<ChatSummary>, wanted: () -> Boolean = { true }, owner: org.evsyukov.hermes.data.server.WorkOwner? = null, lifetime: org.evsyukov.hermes.data.server.ProfileLifetime? = null, find: suspend (id: String, after: Double) -> Double?): List<ChatSummary> {
+        if (owner != null && lifetime != null) lifetime.withOwner(owner) { baseline(server, chats, wanted) }
+        else baseline(server, chats, wanted)
         val epoch = epochs[server] ?: 0L
         val readAt = of(server)
         val answers = answers(server)
@@ -90,7 +95,9 @@ class LocalReads(private val context: Context) {
                 launch {
                     gate.withPermit {
                         try {
-                            found(server, chat.id, find(chat.id, mark), chat.lastActive, epoch)
+                            val at = find(chat.id, mark)
+                            if (owner != null && lifetime != null) lifetime.withOwner(owner) { found(server, chat.id, at, chat.lastActive, epoch, wanted) }
+                            else found(server, chat.id, at, chat.lastActive, epoch, wanted)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -104,9 +111,14 @@ class LocalReads(private val context: Context) {
         return withUnread(chats, of(server), answers(server), looked[server].orEmpty())
     }
 
+    /** Cache projection does not mint a live read watermark from an unversioned cached body. */
+    suspend fun cached(server: String, chats: List<ChatSummary>): List<ChatSummary> =
+        withUnread(chats, of(server), answers(server), looked[server].orEmpty())
+
     /** A look through [id] up to its activity [upTo] found the answer of [at], or none; dropped when the server forgot since. */
-    private suspend fun found(server: String, id: String, at: Double?, upTo: Double, epoch: Long) {
+    private suspend fun found(server: String, id: String, at: Double?, upTo: Double, epoch: Long, wanted: () -> Boolean) {
         context.readStore.edit { prefs ->
+            if (!wanted()) return@edit
             if ((epochs[server] ?: 0L) != epoch) return@edit
             if (at != null) {
                 val answers = decode(prefs[answerKey(server)]).toMutableMap()
@@ -119,8 +131,9 @@ class LocalReads(private val context: Context) {
         }
     }
 
-    suspend fun forget(server: String, id: String) {
+    suspend fun forget(server: String, id: String, wanted: () -> Boolean = { true }) {
         context.readStore.edit { prefs ->
+            if (!wanted()) return@edit
             epochs.merge(server, 1L) { a, b -> a + b }
             looked[server]?.remove(id)
             for (key in listOf(key(server), answerKey(server))) {
@@ -131,7 +144,12 @@ class LocalReads(private val context: Context) {
     }
 
     /** Signing out or removing a server drops what the phone remembers of its read state. */
+    /** External I/O failure/gate injection at the real clear operation. */
+    @Volatile
+    internal var beforeClear: (suspend (String) -> Unit)? = null
+
     suspend fun clear(server: String) {
+        beforeClear?.invoke(server)
         context.readStore.edit {
             epochs.merge(server, 1L) { a, b -> a + b }
             looked.remove(server)

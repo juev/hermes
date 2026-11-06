@@ -21,6 +21,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -62,7 +63,8 @@ class ChatScreenStateTest {
 
     @After
     fun tearDown() {
-        scope.closeWithOwnedJobs(db) { server.close() }
+        val owner = scope.coroutineContext.job
+        server.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     private fun chat(id: String?) = ChatController(server.session(app, scope, db), gateway, scope, strings, id)
@@ -190,5 +192,29 @@ class ChatScreenStateTest {
         assertThat(gateway.count("prompt.submit")).isEqualTo(submitted + 1)
         assertThat(draft.text).isEmpty()
         chat.close()
+    }
+
+    @Test
+    fun `sending clears only the draft of the chat it goes from`() {
+        val memory = ChatDraftMemory()
+        val first = chat(null)
+        val second = chat(null)
+        val drafts = mapOf(first to checkNotNull(memory.obtain(DraftKey.NewChat)), second to checkNotNull(memory.obtain(DraftKey.Chat("s2"))))
+        var current by mutableStateOf(first)
+        compose.setContent { HermesTheme { Screen(current, drafts.getValue(current)) } }
+
+        compose.onNode(hasSetTextAction()).performTextInput("send me")
+        compose.onNodeWithContentDescription(app.getString(R.string.common_send)).performClick()
+        compose.runOnIdle { assertThat(drafts.getValue(first).text).isEmpty() }
+
+        compose.runOnIdle { current = second }
+        compose.waitForIdle()
+        field("send me").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).performTextInput("keep me")
+        compose.runOnIdle { current = first }
+        compose.waitForIdle()
+
+        field("send me").assertDoesNotExist()
+        compose.runOnIdle { assertThat(drafts.getValue(second).text).isEqualTo("keep me") }
     }
 }

@@ -52,6 +52,8 @@ data class ChatSummary(
  */
 data class SessionUsage(val input: Long, val output: Long, val costUsd: Double?, val included: Boolean)
 
+data class HistoryPage(val rows: List<StoredMessage>, val session: String?, val profile: String?)
+
 /** A hit of the full-text search with the matching piece of text. */
 data class SearchHit(val chat: ChatSummary, val snippet: String, val role: String?)
 
@@ -74,9 +76,12 @@ data class ToolCallInfo(val id: String, val name: String, val arguments: String)
 class ChatPage(val chats: List<ChatSummary>, val total: Int)
 
 /** The chat routes of the dashboard that work over plain HTTP; the live chat goes through [GatewaySocket]. */
-class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null) {
+class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null, private val owner: org.evsyukov.hermes.data.server.WorkOwner? = null) {
     /** The same reads answered from the phone's cache alone; null without a cache. Not for changes. */
-    val cached: ChatApi? = cachedReads?.let { ChatApi(http, it) }
+    val cached: ChatApi? = cachedReads?.let { ChatApi(http, it, owner = owner) }
+
+    private suspend fun request(build: okhttp3.Request.Builder.() -> Unit): JsonElement =
+        if (owner == null) http.json(build) else http.json(owner, build)
 
     /** A page of chats, newest activity first; [sources] keeps only those sources, [excludeSources] drops them. */
     suspend fun list(offset: Int = 0, limit: Int = 50, archived: Boolean = false, sources: String? = null, excludeSources: String? = null): ChatPage {
@@ -108,9 +113,11 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
         }.orEmpty()
     }
 
-    suspend fun messages(id: String, limit: Int = 500): List<StoredMessage> {
+    suspend fun messages(id: String, limit: Int = 500): List<StoredMessage> = history(id, limit).rows
+
+    suspend fun history(id: String, limit: Int = 500): HistoryPage {
         val root = reads.kept("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
-        return (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+        return HistoryPage((root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty(), root.string("session_id"), root.string("profile"))
     }
 
     /**
@@ -133,9 +140,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
     /** Renames, pins, archives or marks read; the server takes such a change only with the revision it was made on. */
     suspend fun mutate(id: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null, unread: Boolean? = null) {
         val fence = fence(id)
-        http.patchJson(
-            "api/sessions/$id",
-            buildJsonObject {
+        val body = buildJsonObject {
                 put("request_id", fence.requestId)
                 fence.revision?.let { put("expected_revision", it) }
                 fence.generation?.let { put("expected_generation", it) }
@@ -143,8 +148,8 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 pinned?.let { put("pinned", it) }
                 archived?.let { put("archived", it) }
                 unread?.let { put("unread", it) }
-            },
-        )
+            }
+        if (owner == null) http.patchJson("api/sessions/$id", body) else http.patchJson(owner, "api/sessions/$id", body)
     }
 
     suspend fun delete(id: String) {
@@ -154,7 +159,7 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
             fence.revision?.let { append("&expected_revision=$it") }
             fence.generation?.let { append("&expected_generation=$it") }
         }
-        http.delete(query)
+        if (owner == null) http.delete(query) else http.delete(owner, query)
     }
 
     /**
@@ -168,20 +173,21 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
             .addFormDataPart("overwrite", "true")
             .addFormDataPart("file", name, file.asRequestBody(mime?.toMediaTypeOrNull()))
             .build()
-        val answer = http.json { url(http.endpoint("api/files/upload-stream").build()).post(body) }.jsonObject
+        val answer = request { url(http.endpoint("api/files/upload-stream").build()).post(body) }.jsonObject
         return UploadedFile(path = answer.string("path") ?: target, name = name, mime = mime)
     }
 
     /** Speech to text by the provider configured on the server; silence gives an empty string. */
     suspend fun transcribe(audio: ByteArray, mime: String): String {
         val dataUrl = "data:$mime;base64," + java.util.Base64.getEncoder().encodeToString(audio)
-        val answer = http.postJson("api/audio/transcribe", buildJsonObject { put("data_url", dataUrl); put("mime_type", mime) }).jsonObject
+        val body = buildJsonObject { put("data_url", dataUrl); put("mime_type", mime) }
+        val answer = (if (owner == null) http.postJson("api/audio/transcribe", body) else http.postJson(owner, "api/audio/transcribe", body)).jsonObject
         return answer.string("transcript").orEmpty()
     }
 
     /** A URL that downloads a file the agent wrote or got; the token rides in the query string. */
     suspend fun downloadUrl(path: String): String {
-        val token = http.accessToken()
+        val token = if (owner == null) http.accessToken() else http.accessToken(owner)
         val url = http.endpoint("api/files/download").addQueryParameter("path", path)
         if (token != null) url.addQueryParameter("token", token)
         return url.build().toString()

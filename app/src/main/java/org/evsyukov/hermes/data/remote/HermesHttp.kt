@@ -18,6 +18,9 @@ import okhttp3.Response
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.auth.Tokens
+import org.evsyukov.hermes.data.server.NativeResult
+import org.evsyukov.hermes.data.server.ProfileLifetime
+import org.evsyukov.hermes.data.server.WorkOwner
 import java.io.IOException
 
 /** The server answered with an error; [status] is the HTTP code and [detail] its message. */
@@ -46,42 +49,105 @@ class HermesHttp(
     val base: HttpUrl,
     val client: OkHttpClient,
     private val tokens: suspend () -> Tokens?,
-    private val saveTokens: suspend (Tokens?) -> Unit,
+    private val saveTokens: (suspend (Tokens?) -> Unit)? = null,
     private val strings: AppStrings,
     private val now: () -> Long = { System.currentTimeMillis() / 1000 },
+    /** The generations of the profile this client speaks for. */
+    private val lifetime: ProfileLifetime? = null,
+    private val profileId: String = "",
+    /**
+     * Saves tokens together with the generation of the request that produced them, so a refresh
+     * that was on its way back when the profile was signed out or removed cannot restore them.
+     */
+    private val saveTokensAt: (suspend (Tokens?, Long) -> NativeResult)? = null,
+    /** The one credential snapshot of an exact generation, for a chain that already captured it. */
+    private val credentialsAt: ((Long) -> Tokens?)? = null,
+    /** Whether a generation is still the current authority; a stale chain sends nothing. */
+    private val holdsAt: ((Long) -> Boolean)? = null,
 ) {
+    fun owner(): WorkOwner? = lifetime?.owner(profileId)
+    fun holds(owner: WorkOwner?): Boolean = if (owner == null) lifetime == null else
+        (profileId.isEmpty() || owner.profileId == profileId) && (holdsAt?.invoke(owner.generation) ?: true)
+    fun <T> publishWork(owner: WorkOwner?, block: () -> T): T? = when {
+        !holds(owner) -> null
+        lifetime != null && owner != null -> lifetime.publish(owner, block)
+        else -> block()
+    }
+    suspend fun accessToken(owner: WorkOwner, force: Boolean = false): String? {
+        if (!holds(owner)) throw SignInRequiredException("Retired request origin")
+        return accessToken(force, owner.generation)
+    }
+
     private val refreshLock = Mutex()
 
     fun endpoint(path: String): HttpUrl.Builder = base.newBuilder().addPathSegments(path.trimStart('/'))
 
     /** A valid access token, refreshed when it is about to run out; null on a server without sign-in. */
-    suspend fun accessToken(force: Boolean = false): String? {
-        val current = tokens() ?: return null
+    suspend fun accessToken(force: Boolean = false): String? = accessToken(force, generation())
+
+    private suspend fun accessToken(force: Boolean, at: Long): String? {
+        val current = credentials(at) ?: return null
         if (!force && (current.expiresAt == 0L || now() < current.expiresAt - SKEW_SECONDS)) return current.accessToken
         return refreshLock.withLock {
             // Another request may have refreshed while this one waited.
-            val latest = tokens() ?: return@withLock null
+            val latest = credentials(at) ?: return@withLock null
             if (latest.accessToken != current.accessToken && now() < latest.expiresAt - SKEW_SECONDS) return@withLock latest.accessToken
-            refresh(latest).accessToken
+            refresh(latest, at).accessToken
         }
     }
 
-    private suspend fun refresh(current: Tokens): Tokens {
+    /**
+     * Reads the credentials of exactly [at]. A client with an authority fails closed for a stale
+     * generation instead of falling back to another read; a plain test client keeps its supplier.
+     */
+    private suspend fun credentials(at: Long): Tokens? {
+        // Generation zero is "no authority captured", used by callers that have not been migrated
+        // to owners. It grants nothing: the request can go out unauthenticated, but no credential
+        // is read and no cache write passes an authority check.
+        if (at != 0L && holdsAt?.invoke(at) == false) {
+            throw SignInRequiredException(strings.get(R.string.error_session_expired))
+        }
+        val exact = credentialsAt
+        return if (exact != null) exact(at) else tokens()
+    }
+
+    /** The generation the work starting now belongs to; a client without a lifetime never changes it. */
+    private fun generation(): Long = lifetime?.current(profileId) ?: 0L
+
+    /**
+     * Saves tokens of [at] and stops the chain when the authority did not take them: a rejected
+     * refresh belongs to an older authorization and must not continue with its credentials, and a
+     * current storage failure is reported rather than treated as a sign-out.
+     */
+    private suspend fun publish(tokens: Tokens?, at: Long) {
+        val saveAt = saveTokensAt
+        if (saveAt == null) {
+            saveTokens?.invoke(tokens)
+            return
+        }
+        when (val result = saveAt(tokens, at)) {
+            is NativeResult.Applied -> Unit
+            NativeResult.Rejected -> throw SignInRequiredException(strings.get(R.string.error_session_expired))
+            is NativeResult.Failed -> throw result.error
+        }
+    }
+
+    private suspend fun refresh(current: Tokens, at: Long): Tokens {
         if (current.refreshToken.isEmpty()) {
-            saveTokens(null)
+            publish(null, at)
             throw SignInRequiredException(strings.get(R.string.error_session_expired))
         }
         val body = JsonObject(mapOf("refresh_token" to JsonPrimitive(current.refreshToken), "provider" to JsonPrimitive(current.provider)))
         val request = Request.Builder().url(endpoint("auth/native/refresh").build()).post(body.toBody()).build()
-        return client.newCall(request).await().consume { response ->
+        return client.newCall(request).await { enqueue -> publishWork(lifetime?.let { WorkOwner(profileId, at) }) { enqueue(); true } == true }.consume { response ->
             when {
                 response.isSuccessful -> {
                     val fresh = parseTokens(response.body.string(), current)
-                    saveTokens(fresh)
+                    publish(fresh, at)
                     fresh
                 }
                 response.code == 401 || response.code == 400 -> {
-                    saveTokens(null)
+                    publish(null, at)
                     throw SignInRequiredException(strings.get(R.string.error_session_expired))
                 }
                 // 503: the identity provider is unreachable; the tokens stay for the next try.
@@ -91,31 +157,64 @@ class HermesHttp(
     }
 
     /** Sends the request with the token and returns the open response; the caller closes it. */
-    suspend fun execute(build: Request.Builder.() -> Unit): Response {
-        val first = send(build, accessToken())
-        if (first.code != 401 || tokens() == null) return first
+    suspend fun execute(build: Request.Builder.() -> Unit): Response = executeFor(null, build)
+
+    /**
+     * Sends a request of the chain that captured [owner]. A superseded owner is rejected before
+     * anything leaves the phone; the request can never borrow the credentials of a newer auth.
+     */
+    suspend fun execute(owner: WorkOwner, build: Request.Builder.() -> Unit): Response = executeFor(owner, build)
+
+    private suspend fun executeFor(owner: WorkOwner?, build: Request.Builder.() -> Unit): Response {
+        // One generation for the whole request, retry included: if the profile left while the
+        // first call was out, the retry's fresh tokens are as stale as the first answer.
+        val at = owner?.generation ?: generation()
+        if (owner != null && !holds(owner)) throw SignInRequiredException(strings.get(R.string.error_session_expired))
+        val first = send(build, accessToken(false, at), at)
+        val retry = try { first.code == 401 && credentials(at) != null }
+        catch (failure: Throwable) {
+            try { first.close() } catch (cleanup: Throwable) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
+            throw failure
+        }
+        if (!retry) return first
         first.close()
-        val retried = send(build, accessToken(force = true))
+        val retried = send(build, accessToken(true, at), at)
         if (retried.code == 401) {
             retried.close()
-            saveTokens(null)
+            publish(null, at)
             throw SignInRequiredException(strings.get(R.string.error_sign_in_rejected))
         }
         return retried
     }
 
-    private suspend fun send(build: Request.Builder.() -> Unit, token: String?): Response {
+    private suspend fun send(build: Request.Builder.() -> Unit, token: String?, at: Long): Response {
         val builder = Request.Builder().apply(build)
         if (token != null) builder.header("Authorization", "Bearer $token")
-        return client.newCall(builder.build()).await()
+        val origin = lifetime?.let { WorkOwner(profileId, at) }
+        return client.newCall(builder.build()).await { enqueue -> publishWork(origin) { enqueue(); true } == true }
     }
 
     suspend fun getJson(path: String, query: Map<String, Any?> = emptyMap()): JsonElement = json {
         url(withQuery(path, query))
     }
 
+    /** A read of the chain that captured [owner]; a stale owner is rejected before sending. */
+    suspend fun getJson(owner: WorkOwner, path: String, query: Map<String, Any?> = emptyMap()): JsonElement = json(owner) {
+        url(withQuery(path, query))
+    }
+
     suspend fun postJson(path: String, body: JsonElement = JsonObject(emptyMap())): JsonElement = json {
         url(withQuery(path, emptyMap())).post(body.toBody())
+    }
+
+    suspend fun postJson(owner: WorkOwner, path: String, body: JsonElement = JsonObject(emptyMap())): JsonElement = json(owner) {
+        url(withQuery(path, emptyMap())).post(body.toBody())
+    }
+    suspend fun patchJson(owner: WorkOwner, path: String, body: JsonElement): JsonElement = json(owner) {
+        url(withQuery(path, emptyMap())).patch(body.toBody())
+    }
+    suspend fun delete(owner: WorkOwner, path: String, body: JsonElement? = null): JsonElement = json(owner) {
+        url(withQuery(path, emptyMap())).delete(body?.toBody())
     }
 
     suspend fun putJson(path: String, body: JsonElement): JsonElement = json {
@@ -130,11 +229,16 @@ class HermesHttp(
         url(withQuery(path, emptyMap())).delete(body?.toBody())
     }
 
-    suspend fun json(build: Request.Builder.() -> Unit): JsonElement = execute(build).consume { response ->
-        if (!response.isSuccessful) throw errorOf(response)
-        val text = response.body.string()
-        if (text.isBlank()) JsonObject(emptyMap()) else HermesJson.parseToJsonElement(text)
-    }
+    suspend fun json(build: Request.Builder.() -> Unit): JsonElement = jsonFor(null, build)
+
+    suspend fun json(owner: WorkOwner, build: Request.Builder.() -> Unit): JsonElement = jsonFor(owner, build)
+
+    private suspend fun jsonFor(owner: WorkOwner?, build: Request.Builder.() -> Unit): JsonElement =
+        executeFor(owner, build).consume { response ->
+            if (!response.isSuccessful) throw errorOf(response)
+            val text = response.body.string()
+            if (text.isBlank()) JsonObject(emptyMap()) else HermesJson.parseToJsonElement(text)
+        }
 
     private fun withQuery(path: String, query: Map<String, Any?>): HttpUrl {
         val builder = base.newBuilder()

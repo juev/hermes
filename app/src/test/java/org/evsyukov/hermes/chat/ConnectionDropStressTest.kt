@@ -8,7 +8,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -58,7 +60,8 @@ class ConnectionDropStressTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
+        val owner = scope.coroutineContext.job
+        runBlocking { withTimeout(10_000) { owner.cancelAndJoin() } }
     }
 
     @Test
@@ -70,10 +73,14 @@ class ConnectionDropStressTest {
             // Only this round's socket log: the log of the whole JVM says nothing about the failing round.
             ShadowLog.clear()
             val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+            val resources = ChatTestResources()
+            val roundJob = SupervisorJob(scope.coroutineContext.job)
+            val roundScope = CoroutineScope(roundJob + Dispatchers.IO)
             val server = MockWebServer()
             val gateway = StressGateway()
             var step = "the card of the first connection"
             var chatForLog: ChatController? = null
+            var primary: Throwable? = null
             try {
                 server.dispatcher = object : Dispatcher() {
                     override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
@@ -90,9 +97,9 @@ class ConnectionDropStressTest {
                 }
                 server.start()
                 val profile = ServerProfile("home", "Home", server.url("/").toString())
-                val session = ServerSession(profile, client, ServerStore(context, StressCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-                val socket = GatewaySocket(session.http, scope, strings)
-                val chat = ChatController(session, socket, scope, strings, "s1")
+                val session = ServerSession(profile, client, resources.store(context, StressCipher, roundScope, profile), strings, ResponseCache(db.responses(), roundScope, { Long.MAX_VALUE }))
+                val socket = resources.socket(GatewaySocket(session.http, roundScope, strings))
+                val chat = ChatController(session, socket, roundScope, strings, "s1")
                 chatForLog = chat
                 try {
                     withTimeout(10_000) { chat.state.first { it.connections.isNotEmpty() } }
@@ -114,14 +121,23 @@ class ConnectionDropStressTest {
                 val log = (ShadowLog.getLogsForTag("HermesSocket") + ShadowLog.getLogsForTag("HermesChat")).joinToString("\n") { "${it.tag}: ${it.msg}" }
                 val state = chatForLog?.state?.value
                 val cards = state?.connections?.joinToString(", ") { "${it.opId}: settled=${it.settled}" }
-                throw AssertionError(
+                val failure = AssertionError(
                     "Round $round of $rounds timed out: $step\nCalls the gateway got: ${gateway.methods()}\n" +
                         "Chat state: cards=[$cards] loading=${state?.loading} error=${state?.error}\n$log",
                     e,
                 )
+                primary = failure
+                throw failure
+            } catch (error: Throwable) {
+                primary = error
+                throw error
             } finally {
-                runCatching { server.close() }
-                db.close()
+                try {
+                    resources.finish(roundJob, listOf("close server" to { server.close() }, "close database" to { db.close() }))
+                } catch (cleanup: Throwable) {
+                    val failure = primary
+                    if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)
+                }
             }
             if (round % 10 == 0) println("stress: round $round of $rounds passed")
         }
@@ -165,6 +181,8 @@ internal class StressGateway : WebSocketListener() {
     fun drop() {
         socket!!.close(1012, "restart")
     }
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
         opened.incrementAndGet()

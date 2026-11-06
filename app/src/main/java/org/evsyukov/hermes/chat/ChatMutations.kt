@@ -1,5 +1,8 @@
 package org.evsyukov.hermes.chat
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -19,23 +22,39 @@ class ChatMutations(
     private val socket: GatewayChannel,
     private val liveOf: (String) -> String?,
     private val pinLocally: suspend (String, Boolean) -> Unit,
+    private val owner: org.evsyukov.hermes.data.server.WorkOwner? = null,
+    private val wanted: () -> Boolean = { true },
+    private var transport: Long = socket.transport.value,
 ) {
+    private fun admitted() = wanted() && (transport == 0L || socket.transport.value == transport)
+    private suspend fun rpc(method: String, params: JsonObject): kotlinx.serialization.json.JsonElement {
+        if (!admitted()) throw java.io.IOException("Retired mutation origin")
+        if (transport == 0L) {
+            if (socket is org.evsyukov.hermes.data.remote.GatewaySocket) socket.awaitReady(owner) else socket.awaitReady()
+            if (!wanted()) throw java.io.IOException("Retired mutation origin")
+            transport = socket.transport.value
+        }
+        val result = if (owner == null) socket.call(method, params) else socket.callOn(owner, transport, method, params)
+        if (!admitted()) throw java.io.IOException("Retired mutation origin")
+        return result
+    }
+
     suspend fun delete(id: String) {
         viaSocketWhenMissing({ chat.delete(id) }) {
-            liveOf(id)?.let { live -> socket.call("session.close", buildJsonObject { put("session_id", live) }) }
-            socket.call("session.delete", buildJsonObject { put("session_id", id) })
+            liveOf(id)?.let { live -> rpc("session.close", buildJsonObject { put("session_id", live) }) }
+            rpc("session.delete", buildJsonObject { put("session_id", id) })
         }
-        pinLocally(id, false)
+        if (wanted()) pinLocally(id, false)
     }
 
     suspend fun archive(id: String, archived: Boolean) = viaSocketWhenMissing({ chat.mutate(id, archived = archived) }) {
-        socket.call("session.archive", buildJsonObject { put("session_key", id); put("archived", archived) })
+        rpc("session.archive", buildJsonObject { put("session_key", id); put("archived", archived) })
     }
 
     suspend fun rename(id: String, title: String) = viaSocketWhenMissing({ chat.mutate(id, title = title) }) {
         val open = liveOf(id)
         val live = open ?: (
-            socket.call(
+            rpc(
                 "session.resume",
                 buildJsonObject {
                     put("session_id", id)
@@ -44,11 +63,27 @@ class ChatMutations(
                 },
             ) as JsonObject
             ).string("session_id") ?: error("No session_id in the answer")
+        var primary: Throwable? = null
         try {
-            socket.call("session.title", buildJsonObject { put("session_id", live); put("title", title) })
+            rpc("session.title", buildJsonObject { put("session_id", live); put("title", title) })
+        } catch (error: Throwable) {
+            primary = error
+            throw error
         } finally {
-            // A session joined only for the rename is let go again.
-            if (open == null) socket.call("session.close", buildJsonObject { put("session_id", live) })
+            // Cleanup retains the title failure; cancellation grants no new send admission.
+            if (open == null && admitted() && primary !is CancellationException) {
+                try {
+                    currentCoroutineContext().ensureActive()
+                    rpc("session.close", buildJsonObject { put("session_id", live) })
+                } catch (cleanup: Exception) {
+                    val failure = primary
+                    if (cleanup is CancellationException) {
+                        if (failure != null && failure !== cleanup) cleanup.addSuppressed(failure)
+                        throw cleanup
+                    }
+                    if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)
+                }
+            }
         }
     }
 
@@ -61,10 +96,10 @@ class ChatMutations(
             chat.mutate(id, pinned = pinned)
         } catch (e: HermesException) {
             if (e.status != 404) throw e
-            pinLocally(id, pinned)
+            if (wanted()) pinLocally(id, pinned)
             return
         }
-        if (!pinned) pinLocally(id, false)
+        if (!pinned && wanted()) pinLocally(id, false)
     }
 
     private suspend fun viaSocketWhenMissing(rest: suspend () -> Unit, rpc: suspend () -> Unit) {
@@ -72,6 +107,7 @@ class ChatMutations(
             rest()
         } catch (e: HermesException) {
             if (e.status != 404) throw e
+            if (!admitted()) throw java.io.IOException("Retired mutation origin")
             rpc()
         }
     }

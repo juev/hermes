@@ -182,17 +182,46 @@ class SearchConnectionWiringTest {
             main.scheduler.runCurrent()
         }, body = body)
 
-        private fun clearProfiles() = external {
-            container.servers.update { ServerState() }
+        private fun clearProfiles() {
+            finishStartupProducers()
+            external {
+            container.servers.clearSyntheticServers()
             container.servers.state.first { it == ServerState() }
             container.connection.first { it == null }
             Unit
+            }
         }
 
-        fun save(profile: ServerProfile): Connection = external {
+        fun save(profile: ServerProfile): Connection {
+            finishStartupProducers()
+            return external {
             val previous = container.connection.value
             container.servers.save(profile)
             requireNotNull(container.connection.first { it !== previous && it?.session?.profile == profile })
+            }
+        }
+
+        /** Finish actual local jobs before deliberately freezing Main during the next input write. */
+        private fun finishStartupProducers() {
+            if (!::vm.isInitialized) return
+            runBlocking {
+                withTimeout(10_000) {
+                    suspend fun finish(job: Job?) {
+                        while (job != null && !job.isCompleted) { main.scheduler.runCurrent(); yield() }
+                        job?.join()
+                    }
+                    main.scheduler.runCurrent()
+                    finish(vm.accessProducer)
+                    finish(vm.cachedListProducer)
+                    finish(vm.listProducer)
+                    // These newly owned local reads can hold auth admission while resuming on
+                    // Main. Complete them before this fixture deliberately stops pumping Main.
+                    val chat = vm.chat.value
+                    finish(chat?.observationRecovery)
+                    finish(chat?.loadCompletion)
+                    vm.readProducers.toList().forEach { finish(it) }
+                }
+            }
         }
 
         /** Waits only on store/input delivery, with no virtual clock advancement or Main execution. */

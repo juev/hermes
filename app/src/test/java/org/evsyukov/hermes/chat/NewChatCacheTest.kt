@@ -8,7 +8,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -47,8 +48,10 @@ import org.robolectric.annotation.Config
 class NewChatCacheTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+    private val resources = ChatTestResources()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val server = MockWebServer()
+    private var serverClosed = false
     private val cache = ResponseCache(db.responses(), scope, { Long.MAX_VALUE })
     private val strings = AppStrings(context.resources)
 
@@ -56,9 +59,8 @@ class NewChatCacheTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        runCatching { server.close() }
-        db.close()
+        val owner = scope.coroutineContext.job
+        resources.finish(owner, listOf("close server" to { if (!serverClosed) { server.close(); serverClosed = true } }, "close database" to { db.close() }))
     }
 
     private fun startServer() {
@@ -77,8 +79,8 @@ class NewChatCacheTest {
 
     private fun controller(storedId: String?, url: String = server.url("/").toString()): ChatController {
         val profile = ServerProfile("home", "Home", url)
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, cache)
-        return ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, storedId)
+        val session = ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), strings, cache)
+        return ChatController(session, resources.socket(GatewaySocket(session.http, scope, strings)), scope, strings, storedId)
     }
 
     @Test
@@ -103,6 +105,7 @@ class NewChatCacheTest {
         withTimeout(10_000) { while (cache.read("home", messagesKey) == null) delay(20) }
         chat.close()
         server.close()
+        serverClosed = true
 
         // The server is gone: only the phone has the chat now.
         val again = controller("s1", url)
@@ -121,6 +124,8 @@ class NewChatCacheTest {
 
 /** A gateway that builds the session of a new chat and finishes its first turn at once. */
 private object NewChatGateway : WebSocketListener() {
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+
     override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
         webSocket.send(event("gateway.ready", null, "{}"))
     }
