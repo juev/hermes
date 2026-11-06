@@ -44,9 +44,84 @@ class FirstHistoryReconciliationTest {
     private var chat: ChatController? = null
     private var controllerRoot: Job? = null
     private val submitted = Channel<Unit>(Channel.UNLIMITED)
+    private var replacementGate: RecoveryGate? = null
     private var journal: org.evsyukov.hermes.testing.FaultJournal? = null
 
+    /** Holds real controller dispatches; recovery alone can run until the waiter releases startup. */
+    private class RecoveryGate : CoroutineDispatcher() {
+        private val lock = Any()
+        private val pending = mutableListOf<Pair<kotlin.coroutines.CoroutineContext, Runnable>>()
+        private var allowed: Job? = null
+        private var released = false
+
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            val run = synchronized(lock) {
+                if (released || (allowed != null && context[Job] === allowed)) true
+                else { pending += context to block; false }
+            }
+            if (run) Dispatchers.IO.dispatch(context, block)
+        }
+
+        fun recoveryOnly(job: Job) {
+            val ready = synchronized(lock) {
+                allowed = job
+                pending.filter { it.first[Job] === job }.also { pending.removeAll(it.toSet()) }
+            }
+            ready.forEach { (context, block) -> Dispatchers.IO.dispatch(context, block) }
+        }
+
+        fun releaseAll() {
+            val ready = synchronized(lock) { released = true; pending.toList().also { pending.clear() } }
+            ready.forEach { (context, block) -> Dispatchers.IO.dispatch(context, block) }
+        }
+
+        fun queued() = synchronized(lock) { pending.size }
+    }
+
+    private suspend fun awaitReplacementLoad(replacement: ChatController, live: CompletableDeferred<Unit>, assertRecovered: () -> Unit) = withTimeout(10_000) {
+        val gate = replacementGate
+        gate?.recoveryOnly(replacement.observationRecovery)
+        replacement.observationRecovery.join()
+        if (gate != null) {
+            assertThat(replacement.observationRecovery.isCancelled).isFalse()
+            assertThat(replacement.acceptedReloadRequests.get()).isEqualTo(1)
+            assertThat(replacement.loadCompletion).isNull()
+            assertThat(live.isCompleted).isFalse()
+            assertThat(gate.queued()).isGreaterThan(0)
+            assertRecovered()
+            System.err.println("REPLACEMENT recovery complete; retained state verified; reload accepted; real load handle null")
+        }
+        coroutineScope {
+            val entered = CompletableDeferred<Unit>()
+            // UNDISPATCHED returns at the first suspension: recovery has joined, so the dedicated live wait must hold it.
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                entered.complete(Unit)
+                live.await()
+                val load = checkNotNull(replacement.loadCompletion)
+                load.await()
+                adoptions.receive()
+            }
+            if (gate != null) {
+                entered.await()
+                if (waiter.isCompleted) waiter.await() // Preserve the primary failure when exercising the old wait.
+                assertThat(waiter.isActive).isTrue()
+                assertThat(waiter.isCompleted).isFalse()
+                assertThat(live.isCompleted).isFalse()
+                assertThat(replacement.loadCompletion).isNull()
+                System.err.println("REPLACEMENT waiter entered and pending before real queue release")
+                gate.releaseAll()
+            }
+            waiter.await()
+            if (gate != null) {
+                assertThat(live.isCompleted).isTrue()
+                assertThat(checkNotNull(replacement.loadCompletion).isCompleted).isTrue()
+                System.err.println("REPLACEMENT constructor callback and actual load completed")
+            }
+        }
+    }
+
     private fun finish() {
+        replacementGate?.releaseAll()
         backend.release.countDown()
         backend.resumeRelease?.countDown()
         backend.secondRelease.countDown()
@@ -60,6 +135,12 @@ class FirstHistoryReconciliationTest {
             "report controller close" to { closing?.let { throw it } },
             "close adoption channel" to { adoptions.close() },
         ))
+        if (replacementGate != null) {
+            assertThat(root.isCompleted).isTrue()
+            assertThat(root.children.toList()).isEmpty()
+            assertThat(db.isOpen).isFalse()
+            System.err.println("REPLACEMENT cleanup root complete; zero children; Room closed")
+        }
     }
 
     @After fun tearDown() = finish()
@@ -231,7 +312,10 @@ class FirstHistoryReconciliationTest {
         current.afterLiveBound = null
     }
 
-    @Test fun `controller replacement recovers local reply files and review state without resubmitting`() = scenario {
+    @Test fun `controller replacement recovers local reply files and review state without resubmitting`() = scenario { replacementRecovery() }
+    @Test fun `controller replacement waits for actual reload admission after recovery`() = scenario { replacementRecovery(controlled = true) }
+
+    private suspend fun replacementRecovery(controlled: Boolean = false) {
         overlap(true, attachment = true)
         val original = checkNotNull(chat)
         val retained = original.state.value.observations.single()
@@ -241,9 +325,17 @@ class FirstHistoryReconciliationTest {
         withTimeout(10_000) { producers.toList().joinAll(); checkNotNull(controllerRoot).cancelAndJoin() }
         val replacementRoot = SupervisorJob(root)
         controllerRoot = replacementRoot
-        val replacement = ChatController(session, socket, CoroutineScope(replacementRoot + Dispatchers.IO), AppStrings(context.resources), "s1", onLive = { _, _, _ -> adoptions.trySend(Unit) })
+        val replacementLive = CompletableDeferred<Unit>()
+        val dispatcher = if (controlled) RecoveryGate().also { replacementGate = it } else Dispatchers.IO
+        val replacement = ChatController(session, socket, CoroutineScope(replacementRoot + dispatcher), AppStrings(context.resources), "s1", onLive = { _, _, _ -> adoptions.trySend(Unit); replacementLive.complete(Unit) })
         chat = replacement
-        withTimeout(10_000) { replacement.observationRecovery.join(); checkNotNull(replacement.loadCompletion).await(); adoptions.receive() }
+        awaitReplacementLoad(replacement, replacementLive) {
+            val recovered = replacement.state.value.observations.single()
+            assertThat(recovered.id).isEqualTo(retained.id)
+            assertThat(recovered.items).isEqualTo(retained.items)
+            assertThat(recovered.files).isEqualTo(retained.files)
+            assertThat(recovered.collapsed).isTrue()
+        }
         val recovered = replacement.state.value.observations.single()
         assertThat(recovered.id).isEqualTo(retained.id)
         assertThat(recovered.items).isEqualTo(retained.items)
@@ -512,7 +604,7 @@ class FirstHistoryReconciliationTest {
     @Test fun `send captured before clear cannot install a renewed journal ticket`() = scenario { capturedRootClear(false) }
     @Test fun `rewrite captured before clear cannot install a renewed journal ticket`() = scenario { capturedRootClear(true) }
 
-    private suspend fun overlappingClearRoot(rewrite: Boolean) {
+    private suspend fun overlappingClearRoot(rewrite: Boolean, controlled: Boolean = false) {
         backend.autoComplete = false
         val current = open(); initialLoad(current); val writes = current.continuationProducers
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -550,9 +642,16 @@ class FirstHistoryReconciliationTest {
             assertThat(fresh.files.single().base64).isEqualTo(java.util.Base64.getEncoder().encodeToString(byteArrayOf(7, 8, 9)))
             current.close(); withTimeout(10_000) { writes.toList().joinAll(); checkNotNull(controllerRoot).cancelAndJoin() }
             val child = SupervisorJob(root); controllerRoot = child
-            val replacement = ChatController(session, socket, CoroutineScope(child + Dispatchers.IO), AppStrings(context.resources), "s1", onLive = { _, _, _ -> adoptions.trySend(Unit) })
+            val replacementLive = CompletableDeferred<Unit>()
+            val dispatcher = if (controlled) RecoveryGate().also { replacementGate = it } else Dispatchers.IO
+            val replacement = ChatController(session, socket, CoroutineScope(child + dispatcher), AppStrings(context.resources), "s1", onLive = { _, _, _ -> adoptions.trySend(Unit); replacementLive.complete(Unit) })
             chat = replacement
-            withTimeout(10_000) { replacement.observationRecovery.join(); checkNotNull(replacement.loadCompletion).await(); adoptions.receive() }
+            awaitReplacementLoad(replacement, replacementLive) {
+                val recovered = replacement.state.value.observations.single { it.id == freshId }
+                assertThat(recovered.items).isEqualTo(fresh.items)
+                assertThat(recovered.files).isEqualTo(fresh.files)
+                assertThat(recovered.completed).isTrue()
+            }
             assertThat(replacement.state.value.observations.single { it.id == freshId }.items).isEqualTo(fresh.items)
             assertThat(replacement.state.value.observations.single { it.id == freshId }.files).isEqualTo(fresh.files)
             assertThat(backend.prompts.get()).isEqualTo(1)
@@ -570,6 +669,9 @@ class FirstHistoryReconciliationTest {
     }
     @Test fun `old send cannot borrow an intervening fresh incomplete group`() = scenario { overlappingClearRoot(false) }
     @Test fun `old rewrite cannot poison an intervening fresh incomplete group`() = scenario { overlappingClearRoot(true) }
+
+    @Test fun `old send overlap replacement waits for actual reload admission after recovery`() = scenario { overlappingClearRoot(false, controlled = true) }
+    @Test fun `old rewrite overlap replacement waits for actual reload admission after recovery`() = scenario { overlappingClearRoot(true, controlled = true) }
 
     private object PlainCipher : TokenCipher {
         override fun encrypt(plain: String) = plain
