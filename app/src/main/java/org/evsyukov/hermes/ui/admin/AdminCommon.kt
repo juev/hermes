@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,7 +60,9 @@ import kotlinx.coroutines.launch
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.data.remote.ActionStatus
 import org.evsyukov.hermes.data.remote.AdminApi
+import org.evsyukov.hermes.data.remote.HermesException
 import org.evsyukov.hermes.ui.theme.ChatTheme
+import java.io.IOException
 
 /** The data a section shows, loaded by [load] and reloaded with [reload]. */
 class Loadable<T>(val value: T?, val error: String?, val loading: Boolean, val reload: () -> Unit)
@@ -140,7 +143,7 @@ fun AdminScaffold(
 
 @Composable
 fun ErrorText(error: String?) {
-    if (error != null) Text(error, color = ChatTheme.colors.danger, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+    if (error != null) Text(error, color = ChatTheme.colors.dangerText, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
 }
 
 @Composable
@@ -181,7 +184,7 @@ fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () ->
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = { Text(text) },
-        confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = ChatTheme.colors.danger) } },
+        confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = ChatTheme.colors.dangerText) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
@@ -241,6 +244,95 @@ fun CoroutineScope.attempt(snackbar: SnackbarHostState, done: String? = null, bl
 
 @Composable
 fun rememberSnackbar() = remember { SnackbarHostState() }
+
+/**
+ * Where a form that writes to the server is shown: an [AlertDialog] in the app. The Robolectric and
+ * Compose harness pinned in this project's JVM tests did not settle an editable text field inside a
+ * Compose dialog, so those tests host the same content in the screen instead. Production keeps the
+ * dialog wrapper.
+ */
+internal interface FormWindow {
+    @Composable
+    fun Show(
+        title: @Composable () -> Unit,
+        onDismiss: () -> Unit,
+        confirm: @Composable () -> Unit,
+        dismiss: @Composable () -> Unit,
+        content: @Composable () -> Unit,
+    )
+}
+
+private object DialogFormWindow : FormWindow {
+    @Composable
+    override fun Show(
+        title: @Composable () -> Unit,
+        onDismiss: () -> Unit,
+        confirm: @Composable () -> Unit,
+        dismiss: @Composable () -> Unit,
+        content: @Composable () -> Unit,
+    ) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = title,
+            text = content,
+            confirmButton = confirm,
+            dismissButton = dismiss,
+        )
+    }
+}
+
+internal val LocalFormWindow = staticCompositionLocalOf<FormWindow> { DialogFormWindow }
+
+/**
+ * The state of a form that writes to the server: one submission at a time and the error kept in
+ * the form itself. The form stays open on failure; the caller closes it in [onSuccess] only.
+ */
+class FormSubmission {
+    var saving by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+
+    fun clearError() {
+        error = null
+    }
+
+    /**
+     * Sends [block] once. An HTTP answer is an explicit rejection and shows what the server said.
+     * A lost connection is not: for a non-idempotent write the caller passes [unknownOutcome], which
+     * says to inspect the state before trying again; nothing is re-sent by itself.
+     */
+    fun submit(
+        scope: CoroutineScope,
+        connectionLost: String,
+        unknownOutcome: String? = null,
+        block: suspend () -> Unit,
+        onSuccess: () -> Unit,
+    ) {
+        if (saving) return
+        saving = true
+        error = null
+        scope.launch {
+            try {
+                block()
+                onSuccess()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HermesException) {
+                error = e.detail.ifBlank { e.message ?: e.javaClass.simpleName }
+            } catch (e: IOException) {
+                error = unknownOutcome ?: connectionLost
+            } catch (e: Exception) {
+                error = e.message ?: e.javaClass.simpleName
+            } finally {
+                saving = false
+            }
+        }
+    }
+}
+
+@Composable
+fun rememberFormSubmission(vararg keys: Any?): FormSubmission = remember(*keys) { FormSubmission() }
 
 @Composable
 fun ClickRow(text: String, sub: String? = null, onClick: () -> Unit, trailing: @Composable () -> Unit = {}) {

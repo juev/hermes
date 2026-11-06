@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.plainText
 import org.evsyukov.hermes.data.remote.SearchHit
+import org.evsyukov.hermes.ui.SearchRequestIdentity
 import org.evsyukov.hermes.ui.SearchState
 import org.evsyukov.hermes.ui.theme.ChatTheme
 import java.text.DateFormat
@@ -52,7 +53,7 @@ import java.util.Date
 
 /** Full-text search over every chat of the server, the FTS5 index of Hermes doing the work. */
 @Composable
-fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String) -> Unit, onBack: () -> Unit) {
+fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (SearchHit, SearchRequestIdentity?) -> Unit, onBack: () -> Unit) {
     val colors = ChatTheme.colors
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
@@ -79,8 +80,8 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String)
             }
         }
         if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
-        state.error?.let { Text(it, color = colors.danger, modifier = Modifier.padding(16.dp)) }
-        if (state.query.isNotBlank() && !state.searching && state.hits.isEmpty() && state.error == null) {
+        state.error?.let { Text(it, color = colors.dangerText, modifier = Modifier.padding(16.dp)) }
+        if (state.query.isNotBlank() && state.request != null && !state.searching && state.hits.isEmpty() && state.error == null) {
             Text(stringResource(R.string.search_empty), color = colors.faintText, modifier = Modifier.padding(16.dp))
         }
         if (state.query.isBlank()) {
@@ -91,7 +92,7 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (String)
         }
         LazyColumn(Modifier.fillMaxSize()) {
             items(state.hits, key = { it.chat.id + it.snippet.hashCode() }) { hit ->
-                HitRow(hit, state.query) { onOpen(hit.chat.id) }
+                HitRow(hit, state.query) { onOpen(hit, state.request) }
                 HorizontalDivider(color = colors.divider)
             }
         }

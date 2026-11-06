@@ -8,7 +8,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -41,6 +42,7 @@ import org.robolectric.annotation.Config
 class ConnectingChatTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+    private val resources = ChatTestResources()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val server = MockWebServer()
     private val gateway = SlowGateway()
@@ -52,9 +54,8 @@ class ConnectingChatTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        resources.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     @Test
@@ -62,8 +63,8 @@ class ConnectingChatTest {
         server.enqueue(MockResponse.Builder().webSocketUpgrade(gateway).build())
         val strings = AppStrings(context.resources)
         val profile = ServerProfile("home", "Home", server.url("/").toString())
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        val chat = ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, null)
+        val session = ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+        val chat = ChatController(session, resources.socket(GatewaySocket(session.http, scope, strings)), scope, strings, null)
 
         chat.send("hello", emptyList())
         withTimeout(5_000) { chat.state.first { it.connecting } }
@@ -88,6 +89,8 @@ private const val READY = """{"jsonrpc":"2.0","method":"event","params":{"type":
 private class SlowGateway : WebSocketListener() {
     val opened = Channel<WebSocket>(Channel.UNLIMITED)
     val submitted = Channel<Unit>(Channel.UNLIMITED)
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
         opened.trySend(webSocket)

@@ -145,7 +145,7 @@ fun Sidebar(
                 item {
                     Text(
                         stringResource(R.string.sidebar_load_failed, error),
-                        color = colors.danger, fontSize = 13.sp,
+                        color = colors.dangerText, fontSize = 13.sp,
                         modifier = Modifier.padding(16.dp).clickable(onClick = actions.onRefresh),
                     )
                 }
@@ -191,7 +191,13 @@ fun Sidebar(
         }
 
         HorizontalDivider(color = colors.divider)
-        ServerFooter(servers, activeServer, actions)
+        ServerFooter(
+            servers = servers,
+            active = activeServer,
+            onSwitchServer = actions.onSwitchServer,
+            onEditServer = actions.onEditServer,
+            onSettings = actions.onSettings,
+        )
     }
 }
 
@@ -305,7 +311,7 @@ internal fun ChatRow(
                 onClick = { menu = false; actions.onArchive(chat.id, !chat.archived) },
             )
             DropdownMenuItem(
-                text = { Text(stringResource(R.string.common_delete), color = colors.danger) },
+                text = { Text(stringResource(R.string.common_delete), color = colors.dangerText) },
                 leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = colors.danger) },
                 onClick = { menu = false; deleting = true },
             )
@@ -317,7 +323,7 @@ internal fun ChatRow(
             onDismissRequest = { deleting = false },
             title = { Text(stringResource(R.string.sidebar_delete_title)) },
             text = { Text(stringResource(R.string.sidebar_delete_text, label)) },
-            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text(stringResource(R.string.common_delete), color = colors.danger) } },
+            confirmButton = { TextButton(onClick = { deleting = false; actions.onDelete(chat.id) }) { Text(stringResource(R.string.common_delete), color = colors.dangerText) } },
             dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
@@ -335,8 +341,18 @@ fun RenameDialog(current: String, onDismiss: () -> Unit, onConfirm: (String) -> 
     )
 }
 
+/**
+ * The saved servers and the local settings, reachable from the drawer and from the recovery screens:
+ * a server that is down or signed out must not hide the way to another one or to the settings.
+ */
 @Composable
-private fun ServerFooter(servers: List<ServerProfile>, active: ServerProfile?, actions: SidebarActions) {
+internal fun ServerFooter(
+    servers: List<ServerProfile>,
+    active: ServerProfile?,
+    onSwitchServer: (String) -> Unit,
+    onEditServer: (String?) -> Unit,
+    onSettings: () -> Unit,
+) {
     val colors = ChatTheme.colors
     var menu by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -359,15 +375,15 @@ private fun ServerFooter(servers: List<ServerProfile>, active: ServerProfile?, a
                 servers.forEach { server ->
                     DropdownMenuItem(
                         text = { Text(server.name + if (server.id == active?.id) "  ✓" else "") },
-                        onClick = { menu = false; actions.onSwitchServer(server.id) },
+                        onClick = { menu = false; onSwitchServer(server.id) },
                     )
                 }
                 HorizontalDivider()
-                active?.let { DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_configure, it.name)) }, onClick = { menu = false; actions.onEditServer(it.id) }) }
-                DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_add_server)) }, onClick = { menu = false; actions.onEditServer(null) })
+                active?.let { DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_configure, it.name)) }, onClick = { menu = false; onEditServer(it.id) }) }
+                DropdownMenuItem(text = { Text(stringResource(R.string.sidebar_add_server)) }, onClick = { menu = false; onEditServer(null) })
             }
         }
-        IconButton(onClick = actions.onSettings) { Icon(Icons.Outlined.Settings, stringResource(R.string.common_settings), tint = colors.secondaryText) }
+        IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, stringResource(R.string.common_settings), tint = colors.secondaryText) }
     }
 }
 

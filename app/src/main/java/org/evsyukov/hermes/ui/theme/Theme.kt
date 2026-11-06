@@ -33,6 +33,12 @@ data class ChatColors(
     val danger: Color,
     val success: Color,
     val warning: Color,
+    /** Text drawn on [warning], as the reconnect banner is: role-specific, not a shared on-color. */
+    val onWarning: Color,
+    /** Status text on informational surfaces; the base status colours stay for fills, dots and icons. */
+    val warningText: Color,
+    val successText: Color,
+    val dangerText: Color,
 )
 
 private val Dark = ChatColors(
@@ -43,7 +49,7 @@ private val Dark = ChatColors(
     composerBorder = Color(0xFF424242),
     text = Color(0xFFECECEC),
     secondaryText = Color(0xFFB4B4B4),
-    faintText = Color(0xFF8F8F8F),
+    faintText = Color(0xFF9E9E9E),
     divider = Color(0xFF2F2F2F),
     selected = Color(0xFF2F2F2F),
     contrast = Color(0xFFFFFFFF),
@@ -52,6 +58,10 @@ private val Dark = ChatColors(
     danger = Color(0xFFF87171),
     success = Color(0xFF4ADE80),
     warning = Color(0xFFFBBF24),
+    onWarning = Color(0xFF0D0D0D),
+    warningText = Color(0xFFFBBF24),
+    successText = Color(0xFF4ADE80),
+    dangerText = Color(0xFFF87171),
 )
 
 private val Light = ChatColors(
@@ -62,7 +72,7 @@ private val Light = ChatColors(
     composerBorder = Color(0xFFE3E3E3),
     text = Color(0xFF0D0D0D),
     secondaryText = Color(0xFF5D5D5D),
-    faintText = Color(0xFF8F8F8F),
+    faintText = Color(0xFF696969),
     divider = Color(0xFFECECEC),
     selected = Color(0xFFECECEC),
     contrast = Color(0xFF0D0D0D),
@@ -71,6 +81,10 @@ private val Light = ChatColors(
     danger = Color(0xFFDC2626),
     success = Color(0xFF16A34A),
     warning = Color(0xFFD97706),
+    onWarning = Color(0xFF0D0D0D),
+    warningText = Color(0xFF9A3412),
+    successText = Color(0xFF166534),
+    dangerText = Color(0xFFB91C1C),
 )
 
 val LocalChatColors = staticCompositionLocalOf { Dark }
@@ -104,6 +118,9 @@ private fun ChatColors.material(dark: Boolean): ColorScheme {
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** The palette [HermesTheme] provides; exposed to tests that check the colors text is actually drawn with. */
+internal fun chatColors(dark: Boolean): ChatColors = if (dark) Dark else Light
+
 @Composable
 fun HermesTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
     val dark = when (mode) {
@@ -111,7 +128,7 @@ fun HermesTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> U
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
     }
-    val colors = if (dark) Dark else Light
+    val colors = chatColors(dark)
     CompositionLocalProvider(LocalChatColors provides colors) {
         MaterialTheme(colorScheme = colors.material(dark), content = content)
     }

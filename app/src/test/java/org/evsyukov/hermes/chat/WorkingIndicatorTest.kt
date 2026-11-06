@@ -9,11 +9,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.job
+import org.evsyukov.hermes.testing.ChatTestResources
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -26,8 +36,12 @@ import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
+import org.evsyukov.hermes.data.remote.GatewayChannel
+import org.evsyukov.hermes.data.remote.GatewayEvent
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.HermesJson
+import org.evsyukov.hermes.data.remote.ServerRequest
+import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ServerProfile
 import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.ServerStore
@@ -36,12 +50,14 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
 class WorkingIndicatorTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
     private val db = Room.inMemoryDatabaseBuilder(context, CacheDatabase::class.java).allowMainThreadQueries().build()
+    private val resources = ChatTestResources()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val server = MockWebServer()
     private val gateway = BusyGateway()
@@ -68,17 +84,20 @@ class WorkingIndicatorTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        resources.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     private fun json(body: String) = MockResponse.Builder().addHeader("Content-Type", "application/json").body(body).build()
 
-    private fun chat(storedId: String?): ChatController {
+    private fun session(): ServerSession {
         val profile = ServerProfile("home", "Home", server.url("/").toString())
-        val session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
-        return ChatController(session, GatewaySocket(session.http, scope, strings), scope, strings, storedId)
+        return ServerSession(profile, OkHttpClient(), resources.store(context, PlainCipher, scope, profile), strings, ResponseCache(db.responses(), scope, { Long.MAX_VALUE }))
+    }
+
+    private fun chat(storedId: String?): ChatController {
+        val session = session()
+        return ChatController(session, resources.socket(GatewaySocket(session.http, scope, strings)), scope, strings, storedId)
     }
 
     @Test
@@ -91,6 +110,31 @@ class WorkingIndicatorTest {
 
         assertThat(thinking.running).isTrue()
         assertThat(thinking.awaitingAnswer).isTrue()
+    }
+
+    /**
+     * The socket is READY on the connection that carries the new chat before the gateway counts that
+     * connection: it counts it only once `client.capabilities` is answered, up to 15 seconds later.
+     * The count that arrives then is this chat's own connection, not one that replaced it.
+     */
+    @Test
+    fun `a new chat keeps its waiting state when its connection is counted after the turn began`() = runBlocking<Unit> {
+        val channel = GatedChannel()
+        val controlled = CoroutineScope(SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job]) + Dispatchers.Unconfined)
+        val chat = ChatController(session(), channel, controlled, strings, null)
+        try {
+            channel.establish()
+            chat.send("hello", emptyList())
+            channel.announce()
+            channel.idleThenThink()
+            val thinking = withTimeout(2_000) { chat.state.first { it.status == strings.get(org.evsyukov.hermes.R.string.chat_thinking) } }
+
+            assertThat(thinking.running).isTrue()
+            assertThat(thinking.awaitingAnswer).isTrue()
+        } finally {
+            chat.close()
+            controlled.cancel()
+        }
     }
 
     @Test
@@ -118,6 +162,8 @@ class WorkingIndicatorTest {
  * starts, as Hermes does when the agent of the session is built after the prompt was sent.
  */
 private class BusyGateway : WebSocketListener() {
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+
     override fun onOpen(webSocket: WebSocket, response: Response) {
         webSocket.send(event("gateway.ready", null, "{}"))
     }
@@ -148,4 +194,58 @@ private class BusyGateway : WebSocketListener() {
         val session = sessionId?.let { ""","session_id":"$it"""" }.orEmpty()
         return """{"jsonrpc":"2.0","method":"event","params":{"type":"$type"$session,"payload":$payload}}"""
     }
+}
+
+/**
+ * The gateway contract without a socket: READY on a connection before the gateway counts it, as
+ * [GatewaySocket] does, and the count arrives when the test says so. A new session is created on the
+ * connection under way and its first turn answers like Hermes: idle, then thinking.
+ */
+private class GatedChannel : GatewayChannel {
+    private val _state = MutableStateFlow(SocketState.DISCONNECTED)
+    override val state: StateFlow<SocketState> = _state
+
+    private val _events = MutableSharedFlow<GatewayEvent>()
+    override val events: SharedFlow<GatewayEvent> = _events
+
+    private val _requests = MutableSharedFlow<ServerRequest>()
+    override val requests: SharedFlow<ServerRequest> = _requests
+
+    private val _ready = MutableSharedFlow<String?>(replay = 1, extraBufferCapacity = 4)
+    override val ready: SharedFlow<String?> = _ready
+
+    private val _connections = MutableStateFlow(0)
+    override val connections: StateFlow<Int> = _connections
+
+    private val _transport = MutableStateFlow(0L)
+    override val transport: StateFlow<Long> = _transport
+
+    /** The connection is READY and carries calls; the gateway is not counted yet. */
+    fun establish() {
+        _transport.value = 1L
+        _state.value = SocketState.READY
+    }
+
+    /** `client.capabilities` was answered: the gateway counts the connection ready. */
+    fun announce() {
+        _connections.value = 1
+    }
+
+    /** The server reports the new session idle, then the agent thinks while it is still being built. */
+    suspend fun idleThenThink() {
+        _events.emit(GatewayEvent("session.info", "live1", null, buildJsonObject { put("running", false); put("model", "m") }, transport = _transport.value))
+        _events.emit(GatewayEvent("thinking.delta", "live1", null, buildJsonObject { put("text", "…") }, transport = _transport.value))
+    }
+
+    override suspend fun awaitReady() {
+        if (_state.value != SocketState.READY) throw IOException("no connection")
+    }
+
+    override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement = when (method) {
+        "session.create" -> HermesJson.parseToJsonElement("""{"session_id":"live1","stored_session_id":"s2"}""")
+        "session.active_list" -> HermesJson.parseToJsonElement("""{"sessions":[]}""")
+        else -> JsonObject(emptyMap())
+    }
+
+    override fun respond(id: String, result: JsonElement?, error: String?) = Unit
 }

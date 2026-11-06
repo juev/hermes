@@ -105,7 +105,7 @@ fun PromptSheet(
                             OutlinedButton(onClick = { onApproval(choice) }, modifier = Modifier.fillMaxWidth()) { Text(choiceLabel(choice), color = colors.text) }
                         }
                     }
-                    TextButton(onClick = { onApproval("deny") }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.chat_choice_deny), color = colors.danger) }
+                    TextButton(onClick = { onApproval("deny") }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.chat_choice_deny), color = colors.dangerText) }
                 }
                 is Prompt.Secret -> {
                     var value by remember { mutableStateOf("") }
@@ -143,6 +143,13 @@ internal fun ModelList(choices: ModelChoices, current: String?, onPick: (String,
     val colors = ChatTheme.colors
     var query by remember { mutableStateOf("") }
     Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+        // A pick belongs to this chat, may wait for the next turn and does not change the default
+        // a new chat starts from; the sheet says so before the list rather than only in settings.
+        Text(
+            stringResource(R.string.chat_models_scope),
+            color = colors.faintText, fontSize = 13.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).testTag("model-scope"),
+        )
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -197,7 +204,7 @@ fun ModelSheet(current: String?, load: suspend () -> ModelChoices, onPick: (Stri
         val result = choices
         when {
             result == null -> CircularProgressIndicator(Modifier.padding(32.dp).align(Alignment.CenterHorizontally))
-            result.isFailure -> Text(stringResource(R.string.chat_models_failed, result.exceptionOrNull()?.message.orEmpty()), color = colors.danger, modifier = Modifier.padding(20.dp))
+            result.isFailure -> Text(stringResource(R.string.chat_models_failed, result.exceptionOrNull()?.message.orEmpty()), color = colors.dangerText, modifier = Modifier.padding(20.dp))
             else -> ModelList(result.getOrThrow(), current, onPick)
         }
     }

@@ -5,7 +5,8 @@ import org.evsyukov.hermes.data.remote.ChatSummary
 import org.junit.Test
 
 class SidebarPagesTest {
-    private fun chat(id: String, source: String) = ChatSummary(id, id, "", source, null, 0.0, 0.0, 2, pinned = false, archived = false, active = false)
+    private fun chat(id: String, source: String, createdSource: String? = null) =
+        ChatSummary(id, id, "", source, null, 0.0, 0.0, 2, pinned = false, archived = false, active = false, createdSource = createdSource)
 
     @Test
     fun `a later page of the cron runs does not land in the chats shown since`() {
@@ -25,6 +26,26 @@ class SidebarPagesTest {
 
         assertThat(after.chats.map { it.id }).containsExactly("r1", "r2").inOrder()
         assertThat(after.listed).isEqualTo(3)
+        assertThat(after.loading).isFalse()
+    }
+
+    @Test
+    fun `a later page keeps a local chat only when its creator is not a service`() {
+        val chats = SidebarState(chats = listOf(chat("talk", "android")), total = 4, listed = 1, mode = ListMode.CHATS, loading = true)
+
+        val after = chats.withMore(
+            ListMode.CHATS,
+            listOf(
+                chat("job", "local", createdSource = "tool"),
+                chat("desk", "local", createdSource = "desktop"),
+                chat("new", "future-client"),
+            ),
+            total = 4,
+            size = 3,
+        )
+
+        assertThat(after.chats.map { it.id }).containsExactly("talk", "desk", "new").inOrder()
+        assertThat(after.listed).isEqualTo(4)
         assertThat(after.loading).isFalse()
     }
 }

@@ -292,12 +292,17 @@ a reconnect whose previous join answer never arrived.
 
 The dashboard's own web client splits eight sources into its Chats and Automation categories — `cron`,
 `tool`, `oneshot`, `api_server`, `acp`, `hermes_flow`, `vulcan_delegate`, `webhook`
-(`web/src/pages/SessionsPage_sources.tsx`, `AUTOMATION_SESSION_SOURCES`). The Android client sends all
-eight as `exclude_sources` for its chats and lists the cron runs on a screen of their own with
-`sources=cron`, archived excluded, paged like the chats; the archive sends neither filter. A row of a
-page that does not belong to the list it was asked for is dropped on the phone, and a page that
-arrives after the list was switched is not shown. The macOS client sends the set without `cron`, so a
-scheduled run is a row of its one chat list. A one-shot run is a chat in neither.
+(`web/src/pages/SessionsPage_sources.tsx`, `AUTOMATION_SESSION_SOURCES`). The Android client adds the
+`kanban` workers and sends all nine as `exclude_sources` for its chats; it lists the cron runs on a
+screen of their own with `sources=cron`, archived excluded, paged like the chats; the archive sends
+neither filter. It also reads each row's `created_source`: a local session can carry the surface that
+created it, so a row whose `source` is `local` but whose creator is one of those service labels is
+dropped too. A row without that provenance, or with an unknown client label, stays: this is an
+extensible exclusion of known service producers, not an allowlist, and a new service label needs the
+exclusions updated. The classification is by source and creator, not proof that a person started the
+chat. A row of a page that does not belong to the list it was asked for is dropped on the phone, and a
+page that arrives after the list was switched is not shown. The macOS client sends the set without
+`cron`, so a scheduled run is a row of its one chat list. A one-shot run is a chat in neither.
 
 Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/ChatApi.kt` (`list`, `messages`) for the
 parameters a client sends; the shapes were observed on v0.22.5 against the dashboard on loffe on

@@ -150,7 +150,7 @@ fun UserBubble(item: ChatItem.User, last: Boolean, actions: MessageActions) {
             }
             Text(
                 stringResource(note),
-                color = if (item.delivery == Delivery.FAILED) colors.danger else colors.faintText,
+                color = if (item.delivery == Delivery.FAILED) colors.dangerText else colors.faintText,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(end = 4.dp),
             )

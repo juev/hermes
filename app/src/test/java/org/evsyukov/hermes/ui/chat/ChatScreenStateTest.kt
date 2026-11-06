@@ -21,7 +21,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -29,9 +29,12 @@ import kotlinx.coroutines.withTimeout
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
+import org.evsyukov.hermes.chat.ChatItem
 import org.evsyukov.hermes.chat.LiveGateway
 import org.evsyukov.hermes.chat.LiveServer
+import org.evsyukov.hermes.chat.closeWithOwnedJobs
 import org.evsyukov.hermes.chat.LocalAttachment
+import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.theme.HermesTheme
 import org.junit.After
@@ -60,9 +63,8 @@ class ChatScreenStateTest {
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
-        db.close()
+        val owner = scope.coroutineContext.job
+        server.finish(owner, listOf("close server" to { server.close() }, "close database" to { db.close() }))
     }
 
     private fun chat(id: String?) = ChatController(server.session(app, scope, db), gateway, scope, strings, id)
@@ -76,14 +78,20 @@ class ChatScreenStateTest {
 
     private fun field(text: String) = compose.onNode(hasSetTextAction() and hasText(text))
 
-    /** A live chat with a turn already submitted, as the gateway has it after the first message. */
+    /** A live chat with a turn started on the fake server, as the gateway has it after the first message. */
     private suspend fun runningChat(): ChatController {
         gateway.connect()
         val chat = chat("s1")
-        withTimeout(5_000) { chat.state.first { !it.loading } }
+        // The chat's own join has been applied: the history is on the screen and the live model is
+        // known. `!loading` alone is true before the load even starts.
+        withTimeout(5_000) { chat.state.first { it.model == "live-model" && !it.loading } }
         chat.send("first", emptyList())
-        withTimeout(5_000) { chat.state.first { it.running } }
         withTimeout(5_000) { while (gateway.count("prompt.submit") < 1) delay(10) }
+        // A recorded submit is not a running server: the fake starts the turn and the chat takes its
+        // start, which opens the streaming answer under the message.
+        gateway.start("first")
+        withTimeout(5_000) { chat.state.first { (it.items.lastOrNull() as? ChatItem.Assistant)?.streaming == true } }
+        assertThat(chat.state.value.running).isTrue()
         return chat
     }
 
@@ -160,6 +168,9 @@ class ChatScreenStateTest {
         withTimeout(5_000) { chat.state.first { !it.running } }
 
         assertThat(gateway.count("prompt.submit")).isEqualTo(submitted)
+        val interrupts = gateway.calls.filter { it.first == "session.interrupt" }
+        assertThat(interrupts).hasSize(1)
+        assertThat(interrupts.single().second.string("session_id")).isEqualTo("live1")
         assertThat(draft.text).isEqualTo("follow-up")
         assertThat(draft.attachments.map { it.name }).containsExactly("note.pdf")
         field("follow-up").assertExists()
@@ -181,5 +192,29 @@ class ChatScreenStateTest {
         assertThat(gateway.count("prompt.submit")).isEqualTo(submitted + 1)
         assertThat(draft.text).isEmpty()
         chat.close()
+    }
+
+    @Test
+    fun `sending clears only the draft of the chat it goes from`() {
+        val memory = ChatDraftMemory()
+        val first = chat(null)
+        val second = chat(null)
+        val drafts = mapOf(first to checkNotNull(memory.obtain(DraftKey.NewChat)), second to checkNotNull(memory.obtain(DraftKey.Chat("s2"))))
+        var current by mutableStateOf(first)
+        compose.setContent { HermesTheme { Screen(current, drafts.getValue(current)) } }
+
+        compose.onNode(hasSetTextAction()).performTextInput("send me")
+        compose.onNodeWithContentDescription(app.getString(R.string.common_send)).performClick()
+        compose.runOnIdle { assertThat(drafts.getValue(first).text).isEmpty() }
+
+        compose.runOnIdle { current = second }
+        compose.waitForIdle()
+        field("send me").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).performTextInput("keep me")
+        compose.runOnIdle { current = first }
+        compose.waitForIdle()
+
+        field("send me").assertDoesNotExist()
+        compose.runOnIdle { assertThat(drafts.getValue(second).text).isEqualTo("keep me") }
     }
 }

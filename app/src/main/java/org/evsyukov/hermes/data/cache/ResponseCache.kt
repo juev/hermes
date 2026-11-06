@@ -21,19 +21,42 @@ class ResponseCache(
 ) {
     /** Writes and evictions one at a time, so the total they count is the one on disk. */
     private val lock = Mutex()
+    @Volatile private var observedproducers: java.util.concurrent.CopyOnWriteArrayList<Job>? = null
+    internal val producers: java.util.concurrent.CopyOnWriteArrayList<Job>
+        get() = synchronized(this) {
+            observedproducers ?: java.util.concurrent.CopyOnWriteArrayList<Job>().also { observedproducers = it }
+        }
 
     suspend fun read(server: String, request: String): String? = withContext(Dispatchers.IO) {
-        val parts = dao.parts(server, request)
-        if (parts.isEmpty()) return@withContext null
-        dao.touch(server, request, now())
-        parts.joinToString("")
+        lock.withLock {
+            val parts = dao.parts(server, request)
+            if (parts.isEmpty()) null else {
+                dao.touch(server, request, now())
+                parts.joinToString("")
+            }
+        }
     }
 
-    /** Keeps [body] in the background; the answer it came with does not wait for the disk. */
-    fun keep(server: String, request: String, body: String): Job = scope.launch(Dispatchers.IO) { write(server, request, body) }
+    suspend fun readOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, lifetime: org.evsyukov.hermes.data.server.ProfileLifetime, request: String): String? =
+        lifetime.withOwner(owner) { read(owner.profileId, request) }
 
-    suspend fun write(server: String, request: String, body: String) = withContext(Dispatchers.IO) {
+    /** Keeps [body] in the background while [wanted] holds; the answer it came with does not wait for the disk. */
+    fun keep(server: String, request: String, body: String, wanted: () -> Boolean = { true }): Job =
+        scope.launch(Dispatchers.IO) { write(server, request, body, wanted) }.also { observedproducers?.add(it) }
+
+    internal var beforeOwnedWrite: (suspend () -> Unit)? = null
+
+    fun keepOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, lifetime: org.evsyukov.hermes.data.server.ProfileLifetime, request: String, body: String, wanted: () -> Boolean): Job =
+        scope.launch(Dispatchers.IO) {
+            beforeOwnedWrite?.invoke()
+            lifetime.withOwner(owner) { write(owner.profileId, request, body, wanted) }
+        }.also { observedproducers?.add(it) }
+
+    suspend fun write(server: String, request: String, body: String, wanted: () -> Boolean = { true }) = withContext(Dispatchers.IO) {
         lock.withLock {
+            // A session retired before the disk was reached writes nothing, and one retired while it
+            // holds the lock is wiped by the forget that waits for it.
+            if (!wanted()) return@withLock
             val size = body.toByteArray().size.toLong()
             dao.put(CachedResponse(server, request, size, now()), parts(body))
             evict()
@@ -41,12 +64,14 @@ class ResponseCache(
     }
 
     /** Drops the responses of [server] whose request starts with [prefix], e.g. those of a deleted chat. */
-    suspend fun forget(server: String, prefix: String = "") = withContext(Dispatchers.IO) {
-        lock.withLock { dao.deleteStarting(server, prefix) }
+    @Volatile internal var onForgetStarting: ((String) -> Unit)? = null
+
+    suspend fun forget(server: String, prefix: String = "", wanted: () -> Boolean = { true }) = withContext(Dispatchers.IO) {
+        lock.withLock { if (wanted()) { onForgetStarting?.invoke(server); dao.deleteStarting(server, prefix) } }
     }
 
-    suspend fun drop(server: String, request: String) = withContext(Dispatchers.IO) {
-        lock.withLock { dao.delete(server, request) }
+    suspend fun drop(server: String, request: String, wanted: () -> Boolean = { true }) = withContext(Dispatchers.IO) {
+        lock.withLock { if (wanted()) dao.delete(server, request) }
     }
 
     /** Brings the total within a limit that was just lowered. */

@@ -85,6 +85,7 @@
     <string name="common_cancel">Cancel</string>
     <string name="sidebar_rename_title">Chat name</string>
     <string name="common_save">Save</string>
+    <string name="common_saving">Saving…</string>
     <string name="sidebar_no_server">No server</string>
     <string name="sidebar_configure">Set up “%1$s”</string>
     <string name="sidebar_add_server">Add server</string>
@@ -147,6 +148,9 @@
     <string name="settings_node_log">Node log</string>
     <string name="settings_tailnet_leave">Leave the tailnet</string>
     <string name="settings_tailnet_leave_hint">The node key will be removed; the next start needs a new sign-in</string>
+    <string name="settings_tailnet_leave_confirm_title">Leave the embedded tailnet?</string>
+    <string name="settings_tailnet_leave_confirm_text">The embedded node stops and this phone forgets its node identity. The next connection needs a new sign-in to the tailnet. Other profiles that use this node lose their route until then.</string>
+    <string name="settings_tailnet_leave_confirm_action">Leave</string>
     <string name="settings_session">Session</string>
     <string name="settings_session_none">Not signed in, or the server does not require it.</string>
     <string name="settings_session_forever">The sign-in has no expiry.</string>
@@ -160,6 +164,10 @@
     <string name="settings_megabytes">%1$.1f MB</string>
     <string name="settings_sign_out">Sign out of the server</string>
     <string name="settings_sign_out_hint">This server\'s tokens will be removed from the phone</string>
+    <string name="settings_sign_out_confirm_title">Sign out of %1$s?</string>
+    <string name="settings_sign_out_confirm_text">This removes the tokens of %1$s, its cached responses, read marks and unsent drafts from the phone. Downloaded attachment files stay in the cache. If the server requires a sign-in, you will need to sign in again.</string>
+    <string name="settings_sign_out_confirm_action">Sign out</string>
+    <string name="settings_sign_out_failed">Could not sign out of %1$s. Try again.</string>
     <string name="settings_about">About</string>
     <string name="settings_version">Hermes for Android %1$s</string>
     <string name="settings_source">Source code</string>
@@ -176,6 +184,11 @@
     <string name="setup_new_server">New server</string>
     <string name="setup_server">Server</string>
     <string name="setup_delete_server">Delete server</string>
+    <string name="setup_remove_confirm_title">Remove %1$s from this phone?</string>
+    <string name="setup_remove_confirm_text">The profile, its tokens, cached responses, read marks and unsent drafts are deleted from this phone. The server and its data are not touched. Downloaded attachments stay on the phone.</string>
+    <string name="setup_remove_confirm_action">Remove</string>
+    <string name="setup_remove_failed">Could not remove %1$s. The profile is still on this phone.</string>
+    <string name="setup_remove_cleanup_failed">Removed %1$s, but some of its local data could not be deleted.</string>
     <string name="setup_title">Connect to Hermes</string>
     <string name="setup_intro">The address of the Hermes web panel (hermes dashboard). Sign-in goes through its own provider: Pocket ID, OAuth or a password.</string>
     <string name="setup_name">Name</string>
@@ -213,6 +226,9 @@
     <string name="chat_suggestion_news">Find the latest news about Tailscale on the web</string>
     <string name="chat_suggestion_plan">Make a plan for the week</string>
     <string name="chat_chats">Chats</string>
+    <string name="chat_choose_model">Change model</string>
+    <string name="chat_actions">Chat actions</string>
+    <string name="chat_rename">Rename chat</string>
     <string name="chat_reconnecting">No connection to the server, reconnecting…</string>
     <string name="chat_release_for_new">Release for a new chat</string>
     <string name="chat_pull_for_new">Pull for a new chat</string>
@@ -229,6 +245,8 @@
     <string name="share_task">Create a task</string>
     <string name="share_task_prompt">Create a task from this in the service that fits best among those connected, and give me the link.</string>
     <string name="share_skipped">Some files were not attached: they are over 25 MB or cannot be read</string>
+    <string name="draft_limit_reached">No room for another draft: %1$d chats already hold unsent text or files. Open one of them, send or clear its draft, and try again</string>
+    <string name="draft_new_chat_pending">The first message of this chat is still being sent. New chat will open once the server has started it; your text stays here</string>
     <string name="composer_hint">Ask Hermes</string>
     <string name="composer_attach">Attach</string>
     <string name="composer_photo">Photo</string>
@@ -263,6 +281,7 @@
     <string name="chat_submit">Submit</string>
     <string name="chat_refuse">Refuse</string>
     <string name="chat_models_failed">Couldn\'t load the model list: %1$s</string>
+    <string name="chat_models_scope">Applies to this chat. A change during a turn starts next turn. New chats use the server default.</string>
     <string name="chat_models_filter">Filter models</string>
     <string name="chat_models_no_match">No model matches “%1$s”</string>
     <string name="chat_edit">Edit</string>
@@ -356,11 +375,13 @@
     <string name="admin_model_now">Now</string>
     <string name="admin_model_provider">Provider</string>
     <string name="admin_model_context">Context</string>
-    <string name="admin_model_info">Saved in config.yaml, no restart needed: a chat started afterwards uses the choice; an open chat that has not picked its own model takes it at its next turn; a chat with its own model keeps it (change that in the chat by tapping the title).</string>
+    <string name="admin_model_info">Saved in config.yaml, no restart needed: a chat started afterwards uses the choice; an open chat that has not picked its own model takes it at its next turn; a chat with its own model keeps it (change that in the chat by tapping the model under its title).</string>
     <string name="admin_model_current"> · current</string>
     <string name="admin_model_expensive">The model is expensive.</string>
     <string name="admin_model_new_chats">Saved: new chats use %1$s</string>
     <string name="admin_model_expensive_title">Expensive model</string>
+    <string name="admin_form_connection_lost">Connection lost. Check the connection and try again.</string>
+    <string name="admin_form_unknown_outcome">Connection lost. The change may have gone through — check the list before trying again.</string>
     <string name="admin_config_raw">The whole config.yaml</string>
     <string name="admin_config_search">Search keys and descriptions</string>
     <string name="admin_config_saved">Saved: %1$s</string>
@@ -570,4 +591,5 @@
     <string name="connect_opening">Opening sign-in…</string>
     <string name="connect_tap_retry">Couldn\'t connect. Tap to retry</string>
     <string name="connect_directory_closed">The card is closed</string>
+    <string name="settings_sign_out_cleanup_failed">Signed out of %1$s. Some local cached responses, read marks or unsent drafts could not be cleared.</string>
 </resources>

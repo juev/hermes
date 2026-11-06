@@ -16,6 +16,7 @@ class QuestionMemory {
     private val lock = Any()
     private val cards = HashMap<String, List<QuestionCard>>()
     private val heard = HashMap<Pair<String, String>, Int>()
+    private val answeredOn = HashMap<Pair<String, String>, Long>()
     private val ended = HashMap<Pair<String, String>, QuestionState>()
     private val answers = HashMap<Pair<String, String>, SnapshotStateMap<String, String>>()
 
@@ -28,6 +29,14 @@ class QuestionMemory {
     fun heardOn(chat: String, id: String): Int? = synchronized(lock) { heard[chat to id] }
 
     fun heard(chat: String, id: String, generation: Int) = synchronized(lock) { heard[chat to id] = generation }
+
+    /**
+     * The connection, by `GatewayChannel.transport`, that the answer of request [id] went over; null
+     * until one was sent. A count is not a connection: another connection can carry the same count.
+     */
+    fun answeredOn(chat: String, id: String): Long? = synchronized(lock) { answeredOn[chat to id] }
+
+    fun answered(chat: String, id: String, transport: Long) = synchronized(lock) { answeredOn[chat to id] = transport }
 
     /** How the server ended request [id], or null while it has not: an ended request never opens again. */
     fun ended(chat: String, id: String): QuestionState? = synchronized(lock) { ended[chat to id] }
@@ -42,6 +51,7 @@ class QuestionMemory {
     fun forget(chat: String) = synchronized(lock) {
         cards.remove(chat)
         heard.keys.removeAll { it.first == chat }
+        answeredOn.keys.removeAll { it.first == chat }
         ended.keys.removeAll { it.first == chat }
         answers.keys.removeAll { it.first == chat }
     }

@@ -8,8 +8,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.withTimeout
+import org.evsyukov.hermes.testing.ChatTestResources
+import org.evsyukov.hermes.testing.FixtureCleanup
+import org.evsyukov.hermes.data.server.NativeResult
+import org.evsyukov.hermes.data.remote.SignInRequiredException
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
@@ -38,12 +43,15 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [36], application = Application::class)
 class ActivityCheckTest {
     private val context = ApplicationProvider.getApplicationContext<Application>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val owned = SupervisorJob()
+    private val scope = CoroutineScope(owned + Dispatchers.IO)
+    private val resources = ChatTestResources()
     private val server = MockWebServer()
     private val history = FakeHistory()
     private val check = ActivityCheck(context)
     private val announced = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var session: ServerSession
+    private lateinit var store: ServerStore
 
     @Before
     fun setUp() {
@@ -51,14 +59,14 @@ class ActivityCheckTest {
         server.start()
         // The mark of the last check is kept per server; each test has a server of its own.
         val profile = ServerProfile("check-${UUID.randomUUID()}", "Home", server.url("/").toString())
-        session = ServerSession(profile, OkHttpClient(), ServerStore(context, PlainCipher, scope), AppStrings(context.resources))
+        store = resources.store(context, PlainCipher, scope, profile)
+        session = ServerSession(profile, OkHttpClient(), store, AppStrings(context.resources))
         runBlocking { check.markSeen(session, now = 100.0) }
     }
 
     @After
     fun tearDown() {
-        scope.cancel()
-        server.close()
+        resources.finish(owned, listOf("close activity wire" to { server.close() }))
     }
 
     private suspend fun run(visibleChat: String? = null, check: ActivityCheck = this.check) =
@@ -179,13 +187,31 @@ class ActivityCheckTest {
         val hold = FakeHistory.Hold().also { history.held["slow"] = it }
 
         val checking = async(Dispatchers.IO) { run() }
-        assertThat(hold.arrived.await(10, TimeUnit.SECONDS)).isTrue()
-        // The app comes to the front while the check reads: everything up to 200 is seen.
-        val seen = async(Dispatchers.IO) { check.markSeen(session, now = 200.0) }
-        delay(200)
-        hold.release.countDown()
-        checking.await()
-        seen.await()
+        var seen: Deferred<Unit>? = null
+        var primary: Throwable? = null
+        try {
+            assertThat(hold.arrived.await(10, TimeUnit.SECONDS)).isTrue()
+            // Start the actual mark operation until it suspends on the held check's mutex.
+            val marking = async(start = CoroutineStart.UNDISPATCHED) { check.markSeen(session, now = 200.0) }
+            seen = marking
+            assertThat(marking.isCompleted).isFalse()
+            hold.release.countDown()
+            withTimeout(10_000) { checking.await(); marking.await() }
+        } catch (error: Throwable) {
+            primary = error
+            throw error
+        } finally {
+            try {
+                FixtureCleanup().finish(
+                    listOfNotNull(checking, seen),
+                    listOf("release history" to { hold.release.countDown() }),
+                    emptyList(),
+                )
+            } catch (cleanup: Throwable) {
+                val first = primary
+                if (first == null) throw cleanup else first.addSuppressed(cleanup)
+            }
+        }
 
         history.sessions += session("seen", lastActive = 150.0)
         history.rows["seen"] = listOf(user(1, 145.0, "question"), answer(2, 150.0, "an answer seen in the app"))
@@ -264,6 +290,33 @@ class ActivityCheckTest {
         run(visibleChat = "open")
 
         assertThat(announced).isEmpty()
+    }
+
+    @Test
+    fun `a saved anonymous activity root works while its retired request cannot borrow fresh authority`() = runBlocking<Unit> {
+        val origin = session.owner()
+        assertThat(store.load().servers.map { it.id }).contains(session.profile.id)
+        assertThat(origin.generation).isGreaterThan(0L)
+        assertThat(session.holds(origin)).isTrue()
+        history.sessions += session("first", lastActive = 120.0)
+        history.rows["first"] = listOf(user(1, 110.0, "question"), answer(2, 120.0, "first answer"))
+        run()
+        assertThat(announced).containsExactly("first" to "first answer")
+
+        val retirement = session.signOut(session.profile.id, origin)
+        assertThat(retirement).isInstanceOf(NativeResult.Applied::class.java)
+        assertThat(session.holds(origin)).isFalse()
+        val requests = server.requestCount
+        val rejected = runCatching { session.chatFor(origin).list(limit = 30) }.exceptionOrNull()
+        assertThat(rejected).isInstanceOf(SignInRequiredException::class.java)
+        assertThat(server.requestCount).isEqualTo(requests)
+
+        // A genuine new check is permitted on the still-present anonymous server.
+        assertThat(session.holds(session.owner())).isTrue()
+        history.sessions += session("fresh", lastActive = 140.0)
+        history.rows["fresh"] = listOf(user(1, 130.0, "question"), answer(2, 140.0, "fresh answer"))
+        run()
+        assertThat(announced).containsExactly("first" to "first answer", "fresh" to "fresh answer").inOrder()
     }
 
     private object PlainCipher : TokenCipher {

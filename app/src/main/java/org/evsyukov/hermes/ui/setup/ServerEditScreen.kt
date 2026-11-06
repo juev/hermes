@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,16 +32,20 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -49,6 +54,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.evsyukov.hermes.R
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -67,7 +73,15 @@ import org.evsyukov.hermes.ui.theme.ChatTheme
 
 /** Adds or edits a server; the first run of the app starts here with [onBack] null. */
 @Composable
-fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?, onSaved: () -> Unit, draft: ServerProfile? = null) {
+fun ServerEditScreen(
+    container: AppContainer,
+    id: String?,
+    onBack: (() -> Unit)?,
+    onSaved: () -> Unit,
+    onRemove: suspend (ServerProfile) -> Boolean,
+    draft: ServerProfile? = null,
+    prepareRemoval: ((ServerProfile) -> suspend () -> Boolean)? = null,
+) {
     val servers by container.servers.state.collectAsStateWithLifecycle()
     val existing = servers.servers.firstOrNull { it.id == id }
     val tailnetStatus by container.tailnet.status.collectAsStateWithLifecycle()
@@ -78,11 +92,8 @@ fun ServerEditScreen(container: AppContainer, id: String?, onBack: (() -> Unit)?
         tailnetStatus = tailnetStatus,
         onCheck = { check(container, it) },
         onSave = { container.servers.save(it) },
-        onDelete = { server ->
-            container.servers.remove(server.id)
-            container.responses.forget(server.id)
-            container.reads.clear(server.id)
-        },
+        onDelete = onRemove,
+        prepareRemoval = prepareRemoval,
         onBack = onBack,
         onSaved = onSaved,
     )
@@ -101,9 +112,10 @@ internal fun ServerEditContent(
     tailnetStatus: TailnetStatus,
     onCheck: suspend (ServerProfile) -> String,
     onSave: suspend (ServerProfile) -> Unit,
-    onDelete: suspend (ServerProfile) -> Unit,
+    onDelete: suspend (ServerProfile) -> Boolean,
     onBack: (() -> Unit)?,
     onSaved: () -> Unit,
+    prepareRemoval: ((ServerProfile) -> suspend () -> Boolean)? = null,
 ) {
     // A server from a link fills the form; the user still checks and saves it.
     val source = draft ?: existing
@@ -119,8 +131,22 @@ internal fun ServerEditContent(
     var hostname by remember(source) { mutableStateOf(source?.tailnet?.hostname ?: "hermes-android") }
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
+    // The profile the remove dialog was opened for; it is dropped if the form moves to another one.
+    var deleteTarget by remember { mutableStateOf<ServerProfile?>(null) }
+    var deleting by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    val currentExisting by rememberUpdatedState(existing)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val resources by rememberUpdatedState(LocalResources.current)
+
+    LaunchedEffect(existing?.id) {
+        val target = deleteTarget ?: return@LaunchedEffect
+        if (existing?.id != target.id) {
+            deleteTarget = null
+            deleteError = null
+        }
+    }
 
     fun profile() = ServerProfile(
         id = existing?.id ?: draft?.id ?: UUID.randomUUID().toString(),
@@ -146,7 +172,10 @@ internal fun ServerEditContent(
                 },
                 actions = {
                     if (existing != null && servers.size > 1) {
-                        IconButton(onClick = { scope.launch { onDelete(existing); onBack?.invoke() } }) {
+                        IconButton(enabled = !deleting, onClick = {
+                            deleteError = null
+                            deleteTarget = existing
+                        }) {
                             Icon(Icons.Outlined.Delete, stringResource(R.string.setup_delete_server))
                         }
                     }
@@ -189,7 +218,7 @@ internal fun ServerEditContent(
                 }
             }
             if (!tailnetStatus.available) {
-                Text(tailnetMissing, color = ChatTheme.colors.danger, fontSize = 13.sp)
+                Text(tailnetMissing, color = ChatTheme.colors.dangerText, fontSize = 13.sp)
             }
             when (proxyType) {
                 ProxyType.NONE -> Text(
@@ -275,6 +304,66 @@ internal fun ServerEditContent(
             result?.let { Text(it, color = ChatTheme.colors.secondaryText) }
             Spacer(Modifier.height(24.dp))
         }
+    }
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!deleting) {
+                    deleteTarget = null
+                    deleteError = null
+                }
+            },
+            title = { Text(stringResource(R.string.setup_remove_confirm_title, target.name)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.setup_remove_confirm_text))
+                    deleteError?.let {
+                        Text(it, color = ChatTheme.colors.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !deleting,
+                    onClick = {
+                        if (deleting) return@TextButton
+                        // The dialog names one profile; a form switched to another is left alone.
+                        if (currentExisting?.id != target.id) {
+                            deleteTarget = null
+                            deleteError = null
+                            return@TextButton
+                        }
+                        deleting = true
+                        deleteError = null
+                        val action = prepareRemoval?.invoke(target) ?: { onDelete(target) }
+                        scope.launch {
+                            try {
+                                if (action()) {
+                                    deleteTarget = null
+                                    val moved = currentExisting
+                                    // A removal that ends late must not pop the screen of another server.
+                                    if (moved == null || moved.id == target.id) onBack?.invoke()
+                                } else {
+                                    deleteError = resources.getString(R.string.setup_remove_failed, target.name)
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                deleteError = resources.getString(R.string.setup_remove_failed, target.name)
+                            } finally {
+                                deleting = false
+                            }
+                        }
+                    },
+                ) { Text(stringResource(R.string.setup_remove_confirm_action), color = ChatTheme.colors.danger) }
+            },
+            dismissButton = {
+                TextButton(enabled = !deleting, onClick = {
+                    deleteTarget = null
+                    deleteError = null
+                }) { Text(stringResource(R.string.common_cancel)) }
+            },
+        )
     }
 }
 

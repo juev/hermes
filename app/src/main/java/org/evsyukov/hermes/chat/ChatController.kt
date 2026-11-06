@@ -8,6 +8,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
@@ -39,6 +41,7 @@ import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.remote.bool
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.server.ServerSession
+import org.evsyukov.hermes.data.server.WorkOwner
 import java.io.IOException
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
@@ -122,12 +125,17 @@ class ChatController(
      * the session of the turn and is released when the submission fails.
      */
     private val onTurnStart: () -> TurnHold = { TurnHold.NONE },
-    /** The messages of the chat are on the screen up to the server's `last_active`; tells the read mark. */
-    private val onRead: (storedId: String, lastActive: Double) -> Unit = { _, _ -> },
+    /**
+     * The messages of the chat are on the screen up to the server's `last_active`; tells the read
+     * mark. [owner] is the profile and authorization the load started in, so a callback that comes
+     * after a sign-out is not taken as work of the newer authorization.
+     */
+    private val onRead: (storedId: String, lastActive: Double, owner: WorkOwner) -> Unit = { _, _, _ -> },
     /** Whether the chat starts on the screen; the screen tells it afterwards with [setVisible]. */
     visible: Boolean = true,
     /** The questions of the chats of this connection, which outlive this chat being open. */
     private val questionMemory: QuestionMemory = QuestionMemory(),
+    private val wanted: () -> Boolean = { true },
 ) {
     /** Orders every change of the chat's state, its publication and the change of its visibility. */
     private val lock = Any()
@@ -140,6 +148,68 @@ class ChatController(
             questions = questionMemory.cards(storedId.orEmpty()).map { it.copy(confirmed = false) },
         ),
     )
+
+    /** Per-operation carrier. A root without a ready transport binds once, never to its replacement. */
+    private class Work(val owner: WorkOwner, val chat: String?, transport: Long) {
+        val transport = AtomicLong(transport)
+    }
+    private val workContext = ThreadLocal<Work?>()
+    private fun captureWork(owner: WorkOwner = session.owner()): Work {
+        val transport = socket.transport.value
+        val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
+        val eligibleTransport = if (real != null && real.ownerOn(transport) != owner) 0L else transport
+        return Work(owner, _state.value.storedId, eligibleTransport)
+    }
+    private val initialWork = captureWork()
+    @Volatile private var lastWork: Work? = null
+    @Volatile private var draftWork: Work? = null
+    private fun holds(owner: WorkOwner) = wanted() && session.holds(owner)
+    private fun <T> publish(owner: WorkOwner, block: () -> T): T? = session.publish(owner) {
+        val origin = workContext.get()
+        if (wanted() && (origin == null || origin.owner != owner || publicationEligible(origin))) block() else null
+    }
+    private fun withRoot(owner: WorkOwner? = null, block: (Work) -> Unit) {
+        if (closed) return
+        val origin = captureWork(owner ?: session.owner())
+        publish(origin.owner) {
+            val prior = workContext.get()
+            workContext.set(origin)
+            try { block(origin) } finally { workContext.set(prior) }
+        }
+    }
+    private fun launchOwned(origin: Work, allowClosed: Boolean = false, block: suspend CoroutineScope.() -> Unit): Job =
+        scope.launch(workContext.asContextElement(origin)) {
+            if (!holds(origin.owner) || (closed && !allowClosed)) throw CancellationException("Retired chat origin")
+            block()
+        }.also(::recordContinuation)
+    private fun operation(): Work = checkNotNull(workContext.get()) { "Chat continuation requires its originating work" }
+    private fun publicationEligible(origin: Work): Boolean {
+        val bound = origin.transport.get()
+        val current = socket.transport.value
+        return holds(origin.owner) && (bound == 0L || current == 0L || bound == current)
+    }
+    private suspend fun awaitSocket(origin: Work = operation()) {
+        if (!holds(origin.owner)) throw IOException("Retired chat origin")
+        if (origin.transport.get() == 0L) {
+            if (socket is org.evsyukov.hermes.data.remote.GatewaySocket) socket.awaitReady(origin.owner) else socket.awaitReady()
+            if (!holds(origin.owner)) throw IOException("Retired chat origin")
+            origin.transport.compareAndSet(0L, socket.transport.value)
+        }
+        if (origin.transport.get() == 0L || origin.transport.get() != socket.transport.value || socket.state.value != SocketState.READY) throw IOException("Retired chat transport")
+    }
+    private suspend fun rpc(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement {
+        val origin = operation()
+        awaitSocket(origin)
+        val result = socket.callOn(origin.owner, origin.transport.get(), method, params, timeoutMillis)
+        if (!holds(origin.owner) || origin.transport.get() != socket.transport.value) throw IOException("Retired chat operation")
+        return result
+    }
+    private fun apiForWork() = session.chatFor(operation().owner)
+    private fun respond(origin: Work, id: String, result: JsonElement?, error: String? = null) {
+        if (!holds(origin.owner)) return
+        socket.respondOwned(origin.owner, origin.transport.get(), id, result, error)
+    }
+
 
     /** What the screen sees: the state as of the last change made while the chat was shown. */
     private val published = MutableStateFlow(_state.value)
@@ -159,8 +229,8 @@ class ChatController(
     /** When the first of [streamed] came: an answer they open takes that time. */
     private var streamedAt = 0.0
 
-    /** What the chat read while hidden, to tell the read mark once it is shown. */
-    private var pendingRead: Double? = null
+    /** What the chat read while hidden, and the work that read it, to tell the mark once it is shown. */
+    private var pendingRead: Pair<Double, WorkOwner>? = null
 
     /** The state without what [streamed] holds, for tests that check no delta rebuilt it. */
     @VisibleForTesting
@@ -180,7 +250,14 @@ class ChatController(
      * Changes the chat's state and, while it is shown, what the screen sees. [flush] first puts the
      * buffered words into the transcript; a change that leaves the transcript alone does not need it.
      */
-    private fun edit(flush: Boolean = true, change: (ChatState) -> ChatState) = synchronized(lock) {
+    private fun edit(flush: Boolean = true, change: (ChatState) -> ChatState) {
+        val origin = workContext.get()
+        if (origin == null) editNow(flush, change) else publish(origin.owner) {
+            if (publicationEligible(origin)) editNow(flush, change)
+        }
+    }
+
+    private fun editNow(flush: Boolean = true, change: (ChatState) -> ChatState) = synchronized(lock) {
         if (flush) flushStreamed()
         val asked = _state.value.questions
         _state.value = change(_state.value)
@@ -207,25 +284,38 @@ class ChatController(
      * read meanwhile is marked read.
      */
     fun setVisible(shown: Boolean) {
-        val read = synchronized(lock) {
-            if (visible == shown) return
-            visible = shown
-            if (!shown) return
-            flushStreamed()
-            published.value = _state.value
-            pendingRead.also { pendingRead = null }
+        if (!shown) { synchronized(lock) { visible = false }; return }
+        val owner = lastLoadOwner ?: liveOwner ?: initialWork.owner
+        val read = publish(owner) {
+            synchronized(lock) {
+                if (visible) return@synchronized null
+                visible = true
+                flushStreamed()
+                published.value = _state.value
+                pendingRead.also { pendingRead = null }
+            }
         }
+        if (!holds(owner)) synchronized(lock) { visible = true }
         val id = _state.value.storedId
-        if (read != null && id != null) onRead(id, read)
+        if (read != null && id != null) publish(read.second) { onRead(id, read.first, read.second) }
     }
 
     /** Tells the read mark, or keeps it for when the chat is on the screen: a hidden chat is not read. */
-    private fun tellRead(id: String, lastActive: Double) {
-        val now = synchronized(lock) {
-            visible.also { if (!it) pendingRead = maxOf(pendingRead ?: lastActive, lastActive) }
+    private fun tellRead(id: String, lastActive: Double, owner: WorkOwner) {
+        publish(owner) {
+            val now = synchronized(lock) {
+                if (visible) true else {
+                    val pending = pendingRead?.takeIf { holds(it.second) }
+                    if (pending == null || pending.second != owner || lastActive > pending.first) pendingRead = lastActive to owner
+                    false
+                }
+            }
+            if (now) onRead(id, lastActive, owner)
         }
-        if (now) onRead(id, lastActive)
     }
+
+    @Volatile private var lastLoadOwner: WorkOwner? = null
+    @Volatile private var liveOwner: WorkOwner? = null
 
     @Volatile
     private var liveId: String? = null
@@ -245,10 +335,17 @@ class ChatController(
     private val joinedGeneration = AtomicInteger(0)
 
     /** A connection came while a load ran: it is joined once that load is over. */
-    private val rejoinPending = AtomicBoolean(false)
+    private val rejoinPending = java.util.concurrent.atomic.AtomicReference<Work?>(null)
+    @Volatile
+    internal var beforeReconnectEnqueue: (suspend () -> Unit)? = null
+    @Volatile internal var afterReconnectEnqueue: (() -> Unit)? = null
+    @Volatile
+    internal var beforeCloseWarm: (suspend () -> Unit)? = null
+    internal val pendingRejoin: Boolean get() = rejoinPending.get() != null
+    internal val completedLoadCycles = java.util.concurrent.atomic.AtomicLong()
 
     /** Loads asked for while one runs; the newest request wins. */
-    private val reloadRequests = Channel<Unit>(Channel.CONFLATED)
+    private val reloadRequests = Channel<Work>(Channel.CONFLATED)
 
     /** The answer of `session.create` for a new chat that has not been sent; guarded by [joining]. */
     private var draft: JsonObject? = null
@@ -269,12 +366,28 @@ class ChatController(
     @Volatile
     private var warmed = false
 
+    /** Guarded by lock: a real history has been installed, rather than only a local send. */
+    private var historyShown = false
+
     /**
      * A turn was sent and has not started. The server may report the session idle meanwhile: a new
      * session announces its agent once built, and that can happen before the prompt reaches it.
      */
     @Volatile
     private var awaitingStart = false
+        set(value) {
+            val origin = workContext.get()
+            if (origin == null) field = value else publish(origin.owner) { field = value }
+        }
+
+    /**
+     * The messages the user has sent that have no outcome yet, each with the point at which it last
+     * moved. A join answer is as old as the point at which it was asked: a send that entered, went to
+     * the server or started after that point is newer than the answer, and an idle answer cannot say
+     * it ended. A send still waiting for the server when the answer was asked is newer too. Intents
+     * that ended are dropped, so an old failure cannot poison a fresh idle answer.
+     */
+    private val sends = SendActivityTracker()
 
     /**
      * The questions and withdrawals that came over the connection the socket is on while the chat has
@@ -286,7 +399,7 @@ class ChatController(
     private val early = ArrayList<Heard>()
 
     /** A question or a withdrawal as [observe] took it, with the place it came in among all it took. */
-    private class Heard(val observation: Any, val ordinal: Long)
+    private class Heard(val observation: Any, val ordinal: Long, val owner: WorkOwner)
 
     /**
      * Counts the questions and withdrawals [observe] took, in the order they came: a join reads it when
@@ -325,24 +438,53 @@ class ChatController(
             socket.connections.collect { generation ->
                 if (closed || _state.value.storedId == null) return@collect
                 if (generation == joinedGeneration.get()) return@collect
+                // The gateway counts a connection only after `client.capabilities`, so the count of the
+                // connection the chat has already joined can arrive later. It is not one that replaced it.
+                if (validJoin() != 0L) {
+                    joinedGeneration.updateAndGet { maxOf(it, generation) }
+                    return@collect
+                }
                 // The load that opens a chat joins the connection it finds; only a later one needs it again.
                 if (joinedGeneration.get() == 0 && generation <= connectedWhenMade) return@collect
+                val owner = (socket as? org.evsyukov.hermes.data.remote.GatewaySocket)?.ownerOn(socket.transport.value) ?: liveOwner ?: lastLoadOwner ?: initialWork.owner
+                val origin = captureWork(owner)
+                beforeReconnectEnqueue?.invoke()
+                if (!holds(origin.owner)) { afterReconnectEnqueue?.invoke(); return@collect }
                 if (_state.value.loading) {
-                    rejoinPending.set(true)
+                    rejoinPending.set(origin)
+                    afterReconnectEnqueue?.invoke()
                     return@collect
                 }
                 forgetLive()
-                reload()
+                enqueueReload(origin)
+                afterReconnectEnqueue?.invoke()
             }
         }
-        jobs += scope.launch { for (requested in reloadRequests) runLoads() }
+        jobs += scope.launch {
+            for (requested in reloadRequests) {
+                try { runLoads(requested) } finally { completedLoadCycles.incrementAndGet() }
+            }
+        }
         if (storedId != null) {
             reload()
         } else {
             // Waits for the socket rather than opening it: the app decides when it connects.
-            jobs += scope.launch { socket.state.collect { renewDraft() } }
+            jobs += scope.launch {
+                socket.state.collect {
+                    val owner = (socket as? org.evsyukov.hermes.data.remote.GatewaySocket)?.ownerOn(socket.transport.value) ?: initialWork.owner
+                    withContext(workContext.asContextElement(captureWork(owner))) { beforeDraftRenewal?.invoke(); renewDraft() }
+                }
+            }
         }
     }
+
+    @Volatile private var observedcontinuationProducers: java.util.concurrent.CopyOnWriteArrayList<Job>? = null
+    internal val continuationProducers: java.util.concurrent.CopyOnWriteArrayList<Job>
+        get() = synchronized(this) {
+            observedcontinuationProducers ?: java.util.concurrent.CopyOnWriteArrayList<Job>().also { observedcontinuationProducers = it }
+        }
+
+    private fun recordContinuation(job: Job) { observedcontinuationProducers?.add(job) }
 
     fun close() {
         closed = true
@@ -350,25 +492,40 @@ class ChatController(
         synchronized(lock) { early.clear() }
         // Keep what the chat shows on the phone: opening it again puts that on the screen at once
         // and refreshes it under the surface, rather than waiting for the server with an empty chat.
-        _state.value.storedId?.let { id -> scope.launch { runCatching { session.chat.messages(id) } } }
-        scope.launch { renewDraft() }
+        val origin = lastLoadOwner ?: liveOwner
+        _state.value.storedId?.let { id -> if (origin != null) recordContinuation(scope.launch {
+            beforeCloseWarm?.invoke()
+            if (holds(origin)) runCatching { session.chatFor(origin).messages(id) }
+        }) }
+        val cleanup = draftWork ?: lastWork ?: initialWork
+        launchOwned(cleanup, allowClosed = true) { renewDraft() }
     }
 
     /**
      * Creates the session of a new chat while it is empty, on a ready socket. The draft it replaces
      * belongs to a lost connection, another model or a chat that is closed, so it is closed first.
      */
+    @Volatile internal var beforeDraftRenewal: (suspend () -> Unit)? = null
+    internal val retainedDraftId: String? get() = draft?.string("session_id")
+    internal val boundLiveId: String? get() = liveId
+
     private suspend fun renewDraft() = withContext(NonCancellable) {
+        val origin = operation()
+        if (!holds(origin.owner)) return@withContext
         joining.withLock {
+            if (!holds(origin.owner)) return@withLock
             val ready = socket.state.value == SocketState.READY
             draft?.let { old ->
                 draft = null
                 // The server drops a session of a lost connection by itself.
-                if (ready) old.string("session_id")?.let { live -> runCatching { socket.call("session.close", buildJsonObject { put("session_id", live) }) } }
+                val oldWork = draftWork
+                if (ready && oldWork != null && holds(oldWork.owner) && oldWork.transport.get() == socket.transport.value) old.string("session_id")?.let { live ->
+                    runCatching { socket.callOn(oldWork.owner, oldWork.transport.get(), "session.close", buildJsonObject { put("session_id", live) }) }
+                }
             }
             if (closed || !ready || liveId != null || _state.value.storedId != null) return@withLock
             draft = try {
-                onTransport { create() }.let { (answer, on) -> answer.also { draftOn = on } }
+                onTransport { create() }.let { (answer, on) -> answer.also { draftOn = on; draftWork = origin } }
             } catch (e: Exception) {
                 // The first message creates the session then.
                 Log.w(TAG, "Draft session not created", e)
@@ -383,13 +540,13 @@ class ChatController(
      * answer tells nothing about the connection the socket is on now.
      */
     private suspend fun <T> onTransport(call: suspend () -> T): Pair<T, Long> {
-        socket.awaitReady()
+        awaitSocket()
         val before = socket.transport.value
         val answer = call()
         return answer to if (before != 0L && socket.transport.value == before) before else 0L
     }
 
-    private suspend fun create() = socket.call(
+    private suspend fun create() = rpc(
         "session.create",
         buildJsonObject {
             put("source", "android")
@@ -410,8 +567,10 @@ class ChatController(
      * or cannot be read takes nothing away from a live chat. The answer of the join is applied once
      * the history is on the screen, so a turn that streams lands on top of it.
      */
-    fun reload() {
-        if (!closed) reloadRequests.trySend(Unit)
+    fun reload() = enqueueReload(captureWork())
+
+    private fun enqueueReload(origin: Work) {
+        publish(origin.owner) { if (!closed) reloadRequests.trySend(origin) }
     }
 
     /**
@@ -419,29 +578,64 @@ class ChatController(
      * once the first is over: the load may have sent its resume on the lost connection and failed,
      * and no further connection would tell the chat about it.
      */
-    private suspend fun runLoads() {
-        while (true) {
-            rejoinPending.set(false)
-            performLoad()
-            val queued = reloadRequests.tryReceive().isSuccess
-            val rejoin = rejoinPending.getAndSet(false)
-            if (rejoin && socket.connections.value != joinedGeneration.get()) continue
-            if (queued) continue
-            return
+    private suspend fun runLoads(requested: Work) {
+        var origin: Work? = requested
+        while (origin != null) {
+            rejoinPending.set(null)
+            if (holds(origin.owner)) performLoad(origin)
+            val queued = reloadRequests.tryReceive().getOrNull()?.takeIf { holds(it.owner) }
+            val rejoin = rejoinPending.getAndSet(null)?.takeIf { holds(it.owner) }
+            // A transport may be replaced before its count/collectors arrive. This is a reconnect
+            // under the SAME captured owner, never permission sampled from a newer authorization.
+            val currentTransport = socket.transport.value
+            val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
+            val replacement = if (holds(origin.owner) && currentTransport != 0L && origin.transport.get() != 0L &&
+                currentTransport != origin.transport.get() && validJoin() == 0L &&
+                (real == null || real.ownerOn(currentTransport) == origin.owner)) Work(origin.owner, origin.chat, currentTransport) else null
+            origin = queued ?: rejoin?.takeIf { socket.connections.value != joinedGeneration.get() || validJoin() == 0L } ?: replacement
         }
     }
 
-    private suspend fun performLoad() {
-        val id = _state.value.storedId ?: return
-        edit { it.copy(loading = true, error = null) }
-        if (current.items.isEmpty()) showCached(id)
+    /** Completes after the actual load, including its synchronous read callback, returns. */
+    @Volatile
+    internal var loadCompletion: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        private set
+
+    private suspend fun performLoad(origin: Work) {
+        val completed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        loadCompletion = completed
+        try {
+            withContext(workContext.asContextElement(origin)) { performLoadBody(origin) }
+        } finally {
+            completed.complete(Unit)
+        }
+    }
+
+    private suspend fun performLoadBody(origin: Work) {
+        val owner = origin.owner
+        val id = origin.chat ?: return
+        // Taken before the requests go out: the read mark this load delivers belongs to the
+        // authorization the load started in, however long the history takes.
+        if (!holds(owner)) return
+        lastLoadOwner = owner
+        lastWork = origin
+        if (liveOwner != null && liveOwner != owner) forgetLive()
+        val chat = session.chatFor(owner)
+        publish(owner) { edit { it.copy(loading = true, error = null) } }
+        if (current.items.isEmpty()) showCached(id, owner)
         try {
             coroutineScope {
-                val head = async { runCatching { session.chat.get(id) } }
-                val history = async { runCatching { transcriptOf(session.chat.messages(id)) } }
-                val summary = head.await().getOrNull()
+                val head = async { runCatching { chat.get(id) } }
+                // A history response must not replace live transcript changes made while it travelled.
+                val beforeHistory = synchronized(lock) {
+                    flushStreamed()
+                    _state.value.items to historyShown
+                }
+                val history = async { runCatching { transcriptOf(chat.messages(id)) } }
+                val summary = head.await().getOrElse { if (it is CancellationException) throw it; null }
+                if (!holds(owner)) return@coroutineScope
                 summary?.let { read ->
-                    edit { state ->
+                    publish(owner) { edit { state ->
                         state.copy(
                             title = read.title,
                             // The live session knows its model better than the stored row: after a
@@ -449,7 +643,7 @@ class ChatController(
                             model = if (liveId != null && state.model != null) state.model else read.model,
                             usage = read.usage,
                         )
-                    }
+                    } }
                 }
                 // The session joins while the history is still on its way: the live id is what a
                 // message and a card need, and a transcript that is slow or fails must not hold
@@ -473,9 +667,9 @@ class ChatController(
                                 null
                             } else {
                                 val generationAtStart = socket.connections.value
-                                val joinAnswer = resume(id)
+                                val joinAnswer = resume(id, owner)
                                 val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
-                                joinAnswer.answer.string("session_id")?.let { takeLive(it, joinAnswer.transport) }
+                                joinAnswer.answer.string("session_id")?.let { takeLive(it, joinAnswer.transport, owner) }
                                 joinAnswer to generation
 
                             }
@@ -485,13 +679,15 @@ class ChatController(
                     null
                 }
                 val read = history.await()
+                (read.exceptionOrNull() as? CancellationException)?.let { throw it }
+                if (!holds(owner)) return@coroutineScope
                 if (read.isSuccess) {
-                    showHistory(read.getOrDefault(emptyList()))
+                    publish(owner) { showHistory(read.getOrDefault(emptyList()), beforeHistory) }
                     // What is on the screen now is read: a mark in the sidebar clears, and a new
                     // answer after this will mark it again.
-                    summary?.let { tellRead(id, it.lastActive) }
+                    summary?.let { tellRead(id, it.lastActive, owner) }
                 } else {
-                    edit { it.copy(loading = false, error = read.exceptionOrNull()?.message) }
+                    publish(owner) { edit { it.copy(loading = false, error = read.exceptionOrNull()?.message) } }
                 }
                 joined?.getOrNull()?.let { (joinAnswer, generation) -> adopt(joinAnswer, id, starting = false, generation) }
                 joined?.exceptionOrNull()?.let { throw it }
@@ -499,7 +695,7 @@ class ChatController(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            edit { it.copy(loading = false, error = e.message) }
+            publish(owner) { edit { it.copy(loading = false, error = e.message) } }
         }
     }
 
@@ -508,21 +704,26 @@ class ChatController(
      * sent while the history was on its way must not vanish from under them. An answer that streams
      * comes back with the join, which is applied after this.
      */
-    private fun showHistory(history: List<ChatItem>) {
+    private fun showHistory(history: List<ChatItem>, before: Pair<List<ChatItem>, Boolean>) {
         edit { state ->
+            // Once history exists, prefer the newer live transcript to this stale read. A later
+            // ordinary reload can refresh history when no transcript changes race it. The first
+            // uncached load retains its existing history/local-send merge below.
+            if (before.second && state.items !== before.first) return@edit state.copy(loading = false)
+            historyShown = true
             val known = history.mapTo(HashSet()) { it.key }
             val unsent = state.items.filter { it.key !in known && it is ChatItem.User && it.rowId == null }
             state.copy(items = if (unsent.isEmpty()) history else history + unsent, loading = false)
         }
     }
 
-    private suspend fun showCached(id: String) {
-        val cached = session.chat.cached ?: return
+    private suspend fun showCached(id: String, owner: WorkOwner) {
+        val cached = session.chatFor(owner).cached ?: return
         try {
             val history = transcriptOf(cached.messages(id))
             val summary = runCatching { cached.get(id) }.getOrNull()
-            edit { if (it.items.isEmpty()) it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) else it }
-            summary?.let { tellRead(id, it.lastActive) }
+            publish(owner) { edit { if (it.items.isEmpty()) { historyShown = true; it.copy(items = history, title = summary?.title.orEmpty(), model = summary?.model, usage = summary?.usage) } else it } }
+            // Cached content has no auth-generation provenance; only the admitted live load reports activity.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -532,28 +733,47 @@ class ChatController(
 
     /** Joins the live session; [starting] a turn, the chat stays running whatever the session was doing. */
     private suspend fun ensureLive(starting: Boolean = false): String {
-        liveId?.let { return it }
-        return joining.withLock { liveId ?: join(starting) }
+        val origin = operation()
+        if (!holds(origin.owner)) throw IOException("Retired chat origin")
+        if (liveOwner != null && liveOwner != origin.owner) forgetLive()
+        liveId?.let { if (validJoin() != 0L) return it }
+        return joining.withLock {
+            if (!holds(origin.owner)) throw IOException("Retired chat origin")
+            liveId?.takeIf { liveOwner == origin.owner && validJoin() != 0L } ?: join(starting)
+        }
     }
 
     private suspend fun join(starting: Boolean): String {
-        val stored = _state.value.storedId
+        val owner = operation().owner
+        val stored = operation().chat
         // The connection the answer comes over: a call made before the socket is up opens it, so the
         // number is read again after the call when there was none.
         val generationAtStart = socket.connections.value
+        // The point at which this answer is asked: a send that enters or moves after it is newer.
+        val activity = sends.mark()
         val joinAnswer = if (stored == null) {
             val asked = heardLive.get()
             val kept = draft
+            val keptWork = draftWork
+            val keptOn = draftOn
             draft = null
+            draftWork = null
+            draftOn = 0L
             // A session made in advance over a connection since lost is not this connection's: a new one is made.
-            if (kept != null && draftOn != 0L && draftOn == socket.transport.value) {
-                JoinAnswer(kept, asked, draftOn)
+            if (kept != null && keptWork?.owner == owner && keptOn != 0L && keptOn == socket.transport.value) {
+                JoinAnswer(kept, asked, keptOn, activity, owner)
             } else {
-                kept?.string("session_id")?.let { old -> runCatching { socket.call("session.close", buildJsonObject { put("session_id", old) }) } }
-                onTransport { create() }.let { (answer, on) -> JoinAnswer(answer, asked, on) }
+                if (keptWork != null && holds(keptWork.owner) && keptOn != 0L && keptOn == socket.transport.value) {
+                    kept?.string("session_id")?.let { old ->
+                        try { socket.callOn(keptWork.owner, keptOn, "session.close", buildJsonObject { put("session_id", old) }) }
+                        catch (error: CancellationException) { throw error }
+                        catch (_: Exception) { /* A rejected draft is discarded locally if cleanup fails. */ }
+                    }
+                }
+                onTransport { create() }.let { (answer, on) -> JoinAnswer(answer, asked, on, activity, owner) }
             }
         } else {
-            resume(stored)
+            resume(stored, owner)
         }
         val generation = if (generationAtStart == 0) socket.connections.value else generationAtStart
         return adopt(joinAnswer, stored, starting, generation)
@@ -565,10 +785,10 @@ class ChatController(
      * moment to come up; a chat opened offline waits for its history, not for the live list.
      */
     private suspend fun liveSession(id: String): Result<JsonObject?> {
-        val ready = socket.state.value == SocketState.READY || withTimeoutOrNull(3_000) { socket.awaitReady(); true } == true
+        val ready = socket.state.value == SocketState.READY || withTimeoutOrNull(3_000) { awaitSocket(); true } == true
         if (!ready) return Result.failure(IOException("no connection"))
         return runCatching {
-            val answer = socket.call("session.active_list", buildJsonObject { put("current_session_id", id) }, timeoutMillis = 10_000) as? JsonObject
+            val answer = rpc("session.active_list", buildJsonObject { put("current_session_id", id) }, timeoutMillis = 10_000) as? JsonObject
             (answer?.get("sessions") as? JsonArray)?.mapNotNull { it as? JsonObject }?.firstOrNull {
                 it.string("session_key") == id || it.string("id") == id
             }
@@ -580,10 +800,13 @@ class ChatController(
      * answer, the connection it came over and how many requests the chat had heard live when it asked:
      * the open requests of the answer are as of a moment after that, and one heard later is newer.
      */
-    private suspend fun resume(stored: String): JoinAnswer {
+    private suspend fun resume(stored: String, owner: WorkOwner): JoinAnswer {
         val asked = heardLive.get()
+        // A send from here on is newer than this answer, whatever the server answers. One that
+        // entered before this point but had not gone to the server yet is newer too.
+        val activity = sends.mark()
         val (answer, transport) = onTransport {
-            socket.call(
+            rpc(
                 "session.resume",
                 buildJsonObject {
                     put("session_id", stored)
@@ -594,7 +817,7 @@ class ChatController(
                 timeoutMillis = 120_000,
             ) as JsonObject
         }
-        return JoinAnswer(answer, asked, transport)
+        return JoinAnswer(answer, asked, transport, activity, owner)
     }
 
     /**
@@ -602,7 +825,8 @@ class ChatController(
      * is already lost: what came for the session meanwhile is applied now, in the order it came, and
      * what came for any other session is dropped.
      */
-    private fun takeLive(live: String, transport: Long) = synchronized(lock) {
+    private fun takeLive(live: String, transport: Long, owner: WorkOwner) = publish(owner) { synchronized(lock) {
+        liveOwner = owner
         liveId = live
         // Another join, or one over a lost connection: what an earlier join confirmed is not confirmed by this one.
         if (joinedOn != transport) {
@@ -612,13 +836,13 @@ class ChatController(
         val heard = ArrayList(early)
         early.clear()
         // In the order they came, each with the place it came in, not the moment of this replay.
-        heard.forEach { entry ->
+        heard.filter { it.owner == owner }.forEach { entry ->
             when (val observation = entry.observation) {
                 is GatewayEvent -> takeWithdrawal(observation, entry.ordinal)
                 is ServerRequest -> takeQuestion(observation, socket.connections.value, entry.ordinal)
             }
         }
-    }
+    } }
 
     /**
      * Takes a question or a withdrawal as it comes, or from [early] once a join answered: the only way
@@ -651,7 +875,7 @@ class ChatController(
             if (listed) return@synchronized
             // What came over an earlier connection can no longer be attributed: only this one's are kept.
             early.removeAll { originOf(it.observation) != transport }
-            early += Heard(observation, heard)
+            early += Heard(observation, heard, operation().owner)
             return@synchronized
         }
         if (sessionId == liveId) apply(heard)
@@ -693,30 +917,60 @@ class ChatController(
         joinedOn.takeIf { it != 0L && liveId != null && socket.transport.value == it } ?: 0L
     }
 
-    /** The answer of a join, the connection it came over and the count of [heardLive] when it was asked. */
-    private class JoinAnswer(val answer: JsonObject, val asked: Long, val transport: Long)
+    /**
+     * The answer of a join, the connection it came over, the count of [heardLive] when it was asked,
+     * and the point of the local sends then: a send that entered or moved after it is newer than
+     * this answer.
+     */
+    private class JoinAnswer(
+        val answer: JsonObject,
+        val asked: Long,
+        val transport: Long,
+        val activity: Long,
+        val owner: WorkOwner,
+    )
 
     /**
      * Applies the answer of a join: the live id, the turn that runs, its card and the questions the
      * server holds. Separately from [resume] so a chat that reconnects can ask at once and apply
      * once its history is on the screen, the turn streaming on top of it.
      */
-    private fun adopt(joinAnswer: JoinAnswer, stored: String?, starting: Boolean, generation: Int): String {
+    private fun adopt(joinAnswer: JoinAnswer, stored: String?, starting: Boolean, generation: Int): String = publish(joinAnswer.owner) {
         val result = joinAnswer.answer
         val live = result.string("session_id") ?: error("No session_id in the answer")
         // What the answer says of the requests holds on the connection it came over, and confirms
         // nothing once the socket is on another one: the join over that one brings its own answer.
         val current = joinAnswer.transport != 0L && socket.transport.value == joinAnswer.transport
-        takeLive(live, if (current) joinAnswer.transport else 0L)
-        joinedGeneration.set(generation)
+        takeLive(live, if (current) joinAnswer.transport else 0L, joinAnswer.owner)
+        // A count read now may already include a connection that took the socket while this answer was
+        // on its way. It is the chat's only if the socket is still on the connection the answer came
+        // over, which is read after the count: the socket may change between the two reads.
+        val counted = if (current) socket.connections.value else generation
+        val stillCurrent = joinAnswer.transport != 0L && socket.transport.value == joinAnswer.transport
+        // The connection the answer came over is the one the chat is joined to. Its count may already
+        // have caught up while the answer was on its way; it is never lower than when the join asked.
+        joinedGeneration.updateAndGet { maxOf(it, generation) }
+        if (current && stillCurrent) joinedGeneration.updateAndGet { maxOf(it, counted) }
         // The answer came over `generation`; a connection that came meanwhile may have moved the
-        // card or the turn, so that one is joined as well.
-        if (socket.connections.value != generation) rejoinPending.set(true)
+        // card or the turn, so that one is joined as well. A count that caught up on the answer's own
+        // connection is not such a connection.
+        if (!stillCurrent || (!current && socket.connections.value != generation)) rejoinPending.set(Work(joinAnswer.owner, stored, socket.transport.value))
         val storedId = result.string("stored_session_id") ?: stored
         val info = result["info"] as? JsonObject
-        val running = starting || (result.bool("running") ?: info?.bool("running") ?: false)
+        val serverRunning = result.runningFlag() ?: info?.runningFlag() ?: false
+        // A join may have been asked before the user sent a message, or after the message entered
+        // but before it went to the server: its idle answer is older than that send and cannot say
+        // the send ended. A join asked after the send went out is newer, so its answer stands,
+        // including a turn that finished while the chat was away.
+        val sentAfterAsk = sends.protects(joinAnswer.activity)
+        val running = starting || serverRunning || (!starting && sentAfterAsk)
+        if (!starting && !serverRunning && !sentAfterAsk) {
+            // The server is idle and this answer is newer than every local send: any turn the chat
+            // knew of has ended, including one whose outcome was lost while disconnected.
+            sends.discard(joinAnswer.activity)
+        }
         // A turn under way when the chat opens goes on in its answer, with what streamed while the chat was away.
-        val resumed = running && !starting
+        val resumed = serverRunning && !starting
         val streamed = (result["inflight"] as? JsonObject)?.string("assistant").orEmpty()
         edit {
             it.copy(
@@ -733,7 +987,7 @@ class ChatController(
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
         edit { state -> state.copy(connections = state.connections.map { if (it.settled || it.opId == pending?.opId) it else it.copy(settled = true) }) }
         pending?.let(::showConnection)
-        if (current) {
+        if (current && stillCurrent) {
             val listed = HashSet<String>()
             (result["open_requests"] as? JsonArray)?.forEach { request ->
                 val obj = request as? JsonObject ?: return@forEach
@@ -744,69 +998,99 @@ class ChatController(
             }
             closeUnlisted(listed, joinAnswer.asked)
         }
-        return live
-    }
+        live
+    } ?: throw IOException("Retired chat operation")
 
     /** Runs [block] on the live session; a session the server dropped is joined again once. */
-    private suspend fun <T> withLive(starting: Boolean = false, block: suspend (String) -> T): T = try {
-        block(ensureLive(starting))
-    } catch (e: RpcException) {
-        if (!e.sessionGone()) throw e
-        forgetLive()
-        block(ensureLive(starting))
+    @Volatile internal var beforeLiveRecovery: (suspend () -> Unit)? = null
+
+    private suspend fun <T> withLive(starting: Boolean = false, block: suspend (String) -> T): T {
+        val origin = operation()
+        val live = ensureLive(starting)
+        val on = origin.transport.get()
+        return try { block(live) } catch (error: RpcException) {
+            if (!error.sessionGone()) throw error
+            beforeLiveRecovery?.invoke()
+            val forgotten = publish(origin.owner) {
+                synchronized(lock) {
+                    if (liveOwner != origin.owner || liveId != live || joinedOn != on) false
+                    else { liveId = null; invalidateJoin(); true }
+                }
+            } == true
+            if (!forgotten) throw IOException("Retired live binding", error)
+            block(ensureLive(starting))
+        }
     }
 
     fun send(text: String, attachments: List<LocalAttachment>) {
-        if (text.isBlank() && attachments.isEmpty()) return
-        val key = "local${keys.incrementAndGet()}"
-        val shown = attachments.map { Attachment(it.name, it.name, it.image) }
-        edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
-        awaitingStart = true
-        val hold = onTurnStart()
-        val started = System.currentTimeMillis().also { sentAt = it }
-        scope.launch {
-            // The prompt may have reached the server even when its answer does not come back: an
-            // unknown outcome is reported, never retried on its own, and the message stays visible.
-            var submitted = false
-            try {
-                // A message sent before the socket is up says so instead of waiting in silence.
-                if (socket.state.value != SocketState.READY) edit { it.copy(connecting = true) }
-                try {
-                    socket.awaitReady()
-                } finally {
-                    edit { it.copy(connecting = false) }
-                }
-                val socketMillis = System.currentTimeMillis() - started
-                withLive(starting = true) { live ->
-                    val sessionMillis = System.currentTimeMillis() - started
-                    hold.live(live)
-                    val refs = attachments.mapNotNull { attach(live, it) }
-                    // The words first: the server titles the chat by the start of its first message.
-                    val prompt = buildString {
-                        append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
-                        if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
+        var start: (() -> Unit)? = null
+        withRoot { origin ->
+            if (text.isBlank() && attachments.isEmpty()) return@withRoot
+            val sendId = sends.begin()
+            val key = "local${keys.incrementAndGet()}"
+            val shown = attachments.map { Attachment(it.name, it.name, it.image) }
+            edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
+            awaitingStart = true
+            // The root's synchronous publication is complete before a service/caller callback runs.
+            // In particular, no short authority monitor is held while it waits for a real join.
+            start = submit@{
+                if (closed || !publicationEligible(origin)) { sends.finish(sendId); return@submit }
+                val hold = onTurnStart()
+                val started = System.currentTimeMillis()
+                publish(origin.owner) { if (publicationEligible(origin)) sentAt = started }
+                launchOwned(origin) {
+                    // The prompt may have reached the server even when its answer does not come back: an
+                    // unknown outcome is reported, never retried on its own, and the message stays visible.
+                    var submitted = false
+                    try {
+                        // A message sent before the socket is up says so instead of waiting in silence.
+                        if (socket.state.value != SocketState.READY) edit { it.copy(connecting = true) }
+                        try {
+                            awaitSocket()
+                        } finally {
+                            edit { it.copy(connecting = false) }
+                        }
+                        val socketMillis = System.currentTimeMillis() - started
+                        withLive(starting = true) { live ->
+                            val sessionMillis = System.currentTimeMillis() - started
+                            hold.live(live)
+                            val refs = attachments.mapNotNull { attach(live, it) }
+                            // The words first: the server titles the chat by the start of its first message.
+                            val prompt = buildString {
+                                append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
+                                if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
+                            }
+                            sends.submitted(sendId)
+                            submitted = true
+                            rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                            markDelivery(key, Delivery.SENT)
+                            hold.submitted()
+                            Log.i(
+                                TIMING_TAG,
+                                "Sent: socket ready after $socketMillis ms, session after $sessionMillis ms, " +
+                                    "prompt accepted after ${System.currentTimeMillis() - started} ms",
+                            )
+                        }
+                    } catch (e: Exception) {
+                        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                        hold.release()
+                        awaitingStart = false
+                        Log.w(TAG, "Send failed", e)
+                        val delivery = deliveryFor(e, submitted)
+                        val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_send_failed)
+                        failDelivery(sendId, key, delivery, error)
                     }
-                    submitted = true
-                    socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
-                    markDelivery(key, Delivery.SENT)
-                    hold.submitted()
-                    Log.i(
-                        TIMING_TAG,
-                        "Sent: socket ready after $socketMillis ms, session after $sessionMillis ms, " +
-                            "prompt accepted after ${System.currentTimeMillis() - started} ms",
-                    )
+                }.invokeOnCompletion { cause ->
+                    if (cause != null) {
+                        hold.release()
+                        sends.finish(sendId)
+                    }
                 }
-            } catch (e: Exception) {
-                if (e is CancellationException && e !is TimeoutCancellationException) throw e
-                hold.release()
-                awaitingStart = false
-                Log.w(TAG, "Send failed", e)
-                val delivery = deliveryFor(e, submitted)
-                val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_send_failed)
-                failDelivery(key, delivery, error)
             }
-        }.invokeOnCompletion { cause -> if (cause != null) hold.release() }
+        }
+        start?.invoke()
     }
+
 
     /**
      * Whether the server may have taken the prompt: an answer that never came (a timeout or a lost
@@ -820,19 +1104,22 @@ class ChatController(
     }
 
     /** The submission did not go through: the message keeps its place with the outcome, in one update. */
-    private fun failDelivery(key: String, delivery: Delivery, error: String) = edit { state ->
-        state.copy(
-            items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
-            running = false,
-            error = error,
-        )
+    private fun failDelivery(sendId: Long, key: String, delivery: Delivery, error: String) {
+        sends.finish(sendId)
+        edit { state ->
+            state.copy(
+                items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
+                running = false,
+                error = error,
+            )
+        }
     }
 
     /** Pictures go to the vision queue of the next turn; other files land in the workspace and are named in the prompt. */
     private suspend fun attach(live: String, file: LocalAttachment): String? {
         val base64 = Base64.getEncoder().encodeToString(file.bytes)
         return if (file.image) {
-            socket.call(
+            rpc(
                 "image.attach_bytes",
                 buildJsonObject {
                     put("session_id", live)
@@ -843,7 +1130,7 @@ class ChatController(
             )
             null
         } else {
-            val result = socket.call(
+            val result = rpc(
                 "file.attach",
                 buildJsonObject {
                     put("session_id", live)
@@ -856,15 +1143,17 @@ class ChatController(
         }
     }
 
-    fun stop() {
-        val live = liveId ?: return
-        scope.launch {
+    fun stop() = withRoot { origin ->
+        val live = liveId ?: return@withRoot
+        launchOwned(origin) {
             try {
-                socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
+                rpc("session.interrupt", buildJsonObject { put("session_id", live) })
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 edit { it.copy(error = e.message) }
             }
             awaitingStart = false
+            sends.stopAll()
             edit { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
         }
     }
@@ -875,24 +1164,26 @@ class ChatController(
     /** Replaces the last user message with [text] and answers it anew. */
     fun editLast(text: String) = rewriteLast(text)
 
-    private fun rewriteLast(replacement: String?) {
-        val lastUser = current.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
+    private fun rewriteLast(replacement: String?) = withRoot { origin ->
+        val lastUser = current.items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return@withRoot
+        val sendId = sends.begin()
         val again = lastUser.rewritten(replacement, "local${keys.incrementAndGet()}").copy(delivery = Delivery.SENDING, time = nowSeconds())
         val text = again.sent
         var hold: TurnHold? = null
-        scope.launch {
+        launchOwned(origin) {
             var submitted = false
             try {
                 val live = ensureLive()
-                if (_state.value.running) socket.call("session.interrupt", buildJsonObject { put("session_id", live) })
-                socket.call("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
+                if (_state.value.running) rpc("session.interrupt", buildJsonObject { put("session_id", live) })
+                rpc("session.undo", buildJsonObject { put("session_id", live); put("intent", "retry") })
                 val index = current.items.indexOfLast { it is ChatItem.User }
                 val kept = if (index >= 0) current.items.subList(0, index) else current.items
                 edit { it.copy(items = kept + again, running = true, error = null) }
                 awaitingStart = true
                 hold = onTurnStart().also { it.live(live) }
+                sends.submitted(sendId)
                 submitted = true
-                socket.call("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
+                rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", text) })
                 markDelivery(again.key, Delivery.SENT)
                 hold?.submitted()
             } catch (e: Exception) {
@@ -901,40 +1192,46 @@ class ChatController(
                 awaitingStart = false
                 val delivery = deliveryFor(e, submitted)
                 val error = if (delivery == Delivery.UNKNOWN) strings.get(R.string.error_send_unknown) else e.message ?: strings.get(R.string.error_failed)
-                failDelivery(again.key, delivery, error)
+                failDelivery(sendId, again.key, delivery, error)
             }
-        }.invokeOnCompletion { cause -> if (cause != null) hold?.release() }
-    }
-
-    fun rename(title: String) {
-        val id = _state.value.storedId ?: return
-        scope.launch {
-            try {
-                // A rename touches no pin.
-                ChatMutations(session.chat, socket, liveOf = { stored -> liveId.takeIf { stored == id } }, pinLocally = { _, _ -> }).rename(id, title)
-                edit { it.copy(title = title) }
-            } catch (e: Exception) {
-                edit { it.copy(error = e.message) }
+        }.invokeOnCompletion { cause ->
+            if (cause != null) {
+                hold?.release()
+                sends.finish(sendId)
             }
         }
+    }
+
+    fun rename(title: String) = withRoot { origin ->
+        val id = _state.value.storedId ?: return@withRoot
+        recordContinuation(launchOwned(origin) {
+            try {
+                // A rename touches no pin.
+                ChatMutations(apiForWork(), socket, liveOf = { stored -> liveId.takeIf { stored == id } }, pinLocally = { _, _ -> }, owner = origin.owner, wanted = { holds(origin.owner) && !closed }, transport = origin.transport.get()).rename(id, title)
+                edit { it.copy(title = title) }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                edit { it.copy(error = e.message) }
+            }
+        })
     }
 
     fun dismissError() = edit { it.copy(error = null) }
 
     /** Switches the model of this chat; a running turn finishes on the old one. */
-    fun chooseModel(provider: String, model: String, confirmed: Boolean = false) {
+    fun chooseModel(provider: String, model: String, confirmed: Boolean = false) = withRoot { origin ->
         edit { it.copy(modelConfirm = null) }
         if (liveId == null && _state.value.storedId == null) {
             draftModel = provider to model
             edit { it.copy(model = model, modelPending = false) }
             // The draft session was built for the model before; a new one is created with the pick.
-            jobs += scope.launch { renewDraft() }
-            return
+            jobs += launchOwned(origin) { renewDraft() }
+            return@withRoot
         }
-        scope.launch {
+        launchOwned(origin) {
             try {
                 val result = withLive { live ->
-                    socket.call(
+                    rpc(
                         "config.set",
                         buildJsonObject {
                             put("session_id", live)
@@ -992,23 +1289,24 @@ class ChatController(
      * that gets no reply, so without a connection it would be lost unseen: then nothing is sent, the
      * card stays open and the chat says why.
      */
-    private fun resolveQuestion(id: String, settle: (QuestionCard) -> Pair<QuestionCard, JsonElement>) {
+    private fun resolveQuestion(id: String, settle: (QuestionCard) -> Pair<QuestionCard, JsonElement>) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
         synchronized(lock) {
             // A closed chat answers nothing, and a card this chat's join has not confirmed may be one the server ended.
-            if (closed) return
-            val card = _state.value.questions.firstOrNull { it.id == id && it.state == QuestionState.PENDING } ?: return
+            if (closed) return@withRoot
+            val card = _state.value.questions.firstOrNull { it.id == id && it.state == QuestionState.PENDING } ?: return@withRoot
             val chat = _state.value.storedId.orEmpty()
-            if (questionMemory.ended(chat, id) != null) return
+            if (questionMemory.ended(chat, id) != null) return@withRoot
             if (socket.state.value != SocketState.READY) {
                 edit(flush = false) { it.copy(error = strings.get(R.string.chat_question_offline)) }
-                return
+                return@withRoot
             }
             // Only over the connection of the join that confirmed it, and only while the socket is still on it.
             val on = validJoin()
-            if (!card.confirmed || on == 0L) return
+            if (!card.confirmed || on == 0L) return@withRoot
             val (settled, result) = settle(card)
-            if (!socket.respondOn(on, id, result)) return
+            if (!socket.respondOwned(origin.owner, on, id, result)) return@withRoot
             questionMemory.heard(chat, id, socket.connections.value)
+            questionMemory.answered(chat, id, on)
             edit(flush = false) { state -> state.copy(questions = state.questions.map { if (it.id == id) settled else it }) }
         }
     }
@@ -1019,15 +1317,17 @@ class ChatController(
      * request comes again with every join while it waits: a card the chat has stays one card, with
      * what the user wrote on it. A request the server ended stays ended, whatever an older answer
      * still lists: its card shows how it ended, also when the chat had not shown it yet. A card the
-     * user settled opens again only when the server still holds the request over a later connection
+     * user settled opens again only when the server still holds the request over a connection later
      * than the one its answer went over, which lost the answer. [ordinal] is the place a live request
-     * came in among all [observe] took.
+     * came in among all [observe] took. The connection, not a count of connections, tells which join
+     * came later: another connection can carry the same count.
      */
     private fun showQuestion(request: ServerRequest, generation: Int, listed: Boolean, ordinal: Long) = edit(flush = false) { state ->
         val chat = state.storedId.orEmpty()
         if (!listed) seenLive[request.id] = maxOf(seenLive[request.id] ?: 0L, ordinal)
         val known = state.questions.firstOrNull { it.id == request.id }
         val heard = questionMemory.heardOn(chat, request.id)
+        val answeredOn = questionMemory.answeredOn(chat, request.id)
         val ended = questionMemory.ended(chat, request.id)
         fun replaced(card: QuestionCard) = state.copy(questions = state.questions.map { if (it.id == request.id) card else it })
         // Confirmed only by a join the chat can still trust: one over the connection the socket is on now.
@@ -1043,7 +1343,7 @@ class ChatController(
                 questionMemory.heard(chat, request.id, maxOf(heard ?: 0, generation))
                 if (known.confirmed == valid) state else replaced(known.copy(confirmed = valid))
             }
-            heard != null && heard < generation -> {
+            answeredOn != null && answeredOn < request.transport -> {
                 questionMemory.heard(chat, request.id, generation)
                 val given = known.answers.mapNotNull { (qid, answer) -> answer?.let { qid to it } }.toMap()
                 replaced(known.copy(state = QuestionState.PENDING, answers = emptyMap(), prefilled = known.prefilled + given, confirmed = valid))
@@ -1068,18 +1368,18 @@ class ChatController(
         }
     }
 
-    fun answerSecret(value: String?) {
-        val prompt = _state.value.prompt ?: return
+    fun answerSecret(value: String?) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val prompt = _state.value.prompt ?: return@withRoot
         if (value == null) {
-            socket.respond(prompt.request.id, null, error = "cancelled")
+            respond(origin, prompt.request.id, null, error = "cancelled")
             edit { it.copy(prompt = null) }
         } else {
             answer { buildJsonObject { put("value", value) } }
         }
     }
 
-    fun cancelPrompt() {
-        val prompt = _state.value.prompt ?: return
+    fun cancelPrompt() = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val prompt = _state.value.prompt ?: return@withRoot
         when (prompt) {
             is Prompt.Approval -> answerApproval("deny")
             is Prompt.Secret -> answerSecret(null)
@@ -1120,12 +1420,12 @@ class ChatController(
     /** Ends the operation now with whatever is not resolved: the agent goes on without it. */
     fun continueConnection(opId: String) = respondConnection(opId) { put("settled_by", "continue") }
 
-    private fun respondConnection(opId: String, result: JsonObjectBuilder.() -> Unit) {
-        val live = liveId ?: return
-        if (_state.value.connections.none { it.opId == opId && !it.settled }) return
-        scope.launch {
+    private fun respondConnection(opId: String, result: JsonObjectBuilder.() -> Unit) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val live = liveId ?: return@withRoot
+        if (_state.value.connections.none { it.opId == opId && !it.settled }) return@withRoot
+        launchOwned(origin) {
             try {
-                socket.call(
+                rpc(
                     "connection.respond",
                     buildJsonObject {
                         put("owner", owner(live))
@@ -1142,12 +1442,12 @@ class ChatController(
     }
 
     /** A new link for a row whose sign-in failed or expired; the row gets it through `connection.update`. */
-    fun retryConnection(opId: String, name: String) {
-        val live = liveId ?: return
-        if (_state.value.connections.none { it.opId == opId && !it.settled }) return
-        scope.launch {
+    fun retryConnection(opId: String, name: String) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val live = liveId ?: return@withRoot
+        if (_state.value.connections.none { it.opId == opId && !it.settled }) return@withRoot
+        launchOwned(origin) {
             try {
-                socket.call(
+                rpc(
                     "connectors.connect",
                     buildJsonObject {
                         put("owner", owner(live))
@@ -1168,12 +1468,12 @@ class ChatController(
      * Installs a catalog plugin again after its card settled, with the choices the user approved;
      * the row shows the result itself, since the operation is over.
      */
-    fun reinstallPlugin(opId: String, name: String) {
-        val target = _state.value.connections.firstOrNull { it.opId == opId }?.targets?.firstOrNull { it.name == name } ?: return
-        val catalog = target.catalog ?: return
-        scope.launch {
+    fun reinstallPlugin(opId: String, name: String) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val target = _state.value.connections.firstOrNull { it.opId == opId }?.targets?.firstOrNull { it.name == name } ?: return@withRoot
+        val catalog = target.catalog ?: return@withRoot
+        launchOwned(origin) {
             try {
-                val result = socket.call(
+                val result = rpc(
                     "plugins.manage",
                     buildJsonObject {
                         put("action", "install")
@@ -1215,19 +1515,19 @@ class ChatController(
      * The user came back from the browser. The server gives the phone no link back to the app, so it
      * is told now to read the accounts instead of at its next check, and the card takes the result.
      */
-    fun browserReturned() {
-        val live = liveId ?: return
+    fun browserReturned() = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val live = liveId ?: return@withRoot
         val waiting = _state.value.connections.filter { it.awaitsBrowser }
-        if (waiting.isEmpty()) return
-        scope.launch {
+        if (waiting.isEmpty()) return@withRoot
+        launchOwned(origin) {
             for (connection in waiting) {
                 val params = buildJsonObject {
                     put("owner", owner(live))
                     put("op_id", connection.opId)
                 }
                 try {
-                    socket.call("connectors.operation.wake", params)
-                    val status = socket.call("connectors.operation.status", params) as? JsonObject ?: continue
+                    rpc("connectors.operation.wake", params)
+                    val status = rpc("connectors.operation.status", params) as? JsonObject ?: continue
                     edit { state -> state.copy(connections = state.connections.map { it.applying(status) }) }
                 } catch (e: CancellationException) {
                     throw e
@@ -1240,18 +1540,18 @@ class ChatController(
     }
 
     /** The apps the user can connect through Nous, for a directory card. */
-    suspend fun connectorDirectory(): List<ConnectorApp> {
-        val result = socket.call("connectors.list", buildJsonObject { put("owner", buildJsonObject { put("type", "account") }) }) as? JsonObject
-        if (result?.bool("available") == false) return emptyList()
-        return (result?.get("connectors") as? JsonArray).orEmpty().mapNotNull { row ->
+    suspend fun connectorDirectory(): List<ConnectorApp> = withContext(workContext.asContextElement(captureWork())) {
+        val result = rpc("connectors.list", buildJsonObject { put("owner", buildJsonObject { put("type", "account") }) }) as? JsonObject
+        if (result?.bool("available") == false) return@withContext emptyList()
+        return@withContext (result?.get("connectors") as? JsonArray).orEmpty().mapNotNull { row ->
             val obj = row as? JsonObject ?: return@mapNotNull null
             ConnectorApp(obj.string("connector") ?: return@mapNotNull null, obj.bool("connected") ?: false, obj.string("connection_status"))
         }
     }
 
     /** Starts connecting [app] to the account from a directory card; the link to sign in, if there is one to open. */
-    suspend fun connectApp(app: ConnectorApp): String? {
-        val result = socket.call(
+    suspend fun connectApp(app: ConnectorApp): String? = withContext(workContext.asContextElement(captureWork())) {
+        val result = rpc(
             "connectors.connect",
             buildJsonObject {
                 put("owner", buildJsonObject { put("type", "account") })
@@ -1260,16 +1560,42 @@ class ChatController(
             },
             timeoutMillis = 45_000,
         ) as? JsonObject
-        return (result?.get("targets") as? JsonArray)?.firstNotNullOfOrNull { (it as? JsonObject)?.string("connect_url")?.takeIf { url -> url.startsWith("https://") } }
+        return@withContext (result?.get("targets") as? JsonArray)?.firstNotNullOfOrNull { (it as? JsonObject)?.string("connect_url")?.takeIf { url -> url.startsWith("https://") } }
     }
 
-    private fun answer(result: () -> JsonElement) {
-        val prompt = _state.value.prompt ?: return
-        socket.respond(prompt.request.id, result())
+    private fun answer(result: () -> JsonElement) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
+        val prompt = _state.value.prompt ?: return@withRoot
+        respond(origin, prompt.request.id, result())
         edit { it.copy(prompt = null) }
     }
 
+    /** Incoming frames inherit an admitted socket or in-flight join, never current credentials. */
+    private fun incomingWork(transport: Long): Work? {
+        if (transport == 0L || transport != socket.transport.value) return null
+        val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
+        if (real != null) return real.ownerOn(transport)?.let { Work(it, _state.value.storedId, transport) }
+        // Synthetic GatewayChannel peers carry the actual join's already-captured work.
+        return lastWork?.takeIf { it.transport.get() == transport }
+            ?: liveOwner?.let { Work(it, _state.value.storedId, transport) }
+    }
+
+    private fun withWork(origin: Work, block: () -> Unit) {
+        val prior = workContext.get()
+        workContext.set(origin)
+        try { publish(origin.owner, block) } finally { workContext.set(prior) }
+    }
+
     private fun onEvent(event: GatewayEvent) {
+        val origin = incomingWork(event.transport) ?: return
+        if (event.owner != null && event.owner != origin.owner) return
+        withWork(origin) {
+            // Withdrawals can precede the resume answer that identifies their live session.
+            if (event.type == "request.cancel") takeWithdrawal(event)
+            else if (event.transport == joinedOn && liveOwner == origin.owner) applyEvent(event, origin.owner)
+        }
+    }
+
+    private fun applyEvent(event: GatewayEvent, origin: WorkOwner) {
         val live = liveId
         when (event.type) {
             "session.title" -> if (event.payload.string("session_id") == _state.value.storedId || event.sessionId == live) {
@@ -1293,7 +1619,17 @@ class ChatController(
             }
         }
         when (event.type) {
-            "message.start", "message.complete", "error" -> awaitingStart = false
+            "message.start" -> {
+                awaitingStart = false
+                sends.started()
+            }
+            // The turn this chat's send waited for is over: an idle answer taken before that send is
+            // no longer newer than the outcome, so it may speak for the chat again. An outcome of an
+            // older or adopted turn has no started local send and leaves the local sends alone.
+            "message.complete", "error" -> {
+                awaitingStart = false
+                sends.ended()
+            }
         }
         synchronized(lock) {
             // Hidden, the words of the answer go to their buffer: no transcript is rebuilt for them.
@@ -1304,14 +1640,14 @@ class ChatController(
                 "message.start" -> edit(flush = false) { it.copy(running = true, status = null, modelPending = false) }
                 "message.complete" -> {
                     edit(flush = false) { it.copy(running = false, status = null) }
-                    refreshUsage()
+                    refreshUsage(origin)
                     // A new chat has no stored history on the phone until one is read; the first finished
                     // turn writes it so switching away and back does not redraw the chat from nothing.
-                    if (!warmed) warmHistory()
+                    if (!warmed) warmHistory(origin)
                 }
                 "session.info" -> edit(flush = false) { state ->
                     // Idle before the sent turn started is the state the session had before the prompt, not the end of the turn.
-                    val running = event.payload.bool("running")?.takeUnless { !it && awaitingStart }
+                    val running = event.payload.runningFlag()?.takeUnless { !it && awaitingStart }
                     val model = event.payload.string("model")
                     // A pick the server dropped (an unconfirmed expensive model, a failed switch) reports
                     // the old model; one still queued reports the pick. Only the former ends the pending state.
@@ -1351,25 +1687,28 @@ class ChatController(
      * Reads the stored history into the phone's cache. A failure leaves the cache as it was; the
      * next finished turn or [close] tries again.
      */
-    private fun warmHistory() {
+    private fun warmHistory(owner: WorkOwner) {
         val id = _state.value.storedId ?: return
-        scope.launch {
-            runCatching { session.chat.messages(id) }.onSuccess { warmed = true }
-        }
+        val chat = session.chatFor(owner)
+        recordContinuation(scope.launch {
+            if (holds(owner)) runCatching { chat.messages(id) }.onSuccess { publish(owner) { warmed = true } }
+        })
     }
 
     /**
      * The server totals tokens and cost in the stored chat when a turn ends; the socket reports tokens
      * alone, counted only since the session was joined.
      */
-    private fun refreshUsage() {
+    private fun refreshUsage(owner: WorkOwner) {
         val id = _state.value.storedId ?: return
-        scope.launch {
+        val chat = session.chatFor(owner)
+        recordContinuation(scope.launch {
             try {
-                session.chat.get(id)?.let { read ->
-                    read.usage?.let { usage -> edit { it.copy(usage = usage) } }
-                    // The turn that just ended is on the screen: its answer is read.
-                    tellRead(id, read.lastActive)
+                chat.get(id)?.let { read ->
+                    read.usage?.let { usage -> publish(owner) { edit { it.copy(usage = usage) } } }
+                    // The turn that just ended is on the screen: its answer is read, in the
+                    // authorization the read started in.
+                    tellRead(id, read.lastActive, owner)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1377,7 +1716,7 @@ class ChatController(
                 // The last known totals stay; the next turn or opening the chat reads them again.
                 Log.w(TAG, "Usage not read", e)
             }
-        }
+        })
     }
 
     /**
@@ -1401,13 +1740,18 @@ class ChatController(
      * connection [generation].
      */
     private fun onRequest(request: ServerRequest, generation: Int = socket.connections.value, listed: Boolean = false) {
+        val origin = if (listed) operation() else incomingWork(request.transport) ?: return
+        withWork(origin) { applyRequest(request, generation, listed, origin.owner) }
+    }
+
+    private fun applyRequest(request: ServerRequest, generation: Int, listed: Boolean, owner: WorkOwner) {
         val live = liveId
         val sessionId = request.params.string("session_id")
         if (request.method == "clarify") {
             takeQuestion(request, generation, listed = listed)
             return
         }
-        if (live == null || sessionId != live) return
+        if (live == null || sessionId != live || request.transport == 0L || request.transport != joinedOn) return
         val params = request.params
         val prompt = when (request.method) {
             "approval" -> approvalOf(request)
@@ -1415,11 +1759,17 @@ class ChatController(
             "secret" -> Prompt.Secret(request, params.string("prompt") ?: strings.get(R.string.chat_secret_value, params.string("env_var").orEmpty()), sudo = false)
             else -> {
                 // Desktop-only questions (window, terminal, theme): saying no at once keeps the agent from waiting.
-                socket.respond(request.id, null, error = "Method not supported by the Android client")
+                socket.respondOwned(owner, request.transport, request.id, null, error = "Method not supported by the Android client")
                 null
             }
         }
         if (prompt != null) edit(flush = false) { it.copy(prompt = prompt) }
+    }
+
+    private fun JsonObject.runningFlag(): Boolean? = when ((get("running") as? JsonPrimitive)?.content) {
+        "1", "true" -> true
+        "0", "false" -> false
+        else -> null
     }
 
     private companion object {
@@ -1435,3 +1785,17 @@ class ChatController(
 
 /** True when an RPC error says the live session is gone and a resume by the stored id will help. */
 fun RpcException.sessionGone(): Boolean = code == 4001
+
+/**
+ * The join answer reports `running` as 0 or 1, not as a boolean (docs/fixtures/socket/resume.json);
+ * the older boolean form is still taken. This is the wire of this one field: a general
+ * [JsonObject.bool] would read `0` as null and quietly call a running turn idle.
+ */
+private fun JsonObject.runningFlag(): Boolean? =
+    this["running"]?.let { (it as? JsonPrimitive)?.contentOrNull?.let { value ->
+        value.toBooleanStrictOrNull() ?: when (value) {
+            "0" -> false
+            "1" -> true
+            else -> null
+        }
+    } }

@@ -34,6 +34,7 @@ import org.evsyukov.hermes.chat.LocalPins
 import org.evsyukov.hermes.chat.LocalReads
 import org.evsyukov.hermes.chat.QuestionMemory
 import org.evsyukov.hermes.data.auth.KeystoreTokenCipher
+import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.files.AttachmentCache
@@ -49,6 +50,7 @@ import org.evsyukov.hermes.push.PushManager
 import org.evsyukov.hermes.push.PushMessages
 import org.evsyukov.hermes.push.UnifiedPushDistributor
 import org.evsyukov.hermes.tailnet.Tailnet
+import org.evsyukov.hermes.ui.chat.ProfileDraftMemory
 import java.io.File
 
 /** The server the app works with now, its HTTP routes and its chat socket. */
@@ -62,30 +64,54 @@ class Connection(val session: ServerSession, val socket: GatewaySocket) {
 
 /** Objects shared by the whole app. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
-class AppContainer(context: Context) {
+class AppContainer(
+    context: Context,
+    cipher: TokenCipher = KeystoreTokenCipher(),
+    responseCache: ResponseCache? = null,
+) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = baseClient()
 
     val strings = AppStrings(context.resources)
     val settings = AppSettings(context, scope)
-    val servers = ServerStore(context, KeystoreTokenCipher(), scope)
+    val servers = ServerStore(context, cipher, scope)
     val tailnet = Tailnet(context, scope)
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
-    val responses = ResponseCache(CacheDatabase.open(context).responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })
+    internal val cacheDatabase by lazy { CacheDatabase.open(context) }
+    val responses = responseCache ?: ResponseCache(cacheDatabase.responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })
     val pins = LocalPins(context)
     val reads = LocalReads(context)
 
     /**
-     * Rebuilt when the active server, its address or its proxy changes; tokens alone do not
-     * rebuild it, since the session reads them from the store on every request.
+     * The unsent words, files and reading place of the chats of each profile, kept for the lifetime
+     * of the process. A profile is a stable id, so rebuilding its connection or switching away and
+     * back finds the drafts; signing out or removing the profile drops only its store.
      */
-    val connection: StateFlow<Connection?> = combine(servers.state.map { it.active }.distinctUntilChanged(), tailnet.proxy) { profile, tailnetProxy ->
-        profile to tailnetProxy
-    }
+    val drafts = ProfileDraftMemory()
+
+    @Volatile internal var beforeDraftRemoval: (suspend (String) -> Unit)? = null
+    @Volatile internal var afterDraftRemoval: ((org.evsyukov.hermes.data.server.WorkOwner) -> Unit)? = null
+
+    /**
+     * The generation of each server, shared by every session built for it: a sign-out or a removal
+     * moves it on, and work that started in the old generation is not published any more.
+     */
+    val lifetime = servers.authority
+
+    /**
+     * Rebuilt when the active server, its address or its proxy changes, and only after the
+     * authority adopted the persisted profiles; tokens alone do not rebuild it, since the session
+     * reads the bound credentials on every request.
+     */
+    val connection: StateFlow<Connection?> = combine(
+        servers.state.map { it.active }.distinctUntilChanged(),
+        tailnet.proxy,
+        lifetime.ready,
+    ) { profile, tailnetProxy, ready -> Triple(profile, tailnetProxy, ready) }
         .distinctUntilChanged()
-        .runningFold(null as Connection?) { previous, (profile, tailnetProxy) ->
+        .runningFold(null as Connection?) { previous, (profile, tailnetProxy, ready) ->
             previous?.socket?.stop()
-            if (profile?.url == null) return@runningFold null
+            if (!ready || profile?.url == null) return@runningFold null
             val client = clientFor(http, profile.proxy, tailnetProxy)
             val session = ServerSession(profile, client, servers, strings, responses)
             Connection(session, GatewaySocket(session.http, scope, strings))
@@ -104,6 +130,8 @@ class AppContainer(context: Context) {
     val online: SharedFlow<Unit> = _online.asSharedFlow()
 
     init {
+        // The authority adopts the persisted profiles and credentials once, before a session is exposed.
+        scope.launch { servers.authority.bootstrap(servers) }
         scope.launch {
             settings.current.map { it.notifyActivity to it.checkMinutes }.distinctUntilChanged().collect { (on, minutes) ->
                 if (on) ActivityCheck.schedule(context, minutes) else ActivityCheck.cancel(context)
@@ -145,6 +173,18 @@ class AppContainer(context: Context) {
         scope.launch {
             combine(connection.map { it?.session?.profile?.id }.distinctUntilChanged(), settings.current.map { it.push }.distinctUntilChanged()) { _, _ -> }
                 .collect { runCatching { push.reconcile() } }
+        }
+        // A removal event can lag same-ID recreation. Only its still-current removal marker
+        // may drop the captured memory, ordered with authorization through the existing gate.
+        scope.launch {
+            lifetime.removalOwners.collect { removals ->
+                removals.forEach { (id, removed) ->
+                    val memory = drafts.existing(id) ?: return@forEach
+                    beforeDraftRemoval?.invoke(id)
+                    lifetime.withRemoval(id, removed.generation) { drafts.forgetCaptured(id, memory) }
+                    afterDraftRemoval?.invoke(removed)
+                }
+            }
         }
         // A lowered limit evicts at once, not with the next write.
         scope.launch {

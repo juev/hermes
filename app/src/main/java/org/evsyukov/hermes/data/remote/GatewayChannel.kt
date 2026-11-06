@@ -43,11 +43,23 @@ interface GatewayChannel {
     /** Calls [method] and waits for its result; errors come back as [RpcException]. */
     suspend fun call(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement
 
+    /** Exact authorization and transport for a continuation; never opens a replacement transport. */
+    suspend fun callOn(owner: org.evsyukov.hermes.data.server.WorkOwner, transport: Long, method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMillis: Long = 60_000): JsonElement {
+        check(transport != 0L && this.transport.value == transport) { "Retired socket transport" }
+        return call(method, params, timeoutMillis)
+    }
+
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
     suspend fun awaitReady()
 
     /** Answers a [ServerRequest]; [error] rejects it instead. */
     fun respond(id: String, result: JsonElement?, error: String? = null)
+
+    fun respondOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, transport: Long, id: String, result: JsonElement?, error: String? = null): Boolean {
+        if (transport == 0L || this.transport.value != transport) return false
+        respond(id, result, error)
+        return true
+    }
 
     /**
      * Answers a [ServerRequest] over connection [transport] alone: false, and nothing sent, when the

@@ -46,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +57,7 @@ import java.text.DateFormat
 import java.time.OffsetDateTime
 import java.util.Date
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import org.evsyukov.hermes.data.remote.AdminApi
@@ -124,7 +126,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
                     KeyValue(stringResource(R.string.admin_cron), job.string("schedule_display").orEmpty())
                     KeyValue(stringResource(R.string.admin_cron_deliver), job.string("deliver").orEmpty())
                     KeyValue(stringResource(R.string.admin_cron_last_run), time(job.string("last_run_at")))
-                    job.string("last_error")?.let { Text(it, color = colors.danger, fontSize = 13.sp) }
+                    job.string("last_error")?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                     job.string("prompt")?.takeIf { it.isNotBlank() }?.let {
                         Text(stringResource(R.string.admin_cron_task), color = colors.faintText, fontSize = 12.sp)
                         Text(it, color = colors.text, fontSize = 14.sp)
@@ -151,7 +153,7 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
                         confirm = resources.getString(R.string.admin_cron_delete_confirm, job.string("name") ?: id) to {
                             scope.attempt(snackbar, resources.getString(R.string.admin_cron_deleted)) { api.deleteCron(id); open = null; jobs.reload() }
                         }
-                    }) { Text(stringResource(R.string.common_delete), color = colors.danger) }
+                    }) { Text(stringResource(R.string.common_delete), color = colors.dangerText) }
                 }
             },
             dismissButton = { TextButton(onClick = { open = null }) { Text(stringResource(R.string.common_close)) } },
@@ -163,30 +165,44 @@ fun CronScreen(api: AdminApi, onBack: () -> Unit) {
         var prompt by remember { mutableStateOf("") }
         var deliver by remember { mutableStateOf("local") }
         val targets = rememberCached(api) { it.cronTargets() }
-        AlertDialog(
-            onDismissRequest = { creating = false },
+        val form = rememberFormSubmission()
+        val window = LocalFormWindow.current
+        val connectionLost = stringResource(R.string.admin_form_connection_lost)
+        val unknownOutcome = stringResource(R.string.admin_form_unknown_outcome)
+        window.Show(
             title = { Text(stringResource(R.string.admin_cron_new)) },
-            text = {
+            onDismiss = { if (!form.saving) creating = false },
+            content = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.admin_cron_name)) }, singleLine = true)
-                    OutlinedTextField(schedule, { schedule = it }, label = { Text(stringResource(R.string.admin_cron)) }, placeholder = { Text("0 9 * * *, every 2h, 30m") }, singleLine = true)
-                    OutlinedTextField(prompt, { prompt = it }, label = { Text(stringResource(R.string.admin_cron_prompt)) }, minLines = 3)
+                    OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.admin_cron_name)) }, singleLine = true, enabled = !form.saving)
+                    OutlinedTextField(schedule, { schedule = it }, label = { Text(stringResource(R.string.admin_cron)) }, placeholder = { Text("0 9 * * *, every 2h, 30m") }, singleLine = true, enabled = !form.saving)
+                    OutlinedTextField(prompt, { prompt = it }, label = { Text(stringResource(R.string.admin_cron_prompt)) }, minLines = 3, enabled = !form.saving)
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilterChip(deliver == "local", { deliver = "local" }, label = { Text(stringResource(R.string.admin_cron_local)) })
+                        FilterChip(deliver == "local", { deliver = "local" }, label = { Text(stringResource(R.string.admin_cron_local)) }, enabled = !form.saving)
                         targets.value?.forEach { t ->
                             val target = t.string("id").orEmpty()
-                            FilterChip(deliver == target, { deliver = target }, label = { Text(t.string("name") ?: target) })
+                            FilterChip(deliver == target, { deliver = target }, label = { Text(t.string("name") ?: target) }, enabled = !form.saving)
                         }
                     }
+                    form.error?.let { Text(it, color = colors.dangerText, fontSize = 13.sp) }
                 }
             },
-            confirmButton = {
-                TextButton(enabled = schedule.isNotBlank() && prompt.isNotBlank(), onClick = {
-                    creating = false
-                    scope.attempt(snackbar, resources.getString(R.string.admin_cron_created)) { api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver); jobs.reload() }
-                }) { Text(stringResource(R.string.admin_cron_create)) }
+            confirm = {
+                TextButton(
+                    enabled = schedule.isNotBlank() && prompt.isNotBlank() && !form.saving,
+                    modifier = Modifier.testTag("form-submit"),
+                    onClick = {
+                        form.submit(scope, connectionLost, unknownOutcome, block = {
+                            api.createCron(schedule.trim(), prompt.trim(), name.trim(), deliver)
+                        }, onSuccess = {
+                            creating = false
+                            jobs.reload()
+                            scope.launch { snackbar.showSnackbar(resources.getString(R.string.admin_cron_created)) }
+                        })
+                    },
+                ) { Text(stringResource(if (form.saving) R.string.common_saving else R.string.admin_cron_create)) }
             },
-            dismissButton = { TextButton(onClick = { creating = false }) { Text(stringResource(R.string.common_cancel)) } },
+            dismiss = { TextButton(enabled = !form.saving, onClick = { creating = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     confirm?.let { (text, run) -> ConfirmDialog(stringResource(R.string.common_confirm_title), text, stringResource(R.string.common_yes), run) { confirm = null } }
@@ -279,7 +295,7 @@ fun PlatformsScreen(api: AdminApi, onBack: () -> Unit) {
                             listOfNotNull(state, p.string("home_channel")?.let { stringResource(R.string.admin_platforms_home, it) }).joinToString(" · "),
                             color = colors.faintText, fontSize = 13.sp,
                         )
-                        p.string("error_message")?.let { Text(it, color = colors.danger, fontSize = 12.sp) }
+                        p.string("error_message")?.let { Text(it, color = colors.dangerText, fontSize = 12.sp) }
                     }
                     if (p.bool("enabled") == true) {
                         TextButton(onClick = {
@@ -341,8 +357,8 @@ fun LogsScreen(api: AdminApi, onBack: () -> Unit) {
                         line,
                         fontFamily = FontFamily.Monospace, fontSize = 11.sp,
                         color = when {
-                            " ERROR " in line || "Traceback" in line -> colors.danger
-                            " WARNING " in line -> colors.warning
+                            " ERROR " in line || "Traceback" in line -> colors.dangerText
+                            " WARNING " in line -> colors.warningText
                             else -> colors.secondaryText
                         },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp),

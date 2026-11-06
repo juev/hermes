@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,16 +17,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.evsyukov.hermes.AppContainer
 import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.R
+import org.evsyukov.hermes.background.TurnHold
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatMutations
 import org.evsyukov.hermes.chat.withLocalPins
@@ -35,13 +37,17 @@ import org.evsyukov.hermes.data.remote.ChatSummary
 import org.evsyukov.hermes.data.remote.HermesException
 import org.evsyukov.hermes.data.remote.SearchHit
 import org.evsyukov.hermes.data.remote.SignInRequiredException
+import org.evsyukov.hermes.data.server.NativeResult
 import org.evsyukov.hermes.data.server.ProxySettings
 import org.evsyukov.hermes.data.server.ServerProfile
+import org.evsyukov.hermes.data.server.WorkOwner
 import org.evsyukov.hermes.data.server.parseServerLink
 import org.evsyukov.hermes.data.server.ProxyType
 import org.evsyukov.hermes.data.server.effectiveRoute
 import org.evsyukov.hermes.ui.admin.AdminSection
 import org.evsyukov.hermes.ui.chat.ChatDraft
+import org.evsyukov.hermes.ui.chat.ChatDraftMemory
+import org.evsyukov.hermes.ui.chat.DraftKey
 import org.evsyukov.hermes.ui.chat.Shared
 import org.evsyukov.hermes.ui.viewer.ViewerFile
 import java.io.File
@@ -52,7 +58,7 @@ import java.util.concurrent.atomic.AtomicLong
 sealed interface Screen {
     data object Search : Screen
     data class Admin(val section: AdminSection? = null) : Screen
-    data object Settings : Screen
+    data class Settings(val visit: Long) : Screen
     data object Licenses : Screen
     data class ServerEdit(val id: String?) : Screen
     data class Viewer(val file: ViewerFile) : Screen
@@ -60,19 +66,28 @@ sealed interface Screen {
 
 /**
  * What the sidebar lists: conversations, the archive, or the runs of scheduled jobs. The service runs
- * of the dashboard (one-shot questions, tools, API and agent clients, webhooks) are in no list.
+ * of the dashboard (one-shot questions, tools, API and agent clients, webhooks) are in no list; a
+ * Kanban worker is a service run too. Unknown client names stay, so a new interactive client appears
+ * without an app change; a new service name needs to join [CHATS]'s exclusions.
  */
 enum class ListMode(val archived: Boolean, val sources: String?, val excludeSources: String?) {
-    CHATS(false, null, "cron,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
+    CHATS(false, null, "cron,kanban,oneshot,tool,api_server,acp,hermes_flow,vulcan_delegate,webhook"),
     ARCHIVE(true, null, null),
     CRON(false, "cron", null),
     ;
 
-    /** Whether [chat] belongs to this list, as the server filters it. */
-    fun admits(chat: ChatSummary): Boolean =
-        chat.archived == archived &&
+    /**
+     * Whether [chat] belongs to this list, as the server filters it. A local row carries its creator
+     * in [ChatSummary.createdSource], so a service that ran through a local session is left out even
+     * though the live source is `local`; a row without that provenance is kept.
+     */
+    fun admits(chat: ChatSummary): Boolean {
+        val excluded = excludeSources?.split(',') ?: emptyList()
+        val serviceCreator = chat.createdSource != null && chat.createdSource in excluded
+        return chat.archived == archived &&
             (sources == null || chat.source in sources.split(',')) &&
-            (excludeSources == null || chat.source !in excludeSources.split(','))
+            (excludeSources == null || (chat.source !in excluded && !serviceCreator))
+    }
 
     /** The rows of a page that belong here: a server that ignores a filter puts no run among the chats. */
     fun keep(chats: List<ChatSummary>): List<ChatSummary> = chats.filter(::admits)
@@ -94,8 +109,6 @@ data class SidebarState(
  */
 internal fun SidebarState.withMore(mode: ListMode, more: List<ChatSummary>, total: Int, size: Int): SidebarState =
     if (this.mode != mode) this else copy(chats = (chats + mode.keep(more)).distinctBy { it.id }, total = total, listed = listed + size, loading = false)
-
-data class SearchState(val query: String = "", val hits: List<SearchHit> = emptyList(), val searching: Boolean = false, val error: String? = null)
 
 /** What the app needs from the server before chatting: nothing, a sign-in, or a working network. */
 enum class Access { UNKNOWN, OK, SIGN_IN, OFFLINE }
@@ -143,15 +156,23 @@ internal suspend fun checkServer(
     return Access.OK
 }
 
+enum class LocalSignOutResult { COMPLETE, INCOMPLETE, SUPERSEDED, REJECTED, FAILED }
+
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-class MainViewModel(val container: AppContainer) : ViewModel() {
+class MainViewModel(
+    val container: AppContainer,
+    /** Looks the query up; a test controls the answers without a server. */
+    searchChats: suspend (Connection, String) -> List<SearchHit> = { connection, query ->
+        connection.session.chat.search(query)
+    },
+) : ViewModel() {
     val stack = mutableStateListOf<Screen>()
 
     private val _sidebar = MutableStateFlow(SidebarState())
     val sidebar: StateFlow<SidebarState> = _sidebar.asStateFlow()
 
-    private val _search = MutableStateFlow(SearchState())
-    val search: StateFlow<SearchState> = _search.asStateFlow()
+    private val searchOwner = SearchOwner(container.connection, viewModelScope, searchChats)
+    val search: StateFlow<SearchState> = searchOwner.search
 
     private val _chat = MutableStateFlow<ChatController?>(null)
     val chat: StateFlow<ChatController?> = _chat.asStateFlow()
@@ -172,27 +193,70 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     /** The check of the server under way; a new one replaces it, so an older answer cannot win. */
     private var accessJob: Job? = null
 
+    /** Actual producer handles for deterministic owner-boundary fixtures. */
+    internal val accessProducer: Job? get() = accessJob
+    @Volatile
+    internal var beforeAccessStoreRead: (suspend () -> Unit)? = null
+    @Volatile
+    internal var afterSignoutCleanup: (suspend () -> Unit)? = null
+    @Volatile internal var beforeChatDeleteAdmission: (suspend () -> Unit)? = null
+    internal val listProducer: Job? get() = loadJob
+    internal var cachedListProducer: Job? = null
+        private set
+    @Volatile private var observedreadProducers: java.util.concurrent.CopyOnWriteArrayList<Job>? = null
+    internal val readProducers: java.util.concurrent.CopyOnWriteArrayList<Job>
+        get() = synchronized(this) {
+            observedreadProducers ?: java.util.concurrent.CopyOnWriteArrayList<Job>().also { observedreadProducers = it }
+        }
+    internal var mutationProducer: Job? = null
+        private set
+
     private val recovery = OfflineRecovery(access) { checkAccess() }
 
     /** A chat asked for before the server connection exists, e.g. by a notification at a cold start. */
     private var pendingChat: String? = null
 
-    /** What the user prepared in each open chat; a chat no longer referenced takes its draft with it. */
-    private val drafts = WeakHashMap<ChatController, ChatDraft>()
+    /** Numbers settings visits, so two visits are different routes. */
+    private val routeVisits = AtomicLong()
+
+    /**
+     * The draft of each controller on the screen. The drafts themselves belong to the profile and
+     * are found by the chat's stable id, so closing a controller or rebuilding the profile's
+     * connection does not take its draft with it; this map only lets a controller ask for the draft
+     * it was opened with. Its keys are weak: a closed controller is not kept alive for its draft.
+     */
+    private data class DraftBinding(val connection: Connection, val draft: ChatDraft, val memory: ChatDraftMemory)
+    private val draftBindings = WeakHashMap<ChatController, DraftBinding>()
 
     /** The screen of the current chat is up in an app in front; a chat opened now starts shown or hidden by it. */
     private var chatOnScreen = false
+
+    private val _notice = MutableStateFlow<String?>(null)
+
+    /** A one-line message for the user, such as a refused delete; the screen shows it once. */
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun noticeShown() {
+        _notice.value = null
+    }
 
     init {
         viewModelScope.launch {
             container.connection.collectLatest { connection ->
                 _chat.value?.close()
                 _chat.value = null
+                draftBindings.clear()
                 _sidebar.value = SidebarState()
                 listedByServer = false
-                if (connection == null) return@collectLatest
+                if (connection == null) {
+                    // No server answers for this one anymore: work for it must not bring its state back.
+                    loadJob?.cancel()
+                    checkAccess(null)
+                    return@collectLatest
+                }
                 showCachedChats(connection)
-                newChat()
+                // A full memory has no slot for another new chat; the last stored chat can still open.
+                if (!newChat()) draftsOf(connection).mostRecentChatId()?.let(::openChat)
                 pendingChat?.let { id ->
                     pendingChat = null
                     openChat(id)
@@ -202,47 +266,78 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         }
         // The gateway tells when the list of chats changed anywhere: Telegram, the desktop, cron.
         viewModelScope.launch {
-            container.connection.filterNotNull().flatMapLatest { it.socket.events }
-                .filter { it.type == "sessions.changed" || it.type == "session.title" }
+            container.connection.filterNotNull().flatMapLatest { connection -> connection.socket.events.map { connection to it } }
+                .filter { (_, event) -> event.type == "sessions.changed" || event.type == "session.title" }
                 .debounce(700)
-                .collect { refreshChats() }
+                .collect { (connection, event) -> event.owner?.let { refreshChats(it, connection) } }
         }
         // A server found offline is checked again when the network comes back; the button stays for
         // the cases the network does not explain.
         viewModelScope.launch { recovery.follow(container.online) }
-        viewModelScope.launch {
-            _search.debounce(300).distinctUntilChanged { a, b -> a.query == b.query }.collectLatest { state ->
-                runSearch(state.query)
-            }
-        }
     }
 
-    /** Probes the server; a valid session keeps the socket open and loads the chats. */
-    fun checkAccess() {
-        val connection = container.connection.value ?: return
+    /**
+     * Probes the server; a valid session keeps the socket open and loads the chats. When a caller
+     * has a returned authority and origin, the check belongs to exactly them: a newer authorization
+     * or a replaced connection is fenced before an older check can cancel the current one or send.
+     */
+    fun checkAccess(expected: WorkOwner? = null, expectedConnection: Connection? = null) {
+        val origin = expectedConnection ?: container.connection.value
+        if (origin == null) {
+            if (container.connection.value != null) return
+            accessJob?.cancel(); accessJob = null
+            _access.value = Access.UNKNOWN; _accessError.value = null
+            return
+        }
+        val owner = expected ?: origin.session.owner()
+        if (!eligible(owner, origin)) return
         accessJob?.cancel()
         _access.value = Access.UNKNOWN
         val since = recovery.checkStarting()
         accessJob = viewModelScope.launch {
+            fun admit() {
+                if (!eligible(owner, origin)) throw CancellationException("Retired access origin")
+            }
             try {
-                val hasTokens = container.servers.load().tokens[connection.session.profile.id] != null
-                val access = checkServer(hasTokens, { connection.session.authInfo().required }, connection.session::probe, connection.socket::start)
-                _access.value = access
-                if (access != Access.OK) return@launch
-                _accessError.value = null
+                admit()
+                beforeAccessStoreRead?.invoke()
+                val hasTokens = container.servers.load().tokens[owner.profileId] != null
+                admit()
+                val access = checkServer(
+                    hasTokens,
+                    { admit(); val required = origin.session.authInfo(owner).required; admit(); required },
+                    { admit(); origin.session.probe(owner) },
+                    { admit(); origin.socket.start(owner) },
+                )
+                if (!eligible(owner, origin)) return@launch
+                container.lifetime.publish(owner) {
+                    if (container.connection.value === origin) {
+                        _access.value = access
+                        if (access == Access.OK) _accessError.value = null
+                    }
+                }
+                if (access != Access.OK || !eligible(owner, origin)) return@launch
                 refreshChats()
-                container.scope.launch { runCatching { container.push.reconcile() } }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: SignInRequiredException) {
-                _access.value = Access.SIGN_IN
-            } catch (e: Exception) {
-                Log.w(TAG, "Server check failed", e)
-                _accessError.value = e.message ?: e.javaClass.simpleName
-                _access.value = Access.OFFLINE
-                recovery.checkFailed(since)
+                container.scope.launch { if (eligible(owner, origin)) runCatching { container.push.reconcile() } }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                container.lifetime.publish(owner) {
+                    if (container.connection.value === origin) {
+                        if (e is SignInRequiredException) _access.value = Access.SIGN_IN else {
+                            _accessError.value = e.message ?: e.javaClass.simpleName
+                            _access.value = Access.OFFLINE
+                            recovery.checkFailed(since)
+                        }
+                    }
+                }
             }
         }
+    }
+
+    private fun eligible(expected: WorkOwner?, expectedConnection: Connection?): Boolean {
+        if (expectedConnection != null && container.connection.value !== expectedConnection) return false
+        if (expected != null && !container.lifetime.holds(expected.profileId, expected.generation)) return false
+        return true
     }
 
     private val _draftServer = MutableStateFlow<ServerProfile?>(null)
@@ -260,41 +355,103 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         _draftServer.value = null
     }
 
-    /** The route the in-app sign-in page must take; null when the server is reached directly. */
-    fun signInRoute(): ProxySettings? {
-        val profile = container.servers.state.value.active ?: return null
+    /** Switches the app to another saved server; its screen replaces the recovery one at once. */
+    fun switchServer(id: String) {
+        viewModelScope.launch { container.servers.activate(id) }
+    }
+
+    /** The route the in-app sign-in page of [profile] must take; null when that server is reached directly. */
+    fun signInRoute(profile: ServerProfile): ProxySettings? {
         if (profile.proxy.type == ProxyType.NONE) return null
         return effectiveRoute(profile.proxy, container.tailnet.proxy.value)
     }
 
-    suspend fun signIn(openBrowser: (String) -> Unit) {
-        val connection = container.connection.value ?: return
-        val info = connection.session.authInfo()
-        val page = CallbackPageText(
-            signedIn = container.strings.get(R.string.setup_page_signed_in),
-            failed = container.strings.get(R.string.setup_page_failed),
-            back = container.strings.get(R.string.setup_page_back),
-        )
-        connection.session.signIn(info.providers.singleOrNull(), RETURN_URL, page, openBrowser)
-        checkAccess()
+    private val nativeAttempts = AtomicLong()
+
+    /** Captured synchronously by the click, before its coroutine is launched. */
+    fun captureSignIn(): suspend ((String) -> Unit) -> Unit {
+        val origin = container.connection.value
+        val owner = origin?.session?.owner()
+        val attempt = nativeAttempts.incrementAndGet()
+        return { browser ->
+            if (origin != null && owner != null) signIn(origin, owner, attempt, browser)
+        }
     }
 
-    fun refreshChats() {
-        val connection = container.connection.value ?: return
-        loadJob?.cancel()
-        loadJob = viewModelScope.launch {
-            _sidebar.update { it.copy(loading = true, error = null) }
+    suspend fun signIn(connection: Connection, browser: (String) -> Unit) {
+        val owner = connection.session.owner()
+        if (!eligible(owner, connection)) throw CancellationException("The server changed")
+        var opened = false
+        signIn(connection, owner, nativeAttempts.incrementAndGet()) { url ->
+            opened = true
+            browser(url)
+        }
+        if (!opened && container.connection.value !== connection) throw CancellationException("The server changed")
+    }
+
+    suspend fun signIn(openBrowser: (String) -> Unit) = captureSignIn()(openBrowser)
+
+    private suspend fun signIn(origin: Connection, owner: WorkOwner, attempt: Long, browser: (String) -> Unit) {
+        fun current(expected: WorkOwner = owner) = nativeAttempts.get() == attempt && eligible(expected, origin)
+        if (!current()) return
+        try {
+            val info = origin.session.authInfo(owner)
+            if (!current()) return
+            val page = CallbackPageText(
+                signedIn = container.strings.get(R.string.setup_page_signed_in),
+                failed = container.strings.get(R.string.setup_page_failed),
+                back = container.strings.get(R.string.setup_page_back),
+            )
+            when (val result = origin.session.signIn(info.providers.singleOrNull(), RETURN_URL, page, owner) { url ->
+                if (!current()) throw CancellationException("Retired native origin")
+                browser(url)
+            }) {
+                is NativeResult.Applied -> if (current(result.owner)) checkAccess(result.owner, origin)
+                is NativeResult.Failed -> if (current()) throw result.error
+                NativeResult.Rejected -> Unit
+            }
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (error: Exception) { if (current()) throw error }
+    }
+
+    private fun currentOrigin(origin: Connection, profileId: String): Boolean =
+        container.connection.value === origin && container.lifetime.present(profileId)
+
+    fun refreshChats(expected: WorkOwner? = null, expectedConnection: Connection? = null) {
+        val connection = expectedConnection ?: container.connection.value ?: return
+        // Captured before the request: a sign-out or removal while it is out makes the answer stale,
+        // and it must neither greet the user as the list nor mark its chats read.
+        val owner = expected ?: connection.session.owner()
+        val at = owner.generation
+        val wanted = { eligible(owner, connection) }
+        if (!wanted()) return
+        container.lifetime.publish(owner) {
+            if (!wanted()) return@publish
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
+            if (!wanted()) return@launch
+            container.lifetime.publish(owner) { if (wanted()) _sidebar.update { it.copy(loading = true, error = null) } }
             try {
                 val mode = _sidebar.value.mode
-                val chat = connection.session.chat
+                val chat = connection.session.chatFor(WorkOwner(connection.session.profile.id, at))
                 val page = chat.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val chats = withReads(connection, chat, withPins(connection, chat, mode.keep(page.chats), mode, forgetGone = true))
-                _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) else it }
-                listedByServer = true
-            } catch (e: Exception) {
-                if (e is SignInRequiredException) _access.value = Access.SIGN_IN
-                _sidebar.update { it.copy(loading = false, error = e.message) }
+                val chats = withReads(connection, chat, withPins(connection, chat, mode.keep(page.chats), mode, forgetGone = true, owner = owner), wanted, owner)
+                container.lifetime.publish(owner) {
+                    if (wanted()) {
+                        _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size, loading = false) else it }
+                        listedByServer = true
+                    }
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (e: Exception) {
+                container.lifetime.publish(owner) {
+                    if (wanted()) {
+                        if (e is SignInRequiredException) _access.value = Access.SIGN_IN
+                        _sidebar.update { it.copy(loading = false, error = e.message) }
+                    }
+                }
             }
+        }
         }
     }
 
@@ -302,7 +459,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
      * [chats] with the chats pinned on the phone, those beyond the page included. A pinned chat the
      * server no longer has leaves the pins when [forgetGone]; the copy on the phone cannot tell that.
      */
-    private suspend fun withPins(connection: Connection, api: ChatApi, chats: List<ChatSummary>, mode: ListMode, forgetGone: Boolean): List<ChatSummary> {
+    private suspend fun withPins(connection: Connection, api: ChatApi, chats: List<ChatSummary>, mode: ListMode, forgetGone: Boolean, owner: WorkOwner): List<ChatSummary> {
         val server = connection.session.profile.id
         return withLocalPins(chats, container.pins.of(server), mode::admits) { id ->
             try {
@@ -310,7 +467,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (forgetGone && e is HermesException && e.status == 404) container.pins.set(server, id, false)
+                if (forgetGone && e is HermesException && e.status == 404) container.pins.setOwned(owner, container.lifetime, id, false) { eligible(owner, connection) }
                 null
             }
         }
@@ -321,19 +478,23 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
      * server's. [api] looks for the answers; the copy on the phone keeps no history for that, so a list
      * shown from it marks the answers found before, which the phone keeps.
      */
-    private suspend fun withReads(connection: Connection, api: ChatApi, chats: List<ChatSummary>): List<ChatSummary> =
-        container.reads.unread(connection.session.profile.id, chats) { id, after -> api.lastReply(id, after)?.timestamp }
+    private suspend fun withReads(connection: Connection, api: ChatApi, chats: List<ChatSummary>, wanted: () -> Boolean, owner: WorkOwner): List<ChatSummary> =
+        container.reads.unread(connection.session.profile.id, chats, wanted, owner, container.lifetime) { id, after -> api.lastReply(id, after)?.timestamp }
 
     /** Shows the first page the phone keeps until the server answers, or when it cannot. */
     private fun showCachedChats(connection: Connection) {
-        val cached = connection.session.chat.cached ?: return
+        val owner = connection.session.owner()
+        val cached = connection.session.chatFor(owner).cached ?: return
         val mode = _sidebar.value.mode
-        viewModelScope.launch {
+        val wanted = { eligible(owner, connection) }
+        cachedListProducer = viewModelScope.launch {
             val page = runCatching {
                 cached.list(limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
             }.getOrNull() ?: return@launch
-            val chats = withReads(connection, cached, withPins(connection, cached, mode.keep(page.chats), mode, forgetGone = false))
-            if (!listedByServer && container.connection.value === connection) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
+            val chats = container.reads.cached(connection.session.profile.id, withPins(connection, cached, mode.keep(page.chats), mode, forgetGone = false, owner = owner))
+            container.lifetime.publish(owner) {
+                if (!listedByServer && wanted()) _sidebar.update { if (it.mode == mode) it.copy(chats = chats, total = page.total, listed = page.chats.size) else it }
+            }
         }
     }
 
@@ -341,16 +502,22 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         val connection = container.connection.value ?: return
         val state = _sidebar.value
         if (state.loading || state.listed >= state.total) return
+        val at = container.lifetime.current(connection.session.profile.id)
+        val owner = WorkOwner(connection.session.profile.id, at)
+        val wanted = { eligible(owner, connection) }
         viewModelScope.launch {
-            _sidebar.update { it.copy(loading = true) }
+            if (!wanted()) return@launch
+            container.lifetime.publish(owner) { if (wanted()) _sidebar.update { it.copy(loading = true) } }
             try {
                 val mode = state.mode
-                val page = connection.session.chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
-                val more = withReads(connection, connection.session.chat, mode.keep(page.chats))
+                val chat = connection.session.chatFor(WorkOwner(connection.session.profile.id, at))
+                val page = chat.list(offset = state.listed, limit = PAGE, archived = mode.archived, sources = mode.sources, excludeSources = mode.excludeSources)
+                val more = withReads(connection, chat, mode.keep(page.chats), wanted, owner)
                 // The first page already brought every pinned chat, so the ones met again are left out.
-                _sidebar.update { s -> s.withMore(mode, more, page.total, page.chats.size) }
-            } catch (e: Exception) {
-                _sidebar.update { it.copy(loading = false, error = e.message) }
+                container.lifetime.publish(owner) { if (wanted()) _sidebar.update { s -> s.withMore(mode, more, page.total, page.chats.size) } }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (e: Exception) {
+                container.lifetime.publish(owner) { if (wanted()) _sidebar.update { it.copy(loading = false, error = e.message) } }
             }
         }
     }
@@ -369,10 +536,14 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
             pendingChat = id
             return
         }
+        if (_chat.value?.state?.value?.storedId == id) {
+            markRead(id)
+            return
+        }
+        val draft = draftsOf(connection).obtain(DraftKey.Chat(id)) ?: return refuseDraft()
         markRead(id)
-        if (_chat.value?.state?.value?.storedId == id) return
         _chat.value?.close()
-        _chat.value = controller(connection, id)
+        _chat.value = controller(connection, id, draft)
         stack.clear()
     }
 
@@ -381,16 +552,36 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
      * phone remembers the activity it showed. The server is told too, where its route accepts a
      * chat of its own process; a refusal leaves the phone's mark in charge.
      */
-    private fun markRead(id: String, lastActive: Double? = null) {
-        val connection = container.connection.value ?: return
-        container.turns.read(id)
-        _sidebar.update { state -> state.copy(chats = state.chats.map { if (it.id == id) it.copy(unread = false) else it }) }
-        val at = lastActive ?: _sidebar.value.chats.firstOrNull { it.id == id }?.lastActive ?: return
-        viewModelScope.launch {
-            container.reads.markRead(connection.session.profile.id, id, at)
-            runCatching { connection.session.chat.mutate(id, unread = false) }
-                .onFailure { e -> if (e !is CancellationException) Log.d(TAG, "Read state of $id not sent", e) }
+    private fun markRead(id: String, lastActive: Double? = null, owner: WorkOwner? = null, expectedConnection: Connection? = null) {
+        val connection = expectedConnection ?: container.connection.value ?: return
+        // A callback carries the profile and generation its load started in; a mark made right here
+        // is current work and takes both from now. A callback of the old generation changes nothing:
+        // not the sidebar, not the watcher, not the phone's mark, and it does not tell the server.
+        val profileId = owner?.profileId ?: connection.session.profile.id
+        val generation = owner?.generation ?: container.lifetime.current(profileId)
+        val wanted = {
+            container.connection.value === connection &&
+                container.lifetime.holds(profileId, generation)
         }
+        val origin = WorkOwner(profileId, generation)
+        var activity: Double? = null
+        val admitted = container.lifetime.publish(origin) {
+            if (!wanted()) false else {
+                container.turns.read(id)
+                _sidebar.update { state -> state.copy(chats = state.chats.map { if (it.id == id) it.copy(unread = false) else it }) }
+                activity = lastActive ?: _sidebar.value.chats.firstOrNull { it.id == id }?.lastActive
+                true
+            }
+        } == true
+        if (!admitted) return
+        val at = activity ?: return
+        val write = viewModelScope.launch {
+            container.lifetime.withOwner(origin) { container.reads.markRead(profileId, id, at, wanted) }
+            if (!wanted()) return@launch
+            runCatching { connection.session.chatFor(origin).mutate(id, unread = false) }
+                .onFailure { e -> if (e is CancellationException) throw e else Log.d(TAG, "Read state of $id not sent", e) }
+        }
+        observedreadProducers?.add(write)
     }
 
     /**
@@ -402,8 +593,27 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         _chat.value?.state?.value?.storedId?.let { markRead(it) }
     }
 
-    /** The words, files and place of [controller], kept here so they outlive its screen. */
-    fun draftOf(controller: ChatController): ChatDraft = drafts.getOrPut(controller) { ChatDraft() }
+    /**
+     * The current controller's issued draft, only for its exact current connection. A retired or
+     * unbound controller is rejected without looking up a profile or creating any retained state.
+     * Callers collecting the connection separately pass that value too, so a stale pair stays hidden
+     * until both collectors catch up. Ordinary draft retention lives in [org.evsyukov.hermes.ui.chat.ProfileDraftMemory].
+     */
+    fun draftOf(controller: ChatController, connection: Connection? = container.connection.value): ChatDraft? {
+        val binding = draftBindings[controller] ?: return null
+        if (controller !== _chat.value || connection !== container.connection.value || binding.connection !== connection ||
+            container.drafts.existing(binding.connection.session.profile.id) !== binding.memory) return null
+        return binding.draft
+    }
+
+    /** The drafts of a connection's profile, kept while the app runs, across connection rebuilds. */
+    private fun draftsOf(connection: Connection): ChatDraftMemory =
+        container.drafts.of(connection.session.profile.id)
+
+    /** A new slot cannot be taken without losing words or files, so the screen stays where it is. */
+    private fun refuseDraft() {
+        _notice.value = container.strings.get(R.string.draft_limit_reached, container.drafts.capacity)
+    }
 
     /**
      * The screen of [controller] came up in an app in front, or went away: under another screen, with
@@ -417,14 +627,36 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         container.turns.visibleChat = if (shown) controller.state.value.storedId else null
     }
 
-    /** An empty chat, as the pencil button and the pull past the end give; the server lists it from the first message. */
-    fun newChat() {
-        val connection = container.connection.value ?: return
+    /**
+     * An empty chat, as the pencil button and the pull past the end give; the server lists it from the
+     * first message. False when every draft slot holds words or files: the screen keeps the current
+     * chat, and [notice] says what to clear.
+     */
+    fun newChat(): Boolean {
+        val connection = container.connection.value ?: return false
+        // The first message of the open new chat is still getting its id. Handing the same draft to
+        // another controller would later move the follow-up into the sending chat under its feet.
+        // This is checked before the empty-chat shortcut: the controller's published state is empty
+        // while the chat is off screen, even after its first message went out.
+        val memory = draftsOf(connection)
+        if (memory.isSendingNewChat()) {
+            _notice.value = container.strings.get(R.string.draft_new_chat_pending)
+            return false
+        }
         val current = _chat.value
-        if (current != null && current.state.value.storedId == null && current.state.value.items.isEmpty()) return
+        // Sign-out retires bindings even for an empty controller. Only an issued current binding
+        // can take this shortcut; otherwise install a fresh controller with the retained/new draft.
+        if (current != null && current.state.value.storedId == null && current.state.value.items.isEmpty() &&
+            draftOf(current, connection) != null) return true
+        val draft = memory.obtain(DraftKey.NewChat)
+        if (draft == null) {
+            refuseDraft()
+            return false
+        }
         current?.close()
-        _chat.value = controller(connection, null)
+        _chat.value = controller(connection, null, draft)
         stack.clear()
+        return true
     }
 
     /**
@@ -438,8 +670,9 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         val state = current.state.value
         if (state.storedId != null || state.items.isNotEmpty()) return
         val connection = container.connection.value ?: return
+        val draft = draftsOf(connection).obtain(DraftKey.NewChat) ?: return refuseDraft()
         current.close()
-        _chat.value = controller(connection, null)
+        _chat.value = controller(connection, null, draft)
     }
 
     private val _shared = MutableStateFlow<Shared?>(null)
@@ -449,7 +682,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
 
     /** Opens a new chat for a share; [read] takes the files of the sharing app, off the main thread. */
     fun share(read: () -> Shared?) {
-        newChat()
+        if (!newChat()) return
         stack.clear()
         viewModelScope.launch {
             val shared = withContext(Dispatchers.IO) { read() } ?: return@launch
@@ -462,82 +695,263 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
         _shared.value = null
     }
 
-    private fun controller(connection: Connection, id: String?): ChatController {
+    private fun controller(connection: Connection, id: String?, draft: ChatDraft): ChatController {
         // The chat takes the place of the one on the screen, shown or hidden as that one was.
         container.turns.visibleChat = id.takeIf { chatOnScreen }
-        return ChatController(
+        // The controller this completion belongs to. A callback that ran before construction ended
+        // has no owner yet, so it changes no visibility rather than comparing with an unset value.
+        var owner: ChatController? = null
+        val memory = draftsOf(connection)
+        val created = ChatController(
             connection.session, connection.socket, viewModelScope, container.strings, id,
             onSessionCreated = { stored ->
-                if (chatOnScreen) container.turns.visibleChat = stored
-                refreshChats()
+                // An empty new chat got its id with the first message: its leftovers, if any, are that
+                // chat's now, not the next new chat's. This belongs to the captured draft alone, even
+                // when another chat is on the screen.
+                if (id == null && container.drafts.existing(connection.session.profile.id) === memory) memory.migrate(draft, draftKey(stored))
+                // The screen and the notification owner belong to the chat and connection that are
+                // current now. A late answer of a chat the user left may not take them away.
+                val current = owner
+                val sameConnection = container.connection.value === connection
+                if (current != null && _chat.value === current && sameConnection && chatOnScreen) {
+                    container.turns.visibleChat = stored
+                }
+                // The sidebar of the connection that asked still needs the new chat, whatever chat
+                // of that connection is on the screen.
+                if (sameConnection) refreshChats()
             },
-            onLive = container.turns::bind,
-            onTurnStart = container.turns::turnStarting,
-            onRead = { id, at -> markRead(id, at) },
+            onLive = { live, stored, title -> if (container.connection.value === connection) container.turns.bind(live, stored, title) },
+            onTurnStart = {
+                val hold = container.turns.turnStarting()
+                if (id == null && memory.isNewChat(draft)) {
+                    memory.markSending(draft)
+                    object : TurnHold {
+                        override fun live(id: String) = hold.live(id)
+                        override fun submitted() = hold.submitted()
+                        override fun release() {
+                            memory.clearSending(draft)
+                            hold.release()
+                        }
+                    }
+                } else {
+                    hold
+                }
+            },
+            onRead = { id, at, work -> markRead(id, at, work, connection) },
             visible = chatOnScreen,
             questionMemory = connection.questions,
+            wanted = { container.connection.value === connection },
         )
+        owner = created
+        draftBindings[created] = DraftBinding(connection, draft, memory)
+        return created
     }
 
-    fun renameChat(id: String, title: String) = mutate(id) { it.rename(id, title) }
+    private fun draftKey(storedId: String?): DraftKey = if (storedId == null) DraftKey.NewChat else DraftKey.Chat(storedId)
 
-    fun pinChat(id: String, pinned: Boolean) = mutate(id) { it.pin(id, pinned) }
+    fun renameChat(id: String, title: String) = mutate(id) { api, _, _ -> api.rename(id, title) }
+    fun pinChat(id: String, pinned: Boolean) = mutate(id) { api, _, _ -> api.pin(id, pinned) }
+    fun archiveChat(id: String, archived: Boolean) = mutate(id) { api, _, _ -> api.archive(id, archived) }
 
-    fun archiveChat(id: String, archived: Boolean) = mutate(id) { it.archive(id, archived) }
-
-    fun deleteChat(id: String) = mutate(id) {
-        it.delete(id)
-        container.connection.value?.let { c -> container.reads.forget(c.session.profile.id, id) }
-        container.connection.value?.session?.forgetChat(id)
-        container.connection.value?.questions?.forget(id)
-        if (_chat.value?.state?.value?.storedId == id) newChat()
-    }
-
-    private val _notice = MutableStateFlow<String?>(null)
-
-    /** A one-line message for the user, such as a refused delete; the screen shows it once. */
-    val notice: StateFlow<String?> = _notice.asStateFlow()
-
-    fun noticeShown() {
-        _notice.value = null
-    }
-
-    private fun mutate(id: String, action: suspend (ChatMutations) -> Unit) {
-        val connection = container.connection.value ?: return
-        viewModelScope.launch {
-            try {
-                val server = connection.session.profile.id
-                action(ChatMutations(connection.session.chat, connection.socket, container.turns::liveOf) { chat, pinned -> container.pins.set(server, chat, pinned) })
-                if (_chat.value?.state?.value?.storedId == id) _chat.value?.reload()
-            } catch (e: Exception) {
-                Log.w(TAG, "Change of chat $id failed", e)
-                _notice.value = e.message ?: container.strings.get(R.string.error_failed)
+    fun deleteChat(id: String) {
+        val captured = container.connection.value ?: return
+        val memory = container.drafts.existing(captured.session.profile.id)
+        mutate(id, captured) { api, origin, owner ->
+        api.delete(id)
+        beforeChatDeleteAdmission?.invoke()
+        val wanted = { container.lifetime.holds(owner.profileId, owner.generation) }
+        container.lifetime.withOwner(owner) {
+            if (wanted()) {
+                container.reads.forget(owner.profileId, id, wanted)
+                container.drafts.forgetCaptured(owner.profileId, id, memory)
             }
-            refreshChats()
+        }
+        origin.session.forgetChat(id, owner, wanted)
+        container.lifetime.publish(owner) {
+            if (wanted()) {
+                origin.questions.forget(id)
+                if (eligible(owner, origin) && _chat.value?.state?.value?.storedId == id) newChat()
+            }
+        }
+    }
+    }
+
+    /**
+     * Removes [target] from the phone and drops what the phone kept for it. The form may go away
+     * while this runs, so the work belongs to the view model, not to the form's scope. True when
+     * the profile is gone.
+     */
+    fun prepareRemoval(target: ServerProfile): suspend () -> Boolean {
+        val owner = container.lifetime.owner(target.id)
+        val route = stack.lastOrNull()
+        val memory = container.drafts.existing(target.id)
+        return { executeRemoval(target, owner, route, memory) }
+    }
+
+    fun prepareSignOut(target: ServerProfile): suspend () -> LocalSignOutResult = prepareSignOut(target, freshComposer = true)
+
+    private fun prepareSignOut(target: ServerProfile, freshComposer: Boolean): suspend () -> LocalSignOutResult {
+        val origin = container.connection.value
+        val owner = origin?.session?.owner()
+        val route = stack.lastOrNull()
+        val memory = container.drafts.existing(target.id)
+        return {
+            if (origin == null || owner == null || owner.profileId != target.id) LocalSignOutResult.REJECTED
+            else executeSignOut(target, origin, owner, route, memory, freshComposer)
         }
     }
 
-    fun setQuery(query: String) = _search.update { it.copy(query = query) }
+    suspend fun removeServer(target: ServerProfile): Boolean = prepareRemoval(target)()
 
-    private suspend fun runSearch(query: String) {
-        val connection = container.connection.value ?: return
-        if (query.isBlank()) {
-            _search.update { it.copy(hits = emptyList(), searching = false, error = null) }
-            return
+    private suspend fun executeRemoval(target: ServerProfile, owner: WorkOwner, route: Screen?, memory: ChatDraftMemory?): Boolean {
+        return viewModelScope.async {
+            if (!container.lifetime.holds(owner.profileId, owner.generation)) return@async false
+            val applied = when (val removed = container.servers.remove(target.id, owner)) {
+                is NativeResult.Applied -> removed
+                NativeResult.Rejected -> return@async false
+                is NativeResult.Failed -> {
+                    container.lifetime.publish(owner) {
+                        if (stack.lastOrNull() === route) _notice.value = container.strings.get(R.string.setup_remove_failed, target.name)
+                    }
+                    return@async false
+                }
+            }
+            // The exact removal marker is checked and its local effects run under the authority
+            // gate. The same id added back clears the marker, so this older removal cannot erase
+            // the new profile's data; it then has no effect at all.
+            var cleanupFailed = false
+            val cleaned = container.lifetime.withRemoval(target.id, applied.owner.generation) {
+                try {
+                    container.responses.forget(target.id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    cleanupFailed = true
+                }
+                try {
+                    container.reads.clear(target.id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    cleanupFailed = true
+                }
+                try { container.drafts.forgetCaptured(target.id, memory) }
+                catch (cancel: CancellationException) { throw cancel }
+                catch (_: Exception) { cleanupFailed = true }
+            }
+            if (cleaned != null && cleanupFailed) {
+                container.lifetime.publishRemoval(applied.owner) {
+                    if (stack.lastOrNull() === route) _notice.value = container.strings.get(R.string.setup_remove_cleanup_failed, target.name)
+                }
+            }
+            true
+        }.await()
+    }
+
+    /**
+     * Signs out of [target] when it is still the server the app works with, then drops its local
+     * data. The form may go away while this runs, so the work belongs to the view model. Navigation
+     * and the access check happen only for the captured connection and the settings visit that
+     * started it, never for a server or a screen that replaced them meanwhile.
+     */
+    suspend fun signOut() {
+        val target = container.connection.value?.session?.profile ?: return
+        prepareSignOut(target)()
+    }
+
+    suspend fun signOut(target: ServerProfile): Boolean = prepareSignOut(target, freshComposer = false)() in setOf(LocalSignOutResult.COMPLETE, LocalSignOutResult.SUPERSEDED)
+
+    private suspend fun executeSignOut(target: ServerProfile, origin: Connection, owner: WorkOwner, route: Screen?, memory: ChatDraftMemory?, freshComposer: Boolean): LocalSignOutResult {
+        return viewModelScope.async {
+            if (!eligible(owner, origin)) return@async LocalSignOutResult.REJECTED
+            val result = try {
+                origin.session.signOut(target.id, owner, clearDrafts = { container.drafts.forgetCaptured(target.id, memory) }) { container.reads.clear(target.id) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                container.lifetime.publish(owner) {
+                    if (eligible(owner, origin) && stack.lastOrNull() === route) _notice.value = container.strings.get(R.string.settings_sign_out_failed, target.name)
+                }
+                return@async LocalSignOutResult.FAILED
+            }
+            // A rejected or failed sign-out changed nothing: no cleanup, no navigation, no access
+            // check. Only an applied retirement of this exact generation may clean its local data.
+            if (result == NativeResult.Rejected) return@async LocalSignOutResult.REJECTED
+            if (result is NativeResult.Failed) {
+                container.lifetime.publish(owner) {
+                    if (eligible(owner, origin) && stack.lastOrNull() === route) _notice.value = container.strings.get(R.string.settings_sign_out_failed, target.name)
+                }
+                return@async LocalSignOutResult.FAILED
+            }
+            result as NativeResult.Applied
+            afterSignoutCleanup?.invoke()
+            if (result.cleanupSuperseded || !eligible(result.owner, origin)) return@async LocalSignOutResult.SUPERSEDED
+            if (result.cleanupError != null) {
+                container.lifetime.publish(result.owner) {
+                    if (container.connection.value === origin) {
+                        _access.value = Access.UNKNOWN
+                        _notice.value = container.strings.get(R.string.settings_sign_out_cleanup_failed, target.name)
+                    }
+                }
+                return@async LocalSignOutResult.INCOMPLETE
+            }
+            val popped = container.lifetime.publish(result.owner) {
+                if (container.connection.value === origin && stack.lastOrNull() === route) {
+                    if (route is Screen.Settings) pop()
+                    if (freshComposer) newChat()
+                    true
+                } else false
+            } == true
+            if (popped) checkAccess(result.owner, origin)
+            LocalSignOutResult.COMPLETE
+        }.await()
+    }
+
+    private fun mutate(id: String, expectedConnection: Connection? = null, action: suspend (ChatMutations, Connection, WorkOwner) -> Unit) {
+        val origin = expectedConnection ?: container.connection.value ?: return
+        val owner = origin.session.owner()
+        val wanted = { eligible(owner, origin) }
+        if (!wanted()) return
+        val live = container.turns.liveOf(id)
+        val api = ChatMutations(
+            origin.session.chatFor(owner), origin.socket,
+            liveOf = { stored -> live.takeIf { stored == id } },
+            pinLocally = { chat, pinned -> container.pins.setOwned(owner, container.lifetime, chat, pinned, wanted) },
+            owner = owner, wanted = wanted, transport = origin.socket.transport.value,
+        )
+        mutationProducer = viewModelScope.launch {
+            try {
+                if (!wanted()) return@launch
+                action(api, origin, owner)
+                container.lifetime.publish(owner) {
+                    if (wanted() && _chat.value?.state?.value?.storedId == id) _chat.value?.reload()
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) {
+                container.lifetime.publish(owner) {
+                    if (wanted()) _notice.value = error.message ?: container.strings.get(R.string.error_failed)
+                }
+            }
+            if (wanted()) refreshChats(owner, origin)
         }
-        _search.update { it.copy(searching = true, error = null) }
-        try {
-            val hits = connection.session.chat.search(query)
-            _search.update { if (it.query == query) it.copy(hits = hits, searching = false) else it }
-        } catch (e: Exception) {
-            _search.update { it.copy(searching = false, error = e.message) }
-        }
+    }
+
+    fun setQuery(query: String) = searchOwner.setQuery(query)
+
+    /** Opens only a result of the current request and current connection. */
+    fun openSearchHit(hit: SearchHit, identity: SearchRequestIdentity?) {
+        if (searchOwner.admits(hit, identity)) openChat(hit.chat.id)
     }
 
     fun push(screen: Screen) {
         stack.add(screen)
         // The screen covers the chat: its answers are not being read, so they are announced.
         container.turns.visibleChat = null
+    }
+
+    /** Opens a settings visit; each visit is its own route, so a late action cannot pop a later one. */
+    fun pushSettings() {
+        push(Screen.Settings(routeVisits.incrementAndGet()))
     }
 
     fun pop(): Boolean {
@@ -578,6 +992,7 @@ class MainViewModel(val container: AppContainer) : ViewModel() {
     companion object {
         const val PAGE = 50
         const val RETURN_URL = "org.evsyukov.hermes://signed-in"
+
         private const val TAG = "HermesMain"
     }
 }
