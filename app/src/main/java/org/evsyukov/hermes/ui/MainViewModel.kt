@@ -10,6 +10,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -110,6 +112,28 @@ data class SidebarState(
 internal fun SidebarState.withMore(mode: ListMode, more: List<ChatSummary>, total: Int, size: Int): SidebarState =
     if (this.mode != mode) this else copy(chats = (chats + mode.keep(more)).distinctBy { it.id }, total = total, listed = listed + size, loading = false)
 
+/**
+ * The search a result was opened from, kept while its conversation is on the screen so Back can
+ * show the same query, results and list place. It belongs to one request: a replaced connection or a
+ * new attempt retires it rather than restoring results of another server.
+ */
+data class SearchJourney(
+    val request: SearchRequestIdentity,
+    val chatId: String,
+    val index: Int,
+    val offset: Int,
+)
+
+/**
+ * How the search screen opens: the place in its list, and whether it may take the keyboard. A
+ * return from a result comes back without asking for focus, so the keyboard does not cover it again.
+ */
+data class SearchEntry(
+    val index: Int = 0,
+    val offset: Int = 0,
+    val requestFocus: Boolean = true,
+)
+
 /** What the app needs from the server before chatting: nothing, a sign-in, or a working network. */
 enum class Access { UNKNOWN, OK, SIGN_IN, OFFLINE }
 
@@ -174,6 +198,18 @@ class MainViewModel(
     private val searchOwner = SearchOwner(container.connection, viewModelScope, searchChats)
     val search: StateFlow<SearchState> = searchOwner.search
 
+    /** The result journey under the chat on the screen; null when Back is ordinary. */
+    private val _searchJourney = MutableStateFlow<SearchJourney?>(null)
+    val searchJourney: StateFlow<SearchJourney?> = _searchJourney.asStateFlow()
+
+    /** Where the search screen opens: its list place and whether it takes the keyboard. */
+    private val _searchEntry = MutableStateFlow(SearchEntry())
+    val searchEntry: StateFlow<SearchEntry> = _searchEntry.asStateFlow()
+
+    /** The list place the open Search screen showed last, read when a result is activated. */
+    private var searchListIndex = 0
+    private var searchListOffset = 0
+
     private val _chat = MutableStateFlow<ChatController?>(null)
     val chat: StateFlow<ChatController?> = _chat.asStateFlow()
 
@@ -192,6 +228,8 @@ class MainViewModel(
 
     /** The check of the server under way; a new one replaces it, so an older answer cannot win. */
     private var accessJob: Job? = null
+    private var accessOwner: WorkOwner? = null
+    private var accessConnection: Connection? = null
 
     /** Actual producer handles for deterministic owner-boundary fixtures. */
     internal val accessProducer: Job? get() = accessJob
@@ -210,6 +248,14 @@ class MainViewModel(
         }
     internal var mutationProducer: Job? = null
         private set
+
+    /** Exact initial application boundary; absent in app use. */
+    @Volatile internal var beforeInitialConnection: (suspend (Connection) -> Unit)? = null
+    @Volatile internal var beforeInitialOwnerAdmission: (suspend (Connection, WorkOwner) -> Unit)? = null
+    // Supplemental initial-owner decision observation; absent in app use.
+    @Volatile internal var afterInitialOwnerDecision: ((Connection, WorkOwner, WorkOwner?, Job) -> Unit)? = null
+    /** Stored-controller construction boundary, outside the lifetime publication guard. */
+    @Volatile internal var beforeStoredController: ((Connection, WorkOwner) -> Unit)? = null
 
     private val recovery = OfflineRecovery(access) { checkAccess() }
 
@@ -243,25 +289,41 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             container.connection.collectLatest { connection ->
+                if (connection != null) beforeInitialConnection?.invoke(connection)
+                val hasCurrentAccess = connection != null && accessConnection === connection &&
+                    accessJob?.isCancelled == false && accessOwner?.let { eligible(it, connection) } == true
+                _searchJourney.value = null
+                _searchEntry.value = SearchEntry()
+                searchScrolled(0, 0)
                 _chat.value?.close()
                 _chat.value = null
                 draftBindings.clear()
-                _sidebar.value = SidebarState()
-                listedByServer = false
+                if (!hasCurrentAccess) {
+                    _sidebar.value = SidebarState()
+                    listedByServer = false
+                }
                 if (connection == null) {
                     // No server answers for this one anymore: work for it must not bring its state back.
                     loadJob?.cancel()
                     checkAccess(null)
                     return@collectLatest
                 }
-                showCachedChats(connection)
+                if (!hasCurrentAccess) {
+                    accessJob?.cancel()
+                    loadJob?.cancel()
+                    cachedListProducer?.cancel()
+                    _access.value = Access.UNKNOWN
+                    _accessError.value = null
+                }
+                val owner = awaitInitialOwner(connection)
+                showCachedChats(connection, owner)
                 // A full memory has no slot for another new chat; the last stored chat can still open.
-                if (!newChat()) draftsOf(connection).mostRecentChatId()?.let(::openChat)
+                if (!newChat(connection, owner)) draftsOf(connection).mostRecentChatId()?.let { openChat(it, connection, owner) }
                 pendingChat?.let { id ->
                     pendingChat = null
-                    openChat(id)
+                    openChat(id, connection, owner)
                 }
-                checkAccess()
+                if (accessOwner != owner || accessConnection !== connection || accessJob?.isCancelled != false) checkAccess(owner, connection)
             }
         }
         // The gateway tells when the list of chats changed anywhere: Telegram, the desktop, cron.
@@ -276,6 +338,23 @@ class MainViewModel(
         viewModelScope.launch { recovery.follow(container.online) }
     }
 
+    /** Initial work alone may retry a candidate superseded before admission. */
+    private suspend fun awaitInitialOwner(origin: Connection): WorkOwner {
+        var admitted: WorkOwner? = null
+        container.lifetime.owners.first { owners ->
+            val candidate = owners[origin.session.profile.id] ?: return@first false
+            beforeInitialOwnerAdmission?.invoke(origin, candidate)
+            // Only capture admission under the guard. Initialization and all suspending work
+            // happen afterwards, with this immutable owner and exact Connection.
+            admitted = container.lifetime.publish(candidate) {
+                candidate.takeIf { container.connection.value === origin }
+            }
+            afterInitialOwnerDecision?.invoke(origin, candidate, admitted, currentCoroutineContext()[Job]!!)
+            admitted != null
+        }
+        return checkNotNull(admitted)
+    }
+
     /**
      * Probes the server; a valid session keeps the socket open and loads the chats. When a caller
      * has a returned authority and origin, the check belongs to exactly them: a newer authorization
@@ -286,12 +365,15 @@ class MainViewModel(
         if (origin == null) {
             if (container.connection.value != null) return
             accessJob?.cancel(); accessJob = null
+            accessOwner = null; accessConnection = null
             _access.value = Access.UNKNOWN; _accessError.value = null
             return
         }
         val owner = expected ?: origin.session.owner()
         if (!eligible(owner, origin)) return
         accessJob?.cancel()
+        accessOwner = owner
+        accessConnection = origin
         _access.value = Access.UNKNOWN
         val since = recovery.checkStarting()
         accessJob = viewModelScope.launch {
@@ -317,7 +399,7 @@ class MainViewModel(
                     }
                 }
                 if (access != Access.OK || !eligible(owner, origin)) return@launch
-                refreshChats()
+                refreshChats(owner, origin)
                 container.scope.launch { if (eligible(owner, origin)) runCatching { container.push.reconcile() } }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
@@ -482,8 +564,7 @@ class MainViewModel(
         container.reads.unread(connection.session.profile.id, chats, wanted, owner, container.lifetime) { id, after -> api.lastReply(id, after)?.timestamp }
 
     /** Shows the first page the phone keeps until the server answers, or when it cannot. */
-    private fun showCachedChats(connection: Connection) {
-        val owner = connection.session.owner()
+    private fun showCachedChats(connection: Connection, owner: WorkOwner = connection.session.owner()) {
         val cached = connection.session.chatFor(owner).cached ?: return
         val mode = _sidebar.value.mode
         val wanted = { eligible(owner, connection) }
@@ -526,25 +607,37 @@ class MainViewModel(
         if (_sidebar.value.mode == mode) return
         _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0, listed = 0) }
         listedByServer = false
-        container.connection.value?.let(::showCachedChats)
+        container.connection.value?.let { showCachedChats(it) }
         refreshChats()
     }
 
+    /** Ordinary navigation ends a result journey only after the destination is admitted. */
     fun openChat(id: String) {
         val connection = container.connection.value
         if (connection == null) {
             pendingChat = id
             return
         }
-        if (_chat.value?.state?.value?.storedId == id) {
-            markRead(id)
-            return
+        if (openChat(id, connection, connection.session.owner(), clearScreens = true)) _searchJourney.value = null
+    }
+
+    /** One admitted owner-bound destination for ordinary navigation and result activation. */
+    private fun openChat(id: String, connection: Connection, owner: WorkOwner, clearScreens: Boolean = true): Boolean {
+        if (!eligible(owner, connection)) return false
+        val draft = draftsOf(connection).obtain(DraftKey.Chat(id))
+        if (draft == null) {
+            refuseDraft()
+            return false
         }
-        val draft = draftsOf(connection).obtain(DraftKey.Chat(id)) ?: return refuseDraft()
-        markRead(id)
-        _chat.value?.close()
-        _chat.value = controller(connection, id, draft)
-        stack.clear()
+        val current = _chat.value
+        val alreadyOpen = current != null && current.state.value.storedId == id && draftOf(current, connection) === draft
+        markRead(id, owner = owner, expectedConnection = connection)
+        if (!alreadyOpen) {
+            current?.close()
+            _chat.value = controller(connection, id, draft, owner)
+        }
+        if (clearScreens) stack.clear()
+        return true
     }
 
     /**
@@ -634,6 +727,11 @@ class MainViewModel(
      */
     fun newChat(): Boolean {
         val connection = container.connection.value ?: return false
+        return newChat(connection, connection.session.owner())
+    }
+
+    private fun newChat(connection: Connection, owner: WorkOwner): Boolean {
+        if (!eligible(owner, connection)) return false
         // The first message of the open new chat is still getting its id. Handing the same draft to
         // another controller would later move the follow-up into the sending chat under its feet.
         // This is checked before the empty-chat shortcut: the controller's published state is empty
@@ -647,14 +745,19 @@ class MainViewModel(
         // Sign-out retires bindings even for an empty controller. Only an issued current binding
         // can take this shortcut; otherwise install a fresh controller with the retained/new draft.
         if (current != null && current.state.value.storedId == null && current.state.value.items.isEmpty() &&
-            draftOf(current, connection) != null) return true
+            draftOf(current, connection) != null) {
+            _searchJourney.value = null
+            stack.clear()
+            return true
+        }
         val draft = memory.obtain(DraftKey.NewChat)
         if (draft == null) {
             refuseDraft()
             return false
         }
         current?.close()
-        _chat.value = controller(connection, null, draft)
+        _chat.value = controller(connection, null, draft, owner)
+        _searchJourney.value = null
         stack.clear()
         return true
     }
@@ -695,13 +798,14 @@ class MainViewModel(
         _shared.value = null
     }
 
-    private fun controller(connection: Connection, id: String?, draft: ChatDraft): ChatController {
+    private fun controller(connection: Connection, id: String?, draft: ChatDraft, initialOwner: WorkOwner = connection.session.owner()): ChatController {
         // The chat takes the place of the one on the screen, shown or hidden as that one was.
         container.turns.visibleChat = id.takeIf { chatOnScreen }
         // The controller this completion belongs to. A callback that ran before construction ended
         // has no owner yet, so it changes no visibility rather than comparing with an unset value.
         var owner: ChatController? = null
         val memory = draftsOf(connection)
+        if (id != null) beforeStoredController?.invoke(connection, initialOwner)
         val created = ChatController(
             connection.session, connection.socket, viewModelScope, container.strings, id,
             onSessionCreated = { stored ->
@@ -741,6 +845,7 @@ class MainViewModel(
             visible = chatOnScreen,
             questionMemory = connection.questions,
             wanted = { container.connection.value === connection },
+            initialOwner = initialOwner,
         )
         owner = created
         draftBindings[created] = DraftBinding(connection, draft, memory)
@@ -936,11 +1041,71 @@ class MainViewModel(
         }
     }
 
-    fun setQuery(query: String) = searchOwner.setQuery(query)
+    /** Opens Search from the drawer, fresh: its list starts at the top and the keyboard may open. */
+    fun showSearch() {
+        _searchJourney.value = null
+        _searchEntry.value = SearchEntry()
+        searchScrolled(0, 0)
+        push(Screen.Search)
+    }
 
-    /** Opens only a result of the current request and current connection. */
+    /** Current viewport reported by the composed results list. */
+    internal val searchListPosition: Pair<Int, Int> get() = searchListIndex to searchListOffset
+
+    /** The place the open Search screen shows; kept for the return from a result. */
+    fun searchScrolled(index: Int, offset: Int) {
+        searchListIndex = index
+        searchListOffset = offset
+    }
+
+    fun setQuery(query: String) {
+        val before = search.value.request
+        searchOwner.setQuery(query)
+        if (search.value.request != before) {
+            _searchJourney.value = null
+            _searchEntry.value = SearchEntry()
+        }
+    }
+
+    /**
+     * Opens a search result, if it still belongs to the current request of the current server. The
+     * conversation is opened first; Search and its place are cleared only once it is the chat on the
+     * screen, so a refused navigation leaves the person where they were with the results intact.
+     */
     fun openSearchHit(hit: SearchHit, identity: SearchRequestIdentity?) {
-        if (searchOwner.admits(hit, identity)) openChat(hit.chat.id)
+        if (identity == null || !searchOwner.admits(hit, identity)) return
+        val journey = _searchJourney.value
+        val current = _chat.value?.state?.value?.storedId
+        // A second tap of the same row is the journey already under way, not another navigation.
+        if (journey != null && journey.request == identity && journey.chatId == hit.chat.id && current == hit.chat.id) return
+        val place = SearchJourney(identity, hit.chat.id, searchListIndex, searchListOffset)
+
+        if (!openChat(hit.chat.id, identity.connection, identity.connection.session.owner(), clearScreens = false)) return
+
+        stack.clear()
+        _searchJourney.value = place
+    }
+
+    /**
+     * Back from a result's conversation: shows Search with the same query, results and list place,
+     * without asking the server again. A journey whose request or chat no longer belongs to the
+     * screen is dropped instead of restoring results of another server; the caller then leaves the
+     * conversation as usual. False when there was no journey to return to.
+     */
+    fun returnToSearch(): Boolean {
+        val journey = _searchJourney.value ?: return false
+        // A screen over the conversation handles Back itself; the journey waits under it.
+        if (stack.isNotEmpty()) return false
+        if (container.connection.value !== journey.request.connection || search.value.request != journey.request ||
+            _chat.value?.state?.value?.storedId != journey.chatId
+        ) {
+            _searchJourney.value = null
+            return false
+        }
+        _searchJourney.value = null
+        _searchEntry.value = SearchEntry(journey.index, journey.offset, requestFocus = false)
+        push(Screen.Search)
+        return true
     }
 
     fun push(screen: Screen) {

@@ -132,6 +132,35 @@ Signed APKs for arm64 phones with Android 12 or later are on the
 ./gradlew :app:testDebugUnitTest
 ```
 
+The native build needs JDK 21, Python 3 and the NDK revision in
+`scripts/android-ndk-version`. Install it with
+`sdkmanager "ndk;$(cat scripts/android-ndk-version)"` and set `ANDROID_HOME` to your SDK.
+Put the Go version from `tailnet/go.mod` on `PATH`; the script builds `gomobile` and
+`gobind` with that Go executable and records their compiler versions and hashes.
+An inherited NDK override must point to that SDK's pinned NDK directory;
+missing tools or a conflicting override fail before native generation.
+
+The script checks the generated AAR immediately. CI also checks every native library
+in the debug and release APKs; release checks the renamed APK before uploading it.
+These checks require the arm64 tailnet library, valid ELF LOAD alignment of at least
+16 KiB, and uncompressed APK libraries at 16 KiB ZIP offsets. APK checks also run
+the selected real `zipalign -c -P 16 -v 4`. Toolchain details, hashes, segment results
+and zipalign output are retained under `build/native-evidence/` on success or failure.
+For a separate artifact, run:
+
+```bash
+python3 scripts/validate-native-artifact.py app/libs/tailnet.aar --report aar-report.json
+python3 scripts/validate-native-artifact.py app/build/outputs/apk/debug/app-debug.apk \
+  --zipalign "$ANDROID_HOME/build-tools/37.0.0/zipalign" --report apk-report.json
+python3 -m unittest discover -s scripts/tests -v
+```
+
+Choose an installed SDK build-tools `zipalign` path. Report files must be new;
+existing files and aliases are rejected. The validator uses bounded archive and ELF
+parsing without extracting member paths; unsupported formats, including ZIP64,
+fail closed. Static alignment checks leave device startup and tailnet connectivity
+to the runtime gate.
+
 Without `tailnet.aar` the app builds and the built-in Tailscale reports itself unavailable.
 Next to the node the script writes the licenses of its Go modules, and AboutLibraries collects
 those of the Maven libraries; both appear under Settings → Licenses. A library under any license

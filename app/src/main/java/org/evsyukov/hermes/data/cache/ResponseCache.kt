@@ -46,8 +46,11 @@ class ResponseCache(
 
     internal var beforeOwnedWrite: (suspend () -> Unit)? = null
 
+    internal var beforeOwnedWriteObservation: (suspend (org.evsyukov.hermes.data.server.WorkOwner, String, Job) -> Unit)? = null
+
     fun keepOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, lifetime: org.evsyukov.hermes.data.server.ProfileLifetime, request: String, body: String, wanted: () -> Boolean): Job =
         scope.launch(Dispatchers.IO) {
+            beforeOwnedWriteObservation?.invoke(owner, request, coroutineContext[Job]!!)
             beforeOwnedWrite?.invoke()
             lifetime.withOwner(owner) { write(owner.profileId, request, body, wanted) }
         }.also { observedproducers?.add(it) }

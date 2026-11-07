@@ -87,7 +87,7 @@ class ComposerTest {
     fun `the placeholder sits in the row between the attach and send buttons`() {
         show("")
 
-        val hint = compose.onNodeWithText(app.getString(R.string.composer_hint)).getBoundsInRoot()
+        val hint = compose.onNodeWithTag("composerHint").getBoundsInRoot()
         assertThat(hint.left.value).isAtLeast(bounds(R.string.composer_attach).right.value)
         assertThat(hint.right.value).isAtMost(bounds(R.string.common_send).left.value)
     }

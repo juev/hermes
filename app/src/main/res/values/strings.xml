@@ -54,6 +54,8 @@
     <string name="setup_page_back">Back to Hermes</string>
     <string name="error_link_unreadable">The server link could not be read</string>
     <string name="sidebar_unread">Unread</string>
+    <string name="sidebar_active">Running</string>
+    <string name="sidebar_manage">Chat actions</string>
     <plurals name="sidebar_cron_runs">
         <item quantity="one">%1$d run</item>
         <item quantity="other">%1$d runs</item>
@@ -107,6 +109,7 @@
     <string name="search_clear">Clear</string>
     <string name="search_empty">Nothing found</string>
     <string name="search_help">Searches the text of all messages and the titles. Quoted phrases, OR and NOT work.</string>
+    <string name="search_result_hint">Opens the conversation, not the exact message.</string>
     <string name="setup_web_title">Sign in</string>
     <string name="common_share">Share</string>
     <string name="viewer_load_failed">The file did not load: %1$s</string>

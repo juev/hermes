@@ -91,7 +91,9 @@ class PushManager(
     private val distributor: PushDistributor,
     private val session: () -> ServerSession?,
     private val enabled: () -> Boolean,
+    backing: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
 ) {
+    private val data = backing ?: context.pushStore
     private val lock = Mutex()
     private val _status = MutableStateFlow(PushStatus())
     val status: StateFlow<PushStatus> = _status.asStateFlow()
@@ -105,7 +107,7 @@ class PushManager(
      */
     suspend fun reconcile() = lock.withLock {
         val current = session()
-        val stored = context.pushStore.data.first().asMap().keys.map { it.name.substringAfter(':') }.toSet()
+        val stored = data.data.first().asMap().keys.map { it.name.substringAfter(':') }.toSet()
         // Instances of servers that are no longer active stop getting pushes.
         for (id in stored - setOfNotNull(current?.profile?.id)) takeBack(id)
         if (!enabled() || current == null) {
@@ -131,7 +133,7 @@ class PushManager(
             return@withLock
         }
         val asked = distributor.register(current.profile.id, "Hermes · ${current.profile.url?.host.orEmpty()}", key)
-        val endpoint = context.pushStore.data.first()[endpointKey(current.profile.id)]
+        val endpoint = data.data.first()[endpointKey(current.profile.id)]
         _status.value = PushStatus(
             when {
                 !asked -> PushState.FAILED
@@ -156,11 +158,11 @@ class PushManager(
             distributor.unregister(instance)
             return@withLock
         }
-        val previous = context.pushStore.data.first()[endpointKey(instance)]
+        val previous = data.data.first()[endpointKey(instance)]
         val state = try {
             PushApi(current.http).subscribe(endpoint, p256dh, auth, android.os.Build.MODEL, deviceId())
             if (previous != null && previous != endpoint) runCatching { PushApi(current.http).unsubscribe(previous) }
-            context.pushStore.edit { it[endpointKey(instance)] = endpoint }
+            data.edit { it[endpointKey(instance)] = endpoint }
             PushState.ON
         } catch (e: IOException) {
             Log.w(TAG, "Push subscription failed", e)
@@ -188,7 +190,7 @@ class PushManager(
     }
 
     private suspend fun forgetEndpoint(instance: String) {
-        val endpoint = context.pushStore.data.first()[endpointKey(instance)] ?: return
+        val endpoint = data.data.first()[endpointKey(instance)] ?: return
         session()?.takeIf { it.profile.id == instance }?.let { current ->
             try {
                 PushApi(current.http).unsubscribe(endpoint)
@@ -196,7 +198,7 @@ class PushManager(
                 Log.w(TAG, "Push unsubscription failed", e)
             }
         }
-        context.pushStore.edit { it.remove(endpointKey(instance)) }
+        data.edit { it.remove(endpointKey(instance)) }
     }
 
     private fun endpointKey(instance: String) = stringPreferencesKey("endpoint:$instance")

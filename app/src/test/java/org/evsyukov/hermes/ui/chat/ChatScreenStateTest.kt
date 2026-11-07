@@ -12,12 +12,16 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.center
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -81,7 +85,10 @@ class ChatScreenStateTest {
     /** A live chat with a turn started on the fake server, as the gateway has it after the first message. */
     private suspend fun runningChat(): ChatController {
         gateway.connect()
-        val chat = chat("s1")
+        val adopted = CompletableDeferred<Unit>()
+        val chat = ChatController(server.session(app, scope, db), gateway, scope, strings, "s1",
+            onLive = { _, _, _ -> adopted.complete(Unit) })
+        withTimeout(5_000) { adopted.await() }
         // The chat's own join has been applied: the history is on the screen and the live model is
         // known. `!loading` alone is true before the load even starts.
         withTimeout(5_000) { chat.state.first { it.model == "live-model" && !it.loading } }
@@ -143,7 +150,7 @@ class ChatScreenStateTest {
         compose.runOnIdle { current = second }
         compose.waitForIdle()
         field("for the first chat").assertDoesNotExist()
-        compose.onNodeWithText(app.getString(R.string.composer_hint)).assertExists()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_hint)).assertExists()
 
         compose.onNode(hasSetTextAction()).performTextInput("for the second")
         compose.runOnIdle { current = first }
@@ -162,8 +169,9 @@ class ChatScreenStateTest {
         }
         compose.setContent { HermesTheme { Screen(chat, draft) } }
         val submitted = gateway.count("prompt.submit")
+        assertThat(submitted).isEqualTo(1)
 
-        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performTouchInput { click(center) }
         compose.waitForIdle()
         withTimeout(5_000) { chat.state.first { !it.running } }
 
@@ -184,6 +192,7 @@ class ChatScreenStateTest {
         val draft = ChatDraft().apply { text = "follow-up" }
         compose.setContent { HermesTheme { Screen(chat, draft) } }
         val submitted = gateway.count("prompt.submit")
+        assertThat(submitted).isEqualTo(1)
 
         compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
         withTimeout(5_000) { while (gateway.count("prompt.submit") < submitted + 1) delay(10) }

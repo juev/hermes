@@ -63,7 +63,9 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -241,7 +243,10 @@ internal fun ChatRow(
     val colors = ChatTheme.colors
     val haptics = LocalHapticFeedback.current
     val unreadMark = stringResource(R.string.sidebar_unread)
+    val activeMark = stringResource(R.string.sidebar_active)
+    val manageLabel = stringResource(R.string.sidebar_manage)
     val unread = chat.unread || runs.any { it.unread }
+    val isSelected = selected
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
@@ -255,11 +260,16 @@ internal fun ChatRow(
                 .background(if (selected) colors.selected else colors.sidebar)
                 .combinedClickable(
                     onClick = { actions.onOpen(chat.id) },
+                    onLongClickLabel = manageLabel,
                     onLongClick = {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         menu = true
                     },
                 )
+                .semantics {
+                    if (isSelected) this.selected = true
+                    if (chat.active) stateDescription = activeMark
+                }
                 .padding(horizontal = 10.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
