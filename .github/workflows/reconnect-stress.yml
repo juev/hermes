@@ -37,7 +37,8 @@ jobs:
         run: |
           mkdir -p build/native-evidence
           revision=$(cat scripts/android-ndk-version)
-          sdkmanager "ndk;$revision" 2>&1 | tee build/native-evidence/ndk-install.log
+          set -o pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$revision" 2>&1 | tee build/native-evidence/ndk-install.log
           for variable in ANDROID_NDK_HOME ANDROID_NDK_ROOT NDK_HOME NDK_ROOT; do
             echo "$variable=$ANDROID_HOME/ndk/$revision" >> "$GITHUB_ENV"
           done

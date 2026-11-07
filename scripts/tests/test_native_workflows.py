@@ -5,6 +5,9 @@ so comments and similarly named plugin commands cannot satisfy a native step.
 """
 from pathlib import Path
 import re
+import os
+import subprocess
+import tempfile
 import textwrap
 import unittest
 
@@ -49,7 +52,7 @@ class NativeWorkflowTests(unittest.TestCase):
         self.assertNotIn('if', steps[gate], 'suite must run on every job trigger')
         self.assertNotIn('continue-on-error', steps[gate])
         self.assertTrue(any(s.get('uses', '').startswith('actions/setup-java@') for s in steps[:gate]))
-        setup = next(i for i, s in enumerate(steps) if 'sdkmanager "ndk;$revision"' in s.get('run', ''))
+        setup = next(i for i, s in enumerate(steps) if 'revision=$(cat scripts/android-ndk-version)' in s.get('run', ''))
         self.assertLess(setup, gate, 'suite must exercise the selected four-alias environment')
         for i, step in enumerate(steps):
             run = step.get('run', '')
@@ -64,6 +67,60 @@ class NativeWorkflowTests(unittest.TestCase):
                 if step.get('name') != 'Retain native evidence' and step.get('if') != 'failure()':
                     self.assertNotIn('if', step, 'product artifacts require default success')
         return steps
+
+    def test_actual_ndk_install_admits_only_success(self):
+        for filename, job in [('ci.yml', 'build'), ('release.yml', 'release'),
+                              ('reconnect-stress.yml', 'stress')]:
+            steps = workflow_steps(ROOT / '.github/workflows' / filename, job)
+            selected = [s for s in steps if 'revision=$(cat scripts/android-ndk-version)' in s.get('run', '')]
+            self.assertEqual(len(selected), 1)
+            for success in (True, False):
+                with self.subTest(workflow=filename, installer_success=success):
+                    with tempfile.TemporaryDirectory(prefix='hermes-ndk-install-') as temp:
+                        work = Path(temp)
+                        (work / 'scripts').mkdir()
+                        revision = (ROOT / 'scripts/android-ndk-version').read_text().strip()
+                        (work / 'scripts/android-ndk-version').write_text(revision + '\n')
+                        (work / 'build/native-evidence').mkdir(parents=True)
+                        sdk = work / 'sdk'
+                        cli = sdk / 'cmdline-tools/latest/bin/sdkmanager'
+                        cli.parent.mkdir(parents=True)
+                        cli.write_text('#!/bin/bash\nprintf "%s\n" "$@" > "$RECORD"\n'
+                                       'if [ "$INSTALL_SUCCESS" != 1 ]; then echo controlled-install-failure >&2; exit 37; fi\n'
+                                       'mkdir -p "$ANDROID_HOME/ndk/$PIN"\n'
+                                       'printf "Pkg.Revision = %s\n" "$PIN" > "$ANDROID_HOME/ndk/$PIN/source.properties"\n')
+                        cli.chmod(0o755)
+                        record = work / 'invocation'
+                        github_env = work / 'github-env'
+                        github_env.touch()
+                        environment = {'PATH': '/usr/bin:/bin', 'ANDROID_HOME': str(sdk),
+                                       'ANDROID_SDK_ROOT': str(sdk), 'GITHUB_ENV': str(github_env),
+                                       'RECORD': str(record), 'PIN': revision,
+                                       'INSTALL_SUCCESS': '1' if success else '0'}
+                        result = subprocess.run(['/bin/bash', '-e', '-c', selected[0]['run']],
+                                                cwd=work, env=environment, capture_output=True, text=True,
+                                                timeout=15)
+                        called = record.exists()
+                        created = (sdk / 'ndk' / revision / 'source.properties').exists()
+                        exports = github_env.read_text()
+                        print(f'NDK_INSTALL_CONTROL {filename} success={success} exit={result.returncode} '
+                              f'called={called} created={created} exports={bool(exports)}', flush=True)
+                        print(result.stdout, result.stderr, flush=True)
+                        if success:
+                            self.assertTrue(called, 'NDK_INSTALL_AVAILABLE_SDK_TOOL_NOT_CALLED')
+                            self.assertEqual(record.read_text().splitlines(), ['ndk;' + revision])
+                            self.assertEqual(result.returncode, 0)
+                            self.assertTrue(created)
+                            self.assertEqual(set(exports.splitlines()),
+                                             {f'{name}={sdk}/ndk/{revision}' for name in ALIASES})
+                        else:
+                            self.assertNotEqual(result.returncode, 0,
+                                                'NDK_INSTALL_FAILURE_MASKED_BY_TEE')
+                            self.assertTrue(called)
+                            self.assertFalse(created)
+                            self.assertFalse(exports, 'failed installer exported NDK aliases')
+                            self.assertIn('controlled-install-failure',
+                                          (work / 'build/native-evidence/ndk-install.log').read_text())
 
     def test_ci_native_suite_gate(self):
         self.assert_gate('ci.yml', 'build')
@@ -80,7 +137,7 @@ class NativeWorkflowTests(unittest.TestCase):
     def test_reconnect_pinned_setup_and_diagnostics(self):
         steps = workflow_steps(ROOT / '.github/workflows/reconnect-stress.yml', 'stress')
         native = next(i for i, s in enumerate(steps) if s.get('run') == './scripts/build-tailnet.sh')
-        setups = [i for i, s in enumerate(steps) if 'sdkmanager "ndk;$revision"' in s.get('run', '')]
+        setups = [i for i, s in enumerate(steps) if 'revision=$(cat scripts/android-ndk-version)' in s.get('run', '')]
         self.assertEqual(len(setups), 1, 'reconnect requires a pinned NDK install step')
         self.assertLess(setups[0], native)
         setup = steps[setups[0]]
