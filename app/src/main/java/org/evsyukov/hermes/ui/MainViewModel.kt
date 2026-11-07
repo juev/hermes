@@ -10,6 +10,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -192,6 +194,8 @@ class MainViewModel(
 
     /** The check of the server under way; a new one replaces it, so an older answer cannot win. */
     private var accessJob: Job? = null
+    private var accessOwner: WorkOwner? = null
+    private var accessConnection: Connection? = null
 
     /** Actual producer handles for deterministic owner-boundary fixtures. */
     internal val accessProducer: Job? get() = accessJob
@@ -210,6 +214,14 @@ class MainViewModel(
         }
     internal var mutationProducer: Job? = null
         private set
+
+    /** Exact initial application boundary; absent in app use. */
+    @Volatile internal var beforeInitialConnection: (suspend (Connection) -> Unit)? = null
+    @Volatile internal var beforeInitialOwnerAdmission: (suspend (Connection, WorkOwner) -> Unit)? = null
+    // Supplemental initial-owner decision observation; absent in app use.
+    @Volatile internal var afterInitialOwnerDecision: ((Connection, WorkOwner, WorkOwner?, Job) -> Unit)? = null
+    /** Stored-controller construction boundary, outside the lifetime publication guard. */
+    @Volatile internal var beforeStoredController: ((Connection, WorkOwner) -> Unit)? = null
 
     private val recovery = OfflineRecovery(access) { checkAccess() }
 
@@ -243,25 +255,38 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             container.connection.collectLatest { connection ->
+                if (connection != null) beforeInitialConnection?.invoke(connection)
+                val hasCurrentAccess = connection != null && accessConnection === connection &&
+                    accessJob?.isCancelled == false && accessOwner?.let { eligible(it, connection) } == true
                 _chat.value?.close()
                 _chat.value = null
                 draftBindings.clear()
-                _sidebar.value = SidebarState()
-                listedByServer = false
+                if (!hasCurrentAccess) {
+                    _sidebar.value = SidebarState()
+                    listedByServer = false
+                }
                 if (connection == null) {
                     // No server answers for this one anymore: work for it must not bring its state back.
                     loadJob?.cancel()
                     checkAccess(null)
                     return@collectLatest
                 }
-                showCachedChats(connection)
+                if (!hasCurrentAccess) {
+                    accessJob?.cancel()
+                    loadJob?.cancel()
+                    cachedListProducer?.cancel()
+                    _access.value = Access.UNKNOWN
+                    _accessError.value = null
+                }
+                val owner = awaitInitialOwner(connection)
+                showCachedChats(connection, owner)
                 // A full memory has no slot for another new chat; the last stored chat can still open.
-                if (!newChat()) draftsOf(connection).mostRecentChatId()?.let(::openChat)
+                if (!newChat(connection, owner)) draftsOf(connection).mostRecentChatId()?.let { openChat(it, connection, owner) }
                 pendingChat?.let { id ->
                     pendingChat = null
-                    openChat(id)
+                    openChat(id, connection, owner)
                 }
-                checkAccess()
+                if (accessOwner != owner || accessConnection !== connection || accessJob?.isCancelled != false) checkAccess(owner, connection)
             }
         }
         // The gateway tells when the list of chats changed anywhere: Telegram, the desktop, cron.
@@ -276,6 +301,23 @@ class MainViewModel(
         viewModelScope.launch { recovery.follow(container.online) }
     }
 
+    /** Initial work alone may retry a candidate superseded before admission. */
+    private suspend fun awaitInitialOwner(origin: Connection): WorkOwner {
+        var admitted: WorkOwner? = null
+        container.lifetime.owners.first { owners ->
+            val candidate = owners[origin.session.profile.id] ?: return@first false
+            beforeInitialOwnerAdmission?.invoke(origin, candidate)
+            // Only capture admission under the guard. Initialization and all suspending work
+            // happen afterwards, with this immutable owner and exact Connection.
+            admitted = container.lifetime.publish(candidate) {
+                candidate.takeIf { container.connection.value === origin }
+            }
+            afterInitialOwnerDecision?.invoke(origin, candidate, admitted, currentCoroutineContext()[Job]!!)
+            admitted != null
+        }
+        return checkNotNull(admitted)
+    }
+
     /**
      * Probes the server; a valid session keeps the socket open and loads the chats. When a caller
      * has a returned authority and origin, the check belongs to exactly them: a newer authorization
@@ -286,12 +328,15 @@ class MainViewModel(
         if (origin == null) {
             if (container.connection.value != null) return
             accessJob?.cancel(); accessJob = null
+            accessOwner = null; accessConnection = null
             _access.value = Access.UNKNOWN; _accessError.value = null
             return
         }
         val owner = expected ?: origin.session.owner()
         if (!eligible(owner, origin)) return
         accessJob?.cancel()
+        accessOwner = owner
+        accessConnection = origin
         _access.value = Access.UNKNOWN
         val since = recovery.checkStarting()
         accessJob = viewModelScope.launch {
@@ -317,7 +362,7 @@ class MainViewModel(
                     }
                 }
                 if (access != Access.OK || !eligible(owner, origin)) return@launch
-                refreshChats()
+                refreshChats(owner, origin)
                 container.scope.launch { if (eligible(owner, origin)) runCatching { container.push.reconcile() } }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
@@ -482,8 +527,7 @@ class MainViewModel(
         container.reads.unread(connection.session.profile.id, chats, wanted, owner, container.lifetime) { id, after -> api.lastReply(id, after)?.timestamp }
 
     /** Shows the first page the phone keeps until the server answers, or when it cannot. */
-    private fun showCachedChats(connection: Connection) {
-        val owner = connection.session.owner()
+    private fun showCachedChats(connection: Connection, owner: WorkOwner = connection.session.owner()) {
         val cached = connection.session.chatFor(owner).cached ?: return
         val mode = _sidebar.value.mode
         val wanted = { eligible(owner, connection) }
@@ -526,7 +570,7 @@ class MainViewModel(
         if (_sidebar.value.mode == mode) return
         _sidebar.update { it.copy(mode = mode, chats = emptyList(), total = 0, listed = 0) }
         listedByServer = false
-        container.connection.value?.let(::showCachedChats)
+        container.connection.value?.let { showCachedChats(it) }
         refreshChats()
     }
 
@@ -536,14 +580,19 @@ class MainViewModel(
             pendingChat = id
             return
         }
+        openChat(id, connection, connection.session.owner())
+    }
+
+    private fun openChat(id: String, connection: Connection, owner: WorkOwner) {
+        if (!eligible(owner, connection)) return
         if (_chat.value?.state?.value?.storedId == id) {
-            markRead(id)
+            markRead(id, owner = owner, expectedConnection = connection)
             return
         }
         val draft = draftsOf(connection).obtain(DraftKey.Chat(id)) ?: return refuseDraft()
-        markRead(id)
+        markRead(id, owner = owner, expectedConnection = connection)
         _chat.value?.close()
-        _chat.value = controller(connection, id, draft)
+        _chat.value = controller(connection, id, draft, owner)
         stack.clear()
     }
 
@@ -634,6 +683,11 @@ class MainViewModel(
      */
     fun newChat(): Boolean {
         val connection = container.connection.value ?: return false
+        return newChat(connection, connection.session.owner())
+    }
+
+    private fun newChat(connection: Connection, owner: WorkOwner): Boolean {
+        if (!eligible(owner, connection)) return false
         // The first message of the open new chat is still getting its id. Handing the same draft to
         // another controller would later move the follow-up into the sending chat under its feet.
         // This is checked before the empty-chat shortcut: the controller's published state is empty
@@ -654,7 +708,7 @@ class MainViewModel(
             return false
         }
         current?.close()
-        _chat.value = controller(connection, null, draft)
+        _chat.value = controller(connection, null, draft, owner)
         stack.clear()
         return true
     }
@@ -695,13 +749,14 @@ class MainViewModel(
         _shared.value = null
     }
 
-    private fun controller(connection: Connection, id: String?, draft: ChatDraft): ChatController {
+    private fun controller(connection: Connection, id: String?, draft: ChatDraft, initialOwner: WorkOwner = connection.session.owner()): ChatController {
         // The chat takes the place of the one on the screen, shown or hidden as that one was.
         container.turns.visibleChat = id.takeIf { chatOnScreen }
         // The controller this completion belongs to. A callback that ran before construction ended
         // has no owner yet, so it changes no visibility rather than comparing with an unset value.
         var owner: ChatController? = null
         val memory = draftsOf(connection)
+        if (id != null) beforeStoredController?.invoke(connection, initialOwner)
         val created = ChatController(
             connection.session, connection.socket, viewModelScope, container.strings, id,
             onSessionCreated = { stored ->
@@ -741,6 +796,7 @@ class MainViewModel(
             visible = chatOnScreen,
             questionMemory = connection.questions,
             wanted = { container.connection.value === connection },
+            initialOwner = initialOwner,
         )
         owner = created
         draftBindings[created] = DraftBinding(connection, draft, memory)

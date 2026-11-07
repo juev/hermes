@@ -53,6 +53,9 @@ class ProfileLifetime private constructor(private val backing: Any) {
     @Volatile
     internal var beforeProfileAdmission: (() -> Unit)? = null
 
+    /** Fixture boundary after durable profile persistence, before real missing-owner minting. */
+    @Volatile internal var beforeProfileMint: (suspend (ServerState) -> Unit)? = null
+
     /** Guards only short, non-suspending epoch/binding publication and synchronous application. */
     private val guard = Any()
 
@@ -72,6 +75,11 @@ class ProfileLifetime private constructor(private val backing: Any) {
 
     /** The observable owner of every profile, keyed by profile; one profile cannot overwrite another. */
     val owners: StateFlow<Map<String, WorkOwner>> = _owners.asStateFlow()
+
+    private val _incarnations = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /** Last durable inclusion of each profile; auth renewal never changes its session root. */
+    internal val incarnations: StateFlow<Map<String, Long>> = _incarnations.asStateFlow()
 
     private val _ready = MutableStateFlow(false)
 
@@ -158,6 +166,7 @@ class ProfileLifetime private constructor(private val backing: Any) {
                     val generation = ++next
                     epochs[profile.id] = generation
                     bindings[profile.id] = Bound(generation, state.tokens[profile.id])
+                    _incarnations.value = _incarnations.value + (profile.id to generation)
                     removals.remove(profile.id)
                     _removalOwners.value = _removalOwners.value - profile.id
                 }
@@ -180,12 +189,14 @@ class ProfileLifetime private constructor(private val backing: Any) {
         bootstrapLocked(store)
         change()
         val state = store.load()
+        beforeProfileMint?.invoke(state)
         synchronized(guard) {
             state.servers.forEach { profile ->
                 if (epochs.containsKey(profile.id)) return@forEach
                 val generation = ++next
                 epochs[profile.id] = generation
                 bindings[profile.id] = Bound(generation, state.tokens[profile.id])
+                _incarnations.value = _incarnations.value + (profile.id to generation)
                 removals.remove(profile.id)
                 _removalOwners.value = _removalOwners.value - profile.id
                 _owners.value = _owners.value + (profile.id to WorkOwner(profile.id, generation))

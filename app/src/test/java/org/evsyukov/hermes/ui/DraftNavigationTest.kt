@@ -593,13 +593,55 @@ class DraftNavigationTest {
     }
 
     @Test
-    fun `a signout suspended at the real cache transaction clears only its captured profile`() {
+    fun `a signout suspended at the real cache transaction clears only its captured profile`() = heldRoomSignout()
+
+    @Test
+    fun heldRoomPhaseKeepsOtherProfileResponseWritesOutsideAdmission() = heldRoomSignout(probe = true)
+
+    /** Both cases own the same installed phase; only the regression enables its independent probe. */
+    private fun heldRoomSignout(probe: Boolean = false) {
+        acquireContainer()
+        val phase = DraftRoomWritePhase(container.responses, probe)
+        var primary: Throwable? = null
+        try { heldRoomSignoutScenario(phase, probe) } catch (failure: Throwable) {
+            primary = failure
+            throw failure
+        } finally {
+            try { phase.close() } catch (cleanup: Throwable) {
+                val failure = primary
+                if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)
+            }
+        }
+    }
+
+    private fun heldRoomSignoutScenario(phase: DraftRoomWritePhase, probe: Boolean) {
         val first = profile("draft-gated-signout-a", server)
         val model = start(first)
         val firstDraft = draftOf(open("s1"))
         firstDraft.text = "A retained words"
         firstDraft.attachments = listOf(LocalAttachment("a.txt", "text/plain", byteArrayOf(7)))
         onMain { container.servers.setTokens(first.id, Tokens("synthetic-access", "synthetic-refresh")) }
+
+        // ROOM_PHASE_BEGIN INITIAL_A_ONLY
+        if (probe) phase.let {
+            // Only this regression establishes completion of concrete initial-A foreground work.
+            onMain { model.checkAccess() }
+            onMain {
+                checkNotNull(model.accessProducer).join()
+                model.listProducer?.join()
+                model.cachedListProducer?.join()
+            }
+            val initialChat = checkNotNull(model.chat.value)
+            await { initialChat.loadCompletion != null }
+            onMain { checkNotNull(initialChat.loadCompletion).await() }
+            runBlocking { withTimeout(10_000) { it.producers.toList().forEach { child -> child.join() } } }
+            runBlocking { assertThat(container.cacheDatabase.responses().byUse().any { row -> row.server == first.id }).isTrue() }
+        }
+        // ROOM_PHASE_END INITIAL_A_ONLY
+
+        // ROOM_PHASE_BEGIN SHARED_ARM
+        phase.arm(first.id)
+        // ROOM_PHASE_END SHARED_ARM
         val retired = CompletableDeferred<Unit>()
         val admitCleanup = CompletableDeferred<Unit>()
         val cacheEntered = CompletableDeferred<Unit>()
@@ -634,13 +676,87 @@ class DraftNavigationTest {
             val secondDraft = draftOf(secondChat)
             secondDraft.text = "B retained words"
             secondDraft.attachments = listOf(LocalAttachment("b.txt", "text/plain", byteArrayOf(8)))
+
+        // ROOM_PHASE_BEGIN ACTUAL_DECISION
+            if (probe) phase.let { tracer ->
+                var observed: DraftRoomWritePhase.Decision? = null
+                onMain { observed = withTimeout(10_000) { tracer.decision.await() } }
+                val decision = checkNotNull(observed)
+                val write = decision.write
+                tracer.selected = write
+                val origin = checkNotNull(container.connection.value)
+                assertThat(origin.session.profile).isEqualTo(second)
+                assertThat(write.owner.profileId).isEqualTo(second.id)
+                assertThat(origin.session.holds(write.owner)).isTrue()
+                assertThat(tracer.producers.any { it === write.child }).isTrue()
+                assertThat(entered.isCompleted && retired.isCompleted).isTrue()
+                assertThat(transaction.isCompleted || operation.isCompleted).isFalse()
+                assertThat(tracer.phaseRelease.isCompleted || tracer.safetyRelease.isCompleted).isFalse()
+                // Derive the complete key from a real B HTTP dispatch, including UI filters.
+                val dispatchedKeys = otherServer.requests.filter { it.url.encodedPath == "/api/sessions" }.map { request ->
+                    org.evsyukov.hermes.data.remote.cacheKey(request.url.encodedPath,
+                        request.url.queryParameterNames.associateWith { request.url.queryParameter(it) })
+                }
+                assertThat(dispatchedKeys).contains(write.key)
+                assertThat(write.child.isCompleted).isFalse()
+                println("ROOM_PHASE_OPPORTUNITY boundary=${decision.boundary} owner=${write.owner} key=${write.key} actualChild=${write.child} registeredChild=true roomEntered=true retirementPaused=true appliedBOrigin=true safetyPending=true")
+                com.google.common.truth.Truth.assertWithMessage("DRAFT_ROOM_HOLD_WRITE_PHASE_NOT_HELD")
+                    .that(decision.boundary).isEqualTo(DraftRoomWritePhase.Boundary.HELD_PHASE)
+                // A future held decision must stand without the independent legacy safety stop.
+                tracer.safetyRelease.complete(Unit)
+            }
+        // ROOM_PHASE_END ACTUAL_DECISION
             admitCleanup.complete(Unit)
             await { cacheEntered.isCompleted }
             assertThat(operation.isCompleted).isFalse()
             assertThat(transaction.isCompleted).isFalse()
+
+        // ROOM_PHASE_BEGIN HELD_ROOM_GUARD
+            if (probe) phase.let { tracer ->
+                val write = checkNotNull(tracer.selected)
+                assertThat(tracer.phaseRelease.isCompleted).isFalse()
+                assertThat(write.child.isCompleted).isFalse()
+                assertThat(tracer.legacy.any { it.write.child === write.child }).isFalse()
+                println("ROOM_PHASE_POSITIVE A-cache-cleanup-entered while Room and B phase remain held")
+            }
+        // ROOM_PHASE_END HELD_ROOM_GUARD
             release.complete(Unit)
             await { operation.isCompleted }
             onMain { operation.await() }
+
+        // ROOM_PHASE_BEGIN RELEASED_B_EFFECT
+            if (probe) phase.let { tracer ->
+                val write = checkNotNull(tracer.selected)
+                val origin = checkNotNull(container.connection.value)
+                assertThat(origin.session.holds(write.owner)).isTrue()
+                assertThat(tracer.phaseRelease.isCompleted).isFalse()
+                assertThat(write.child.isCompleted).isFalse()
+                runBlocking { assertThat(container.cacheDatabase.responses().response(write.owner.profileId, write.key)).isNull() }
+            }
+        // ROOM_PHASE_END RELEASED_B_EFFECT
+
+        // ROOM_PHASE_BEGIN SHARED_B_RELEASE
+            phase.phaseRelease.complete(Unit)
+        // ROOM_PHASE_END SHARED_B_RELEASE
+
+        // ROOM_PHASE_BEGIN B_AFTER_RELEASE
+            if (probe) phase.let { tracer ->
+                val write = checkNotNull(tracer.selected)
+                onMain { withTimeout(10_000) { write.child.join() } }
+                assertThat(write.child.isCompleted && !write.child.isCancelled).isTrue()
+                runBlocking {
+                    val dao = container.cacheDatabase.responses()
+                    assertThat(dao.byUse().any { it.server == first.id }).isFalse()
+                    assertThat(dao.response(write.owner.profileId, write.key)?.request).isEqualTo(write.key)
+                    assertThat(dao.parts(write.owner.profileId, write.key).joinToString("")).isEqualTo("{\"sessions\":[],\"total\":0}")
+                    assertThat(container.responses.read(write.owner.profileId, write.key)).isEqualTo("{\"sessions\":[],\"total\":0}")
+                }
+                assertThat(tracer.legacy.single { it.write.child === write.child }.beforePhaseRelease).isFalse()
+                // Every attributed other-profile writer is retained, not treated as quiescent by one selected callback.
+                onMain { withTimeout(10_000) { tracer.otherWrites.toList().forEach { it.child.join() } } }
+                println("ROOM_PHASE_POSITIVE B actual writer/effect verified; attributedOtherWriters=${tracer.otherWrites.size}")
+            }
+        // ROOM_PHASE_END B_AFTER_RELEASE
             assertThat(transaction.isCompleted).isTrue()
             assertThat(container.drafts.retainedProfiles()).doesNotContain(first.id)
             assertThat(model.chat.value).isSameInstanceAs(secondChat)
@@ -648,6 +764,8 @@ class DraftNavigationTest {
             assertThat(container.turns.visibleChat).isEqualTo("s1")
             assertThat(secondDraft.text).isEqualTo("B retained words")
             assertThat(secondDraft.attachments.single().name).isEqualTo("b.txt")
+            com.google.common.truth.Truth.assertWithMessage("DRAFT_ROOM_B_CURRENT_DRAFT_BINDING_RETAINED")
+                .that(model.draftOf(secondChat)).isSameInstanceAs(secondDraft)
             connect(first)
             assertThat(draftOf(open("s1")).text).isEmpty()
             assertThat(draftOf(open("s1")).attachments).isEmpty()
@@ -655,6 +773,10 @@ class DraftNavigationTest {
             primary = failure
             throw failure
         } finally {
+
+        // ROOM_PHASE_BEGIN INDEPENDENT_RELEASE
+            phase.releaseAll()
+        // ROOM_PHASE_END INDEPENDENT_RELEASE
             admitCleanup.complete(Unit)
             container.lifetime.beforeCleanupAdmission = null
             container.responses.onForgetStarting = null
@@ -666,6 +788,13 @@ class DraftNavigationTest {
                         { check(joinDraftJobs(listOf(transaction), 5_000, ::idle)) { "held Room transaction did not finish" } },
                     ))
                 }
+
+        // ROOM_PHASE_BEGIN CLEANUP_EXIT
+                if (probe) phase.let {
+                    check(operation?.isCompleted != false && transaction.isCompleted)
+                    println("ROOM_PHASE_CLEANUP actual operation and held Room transaction exited")
+                }
+        // ROOM_PHASE_END CLEANUP_EXIT
             } catch (cleanup: Throwable) {
                 val failure = primary
                 if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)

@@ -15,12 +15,15 @@ internal class SearchFixtureLifecycle(
     private val joinDeadlineMillis: Long = 10_000,
 ) {
     private val roots = mutableListOf<Job>()
+    private val executors = mutableListOf<java.util.concurrent.ExecutorService>()
     private val stops = mutableListOf<() -> Unit>()
     private val releases = mutableListOf<() -> Unit>()
     private val dependencies = mutableListOf<() -> Unit>()
     private val independent = mutableListOf<() -> Unit>()
     var joined = false
         private set
+
+    fun executor(worker: java.util.concurrent.ExecutorService) { executors += worker }
 
     fun root(job: Job) { roots += job }
     fun stop(action: () -> Unit) { stops += action }
@@ -29,6 +32,7 @@ internal class SearchFixtureLifecycle(
     fun independent(action: () -> Unit) { independent += action }
 
     fun run(setup: () -> Unit, body: () -> Unit) {
+        joined = false
         var failure: Throwable? = null
         fun attempt(action: () -> Unit) {
             try { action() } catch (t: Throwable) {
@@ -43,8 +47,10 @@ internal class SearchFixtureLifecycle(
             failure = t
         } finally {
             stops.asReversed().forEach { attempt(it) }
-            roots.forEach { it.cancel() }
+            executors.asReversed().forEach { worker -> attempt { worker.shutdownNow() } }
+            roots.forEach { root -> attempt { root.cancel() } }
             releases.asReversed().forEach { attempt(it) }
+            var rootsJoined = false
             attempt {
                 // Roots were captured during acquisition, outside every cleanup coroutine builder.
                 runBlocking {
@@ -58,8 +64,20 @@ internal class SearchFixtureLifecycle(
                     }
                     completion.await()
                 }
-                joined = true
+                rootsJoined = true
             }
+            var executorsJoined = true
+            executors.asReversed().forEach { worker ->
+                var terminated = false
+                attempt {
+                    check(worker.awaitTermination(joinDeadlineMillis, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                        "owned executor did not terminate before dependency closure"
+                    }
+                    terminated = true
+                }
+                executorsJoined = executorsJoined && terminated
+            }
+            joined = rootsJoined && executorsJoined
             if (joined) dependencies.asReversed().forEach { attempt(it) }
             independent.asReversed().forEach { attempt(it) }
         }

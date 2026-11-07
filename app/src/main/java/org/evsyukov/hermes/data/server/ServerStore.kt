@@ -38,11 +38,11 @@ data class ServerState(
     val active: ServerProfile? get() = servers.firstOrNull { it.id == activeId } ?: servers.firstOrNull()
 }
 
-class ServerStore(private val context: Context, private val cipher: TokenCipher, scope: CoroutineScope, observationData: DataStore<Preferences>? = null) {
+class ServerStore(private val context: Context, private val cipher: TokenCipher, scope: CoroutineScope, observationData: DataStore<Preferences>? = null, serverData: DataStore<Preferences>? = null) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /** The actual backing store; the authority registry is keyed by this identity, not by a tag. */
-    internal val backing: DataStore<Preferences> = context.serverStore
+    internal val backing: DataStore<Preferences> = serverData ?: context.serverStore
 
     /** The one generation and credential authority of [backing], shared by every wrapper. */
     val authority: ProfileLifetime = ProfileLifetime.forStore(backing)
@@ -53,13 +53,13 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
     /** False until the state was read from disk once; the first screen waits for it. */
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
-    val state: StateFlow<ServerState> = context.serverStore.data
+    val state: StateFlow<ServerState> = backing.data
         .map { prefs -> prefs[KEY]?.let(::open) ?: ServerState() }
         .onEach { _loaded.value = true }
         .stateIn(scope, SharingStarted.Eagerly, ServerState())
 
     /** The state as it is on disk, for callers that run before [state] has loaded. */
-    suspend fun load(): ServerState = context.serverStore.data.first()[KEY]?.let(::open) ?: ServerState()
+    suspend fun load(): ServerState = backing.data.first()[KEY]?.let(::open) ?: ServerState()
 
     /**
      * The durable state for recovery after a failed write. Unlike [load], an undecryptable or
@@ -67,7 +67,7 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
      * different answers, and only a readable value can decide whether a write reached the disk.
      */
     internal suspend fun loadDurable(): Persisted = try {
-        val raw = context.serverStore.data.first()[KEY]
+        val raw = backing.data.first()[KEY]
         if (raw == null) {
             Persisted.Known(ServerState())
         } else {
@@ -89,7 +89,7 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
     }
 
     private suspend fun updateNow(change: (ServerState) -> ServerState) {
-        context.serverStore.edit { prefs ->
+        backing.edit { prefs ->
             val current = prefs[KEY]?.let(::open) ?: ServerState()
             prefs[KEY] = cipher.encrypt(json.encodeToString(ServerState.serializer(), change(current)))
         }
@@ -132,7 +132,7 @@ class ServerStore(private val context: Context, private val cipher: TokenCipher,
     internal var afterCredentialWrite: (suspend () -> Unit)? = null
 
     internal suspend fun writeCredentialsNow(serverId: String, tokens: Tokens?) {
-        context.serverStore.edit { prefs ->
+        backing.edit { prefs ->
             val current = prefs[KEY]?.let(::open) ?: ServerState()
             val updated = current.copy(
                 tokens = if (tokens == null) current.tokens - serverId else current.tokens + (serverId to tokens),

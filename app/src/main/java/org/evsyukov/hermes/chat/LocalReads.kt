@@ -25,7 +25,8 @@ private val Context.readStore by preferencesDataStore(name = "read")
  * survives switching chats, reconnecting and a restart of the app. Beside the marks it keeps the
  * newest answer found in each chat, so an unread answer stays unread when the history cannot be read.
  */
-class LocalReads(private val context: Context) {
+class LocalReads(private val context: Context, backing: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null) {
+    private val data = backing ?: context.readStore
     /**
      * The activity each chat was looked through to, per server, in this process. It spares a look, and
      * settles a chat the server calls unread; without it the server's word stands.
@@ -35,17 +36,17 @@ class LocalReads(private val context: Context) {
     /** Counts what a server forgot, so a look under way when it forgot does not bring it back. */
     private val epochs = ConcurrentHashMap<String, Long>()
 
-    suspend fun of(server: String): Map<String, Double> = decode(context.readStore.data.first()[key(server)])
+    suspend fun of(server: String): Map<String, Double> = decode(data.data.first()[key(server)])
 
     /** When the newest answer found in each chat was written. */
-    suspend fun answers(server: String): Map<String, Double> = decode(context.readStore.data.first()[answerKey(server)])
+    suspend fun answers(server: String): Map<String, Double> = decode(data.data.first()[answerKey(server)])
 
     /**
      * The chat is read up to [at] (the server's `last_active` of what is on the screen). A mark
      * never goes back: a slow answer cannot unsee what a later one showed.
      */
     suspend fun markRead(server: String, id: String, at: Double, wanted: () -> Boolean = { true }) {
-        context.readStore.edit { prefs ->
+        data.edit { prefs ->
             // The check runs inside the serialized edit: work that started before the server was
             // signed out or removed cannot mark anything after it, and work started later can.
             if (!wanted()) return@edit
@@ -62,7 +63,7 @@ class LocalReads(private val context: Context) {
      * unread until the user opens it.
      */
     suspend fun baseline(server: String, chats: List<ChatSummary>, wanted: () -> Boolean = { true }) {
-        context.readStore.edit { prefs ->
+        data.edit { prefs ->
             if (!wanted()) return@edit
             val reads = decode(prefs[key(server)]).toMutableMap()
             var changed = false
@@ -117,7 +118,7 @@ class LocalReads(private val context: Context) {
 
     /** A look through [id] up to its activity [upTo] found the answer of [at], or none; dropped when the server forgot since. */
     private suspend fun found(server: String, id: String, at: Double?, upTo: Double, epoch: Long, wanted: () -> Boolean) {
-        context.readStore.edit { prefs ->
+        data.edit { prefs ->
             if (!wanted()) return@edit
             if ((epochs[server] ?: 0L) != epoch) return@edit
             if (at != null) {
@@ -132,7 +133,7 @@ class LocalReads(private val context: Context) {
     }
 
     suspend fun forget(server: String, id: String, wanted: () -> Boolean = { true }) {
-        context.readStore.edit { prefs ->
+        data.edit { prefs ->
             if (!wanted()) return@edit
             epochs.merge(server, 1L) { a, b -> a + b }
             looked[server]?.remove(id)
@@ -150,7 +151,7 @@ class LocalReads(private val context: Context) {
 
     suspend fun clear(server: String) {
         beforeClear?.invoke(server)
-        context.readStore.edit {
+        data.edit {
             epochs.merge(server, 1L) { a, b -> a + b }
             looked.remove(server)
             it.remove(key(server))

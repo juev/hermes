@@ -13,8 +13,9 @@ private val Context.pinStore by preferencesDataStore(name = "pins")
  * Chats pinned on this phone, per server: those the server refuses to pin (see [ChatMutations.pin]).
  * They live apart from the cache of answers, which the user may clear and a new schema empties.
  */
-class LocalPins(private val context: Context) {
-    suspend fun of(server: String): Set<String> = context.pinStore.data.first()[key(server)].orEmpty()
+class LocalPins(private val context: Context, backing: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null) {
+    private val data = backing ?: context.pinStore
+    suspend fun of(server: String): Set<String> = data.data.first()[key(server)].orEmpty()
 
     @Volatile
     internal var beforeSet: (suspend () -> Unit)? = null
@@ -30,7 +31,7 @@ class LocalPins(private val context: Context) {
     }
 
     private suspend fun setNow(server: String, id: String, pinned: Boolean, wanted: () -> Boolean) {
-        context.pinStore.edit {
+        data.edit {
             if (!wanted()) return@edit
             val pins = it[key(server)].orEmpty()
             it[key(server)] = if (pinned) pins + id else pins - id

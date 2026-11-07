@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.launch
 import org.evsyukov.hermes.background.ActivityCheck
 import org.evsyukov.hermes.background.Notifications
@@ -68,19 +69,27 @@ class AppContainer(
     context: Context,
     cipher: TokenCipher = KeystoreTokenCipher(),
     responseCache: ResponseCache? = null,
+    connectionConstructionObserver: ((Connection, org.evsyukov.hermes.data.server.ServerProfile, Long?) -> Unit)? = null,
+    settingsData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    serverData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    pinData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    readData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    observationData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    pushData: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>? = null,
+    pushDistributor: org.evsyukov.hermes.push.PushDistributor? = null,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = baseClient()
 
     val strings = AppStrings(context.resources)
-    val settings = AppSettings(context, scope)
-    val servers = ServerStore(context, cipher, scope)
+    val settings = AppSettings(context, scope, settingsData)
+    val servers = ServerStore(context, cipher, scope, observationData, serverData)
     val tailnet = Tailnet(context, scope)
     val attachments = AttachmentCache(File(context.cacheDir, "attachments"))
     internal val cacheDatabase by lazy { CacheDatabase.open(context) }
     val responses = responseCache ?: ResponseCache(cacheDatabase.responses(), scope, { settings.cacheLimitMb.value?.let { it * MEGABYTE } })
-    val pins = LocalPins(context)
-    val reads = LocalReads(context)
+    val pins = LocalPins(context, pinData)
+    val reads = LocalReads(context, readData)
 
     /**
      * The unsent words, files and reading place of the chats of each profile, kept for the lifetime
@@ -98,30 +107,43 @@ class AppContainer(
      */
     val lifetime = servers.authority
 
+    /** Pauses only the fixture observer after a real active-profile value was delivered. */
+    @Volatile internal var afterActiveProfileObservation: (suspend () -> Unit)? = null
+
     /**
      * Rebuilt when the active server, its address or its proxy changes, and only after the
-     * authority adopted the persisted profiles; tokens alone do not rebuild it, since the session
+     * authority adopted the persisted profiles. A re-added identical profile has a fresh
+     * incarnation even if observation skipped its absence. Tokens alone do not rebuild it: the session
      * reads the bound credentials on every request.
      */
     val connection: StateFlow<Connection?> = combine(
-        servers.state.map { it.active }.distinctUntilChanged(),
+        servers.state.transform { state ->
+            emit(state.active)
+            afterActiveProfileObservation?.invoke()
+        }.distinctUntilChanged(),
         tailnet.proxy,
         lifetime.ready,
-    ) { profile, tailnetProxy, ready -> Triple(profile, tailnetProxy, ready) }
+        lifetime.incarnations,
+    ) { profile, tailnetProxy, ready, incarnations ->
+        Triple(profile, tailnetProxy, ready) to incarnations[profile?.id]
+    }
         .distinctUntilChanged()
-        .runningFold(null as Connection?) { previous, (profile, tailnetProxy, ready) ->
+        .runningFold(null as Connection?) { previous, (settings, incarnation) ->
+            val (profile, tailnetProxy, ready) = settings
             previous?.socket?.stop()
             if (!ready || profile?.url == null) return@runningFold null
             val client = clientFor(http, profile.proxy, tailnetProxy)
             val session = ServerSession(profile, client, servers, strings, responses)
-            Connection(session, GatewaySocket(session.http, scope, strings))
+            Connection(session, GatewaySocket(session.http, scope, strings)).also { connection ->
+                connectionConstructionObserver?.invoke(connection, profile, incarnation)
+            }
         }
         .stateIn(scope, SharingStarted.Eagerly, null)
 
     val notifications = Notifications(context)
     val turns = TurnWatcher(context, scope, connection, notifications, settings.keepConnected)
     val activity = ActivityCheck(context)
-    val push = PushManager(context, UnifiedPushDistributor(context), { connection.value?.session }, { settings.current.value.push })
+    val push = PushManager(context, pushDistributor ?: UnifiedPushDistributor(context), { connection.value?.session }, { settings.current.value.push }, pushData)
     val pushMessages = PushMessages(this)
 
     private val _online = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)

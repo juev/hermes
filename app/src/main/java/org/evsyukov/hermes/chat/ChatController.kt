@@ -142,6 +142,7 @@ class ChatController(
     /** The questions of the chats of this connection, which outlive this chat being open. */
     private val questionMemory: QuestionMemory = QuestionMemory(),
     private val wanted: () -> Boolean = { true },
+    initialOwner: WorkOwner = session.owner(),
 ) {
     /** Orders every change of the chat's state, its publication and the change of its visibility. */
     private val lock = Any()
@@ -166,7 +167,8 @@ class ChatController(
         val eligibleTransport = if (real != null && real.ownerOn(transport) != owner) 0L else transport
         return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty()), publicObservationProducer)
     }
-    private val initialWork = captureWork()
+    private val initialWork = captureWork(initialOwner)
+    internal val initialWorkOwner: WorkOwner get() = initialWork.owner
     private val observationRecoveryTicket = checkNotNull(initialWork.observationTicket)
     @Volatile private var lastWork: Work? = null
     @Volatile private var draftWork: Work? = null
@@ -524,7 +526,7 @@ class ChatController(
             }
         }
         if (storedId != null) {
-            reload()
+            enqueueReload(initialWork)
         } else {
             // Waits for the socket rather than opening it: the app decides when it connects.
             jobs += scope.launch {
