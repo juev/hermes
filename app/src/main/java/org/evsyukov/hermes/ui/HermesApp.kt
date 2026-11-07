@@ -105,6 +105,8 @@ private fun MainScreen(vm: MainViewModel) {
     val settings by container.settings.current.collectAsStateWithLifecycle()
     val sidebar by vm.sidebar.collectAsStateWithLifecycle()
     val search by vm.search.collectAsStateWithLifecycle()
+    val searchEntry by vm.searchEntry.collectAsStateWithLifecycle()
+    val searchJourney by vm.searchJourney.collectAsStateWithLifecycle()
     val chat by vm.chat.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -126,12 +128,20 @@ private fun MainScreen(vm: MainViewModel) {
 
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
     BackHandler(enabled = !drawer.isOpen && top != null) { vm.pop() }
+    // The chat under a search result is not the root of the journey: Back shows the results again.
+    BackHandler(enabled = !drawer.isOpen && top == null && searchJourney != null) { vm.returnToSearch() }
 
     fun closeDrawer() = scope.launch { drawer.close() }
 
     when (top) {
         is Screen.Search -> {
-            SearchScreen(search, vm::setQuery, onOpen = vm::openSearchHit, onBack = { vm.pop() })
+            SearchScreen(
+                search, vm::setQuery, onOpen = vm::openSearchHit, onBack = { vm.pop() },
+                initialIndex = searchEntry.index,
+                initialOffset = searchEntry.offset,
+                requestFocusOnOpen = searchEntry.requestFocus,
+                onListPosition = vm::searchScrolled,
+            )
             return
         }
         is Screen.Admin -> {
@@ -198,7 +208,7 @@ private fun MainScreen(vm: MainViewModel) {
     }
 
     val actions = SidebarActions(
-        onSearch = { vm.push(Screen.Search); closeDrawer() },
+        onSearch = { vm.showSearch(); closeDrawer() },
         onNewChat = { vm.newChat(); closeDrawer() },
         onOpen = { vm.openChat(it); closeDrawer() },
         onRename = vm::renameChat,

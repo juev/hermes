@@ -54,6 +54,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -151,7 +156,10 @@ fun Composer(
             }
             // The vertical padding centres one line of text on the 48 dp buttons.
             Box(Modifier.weight(1f).padding(horizontal = 4.dp, vertical = 12.dp)) {
-                if (text.isEmpty()) Text(stringResource(R.string.composer_hint), color = colors.faintText, fontSize = 16.sp)
+                val hint = stringResource(R.string.composer_hint)
+                // The hint is a visual placeholder only: the field carries the accessible name, so
+                // an empty composer does not announce the same purpose twice.
+                if (text.isEmpty()) Text(hint, color = colors.faintText, fontSize = 16.sp, modifier = Modifier.clearAndSetSemantics { testTag = "composerHint" })
                 BasicTextField(
                     value = text,
                     onValueChange = onText,
@@ -166,7 +174,7 @@ fun Composer(
                     keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
                     singleLine = false,
                     maxLines = 8,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 24.dp).semantics { contentDescription = hint },
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -219,7 +227,8 @@ private fun RoundButton(
     onClick: () -> Unit,
 ) {
     Box(
-        Modifier.padding(4.dp).size(36.dp).clip(CircleShape).background(background).clickable(enabled = enabled, onClick = onClick),
+        Modifier.padding(4.dp).size(36.dp).clip(CircleShape).background(background)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, label, tint = tint, modifier = Modifier.size(20.dp)) }
 }
@@ -227,19 +236,29 @@ private fun RoundButton(
 @Composable
 private fun PendingAttachment(attachment: LocalAttachment, onOpen: () -> Unit, onRemove: () -> Unit) {
     val colors = ChatTheme.colors
-    Box {
-        if (attachment.image) {
-            AsyncImage(
-                attachment.bytes, attachment.name, contentScale = ContentScale.Crop,
-                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onOpen),
-            )
-        } else {
-            Box(Modifier.size(width = 150.dp, height = 64.dp)) { FileChip(attachment.name, onOpen) }
+    val removeLabel = stringResource(R.string.composer_remove)
+    // The remove button owns a real 48 dp slot beside the preview instead of a badge whose expanded
+    // touch area would compete with the preview below it.
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box {
+            if (attachment.image) {
+                AsyncImage(
+                    attachment.bytes, attachment.name, contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onOpen),
+                )
+            } else {
+                Box(Modifier.size(width = 150.dp, height = 64.dp)) { FileChip(attachment.name, onOpen) }
+            }
         }
         Box(
-            Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp).clip(CircleShape).background(colors.contrast).clickable(onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Outlined.Close, stringResource(R.string.composer_remove), tint = colors.onContrast, modifier = Modifier.size(14.dp)) }
+            Modifier.size(48.dp).clickable(role = Role.Button, onClick = onRemove),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier.padding(start = 4.dp).size(20.dp).clip(CircleShape).background(colors.contrast),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Outlined.Close, removeLabel, tint = colors.onContrast, modifier = Modifier.size(14.dp)) }
+        }
     }
 }
 

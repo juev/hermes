@@ -260,6 +260,11 @@ a reconnect whose previous join answer never arrived.
   and `session_id`, and adds `snippet` — the text around the match as it was, newlines included — and
   `role`, the role of the message the match was found in. Unlike the list, a hit carries no `pinned`
   and no `unread`. Observed on v0.22.5 on 2026-10-30; `docs/fixtures/search/results.json`.
+- A hit locates a session, not a message: the snippet and role help the person recognise the match,
+  but no identifier of the matched row is in the answer. A client can therefore open the conversation,
+  not the exact message; the Android client says so above the results and does not jump, highlight or
+  send anything. Search remains the screen Back returns to, with its query, results and list place
+  intact, and it is dropped when another connection makes those results stale.
 - Flags arrive as SQLite wrote them: `true` and `1` both mean yes.
 - Renaming, archiving and deleting a chat go over the socket on a plain dashboard, where the session
   lives in the dashboard's own process and `PATCH`/`DELETE /api/sessions/{id}` answer `404 not_found`.

@@ -34,6 +34,16 @@ jobs:
           go-version-file: tailnet/go.mod
           cache-dependency-path: tailnet/go.sum
       - uses: gradle/actions/setup-gradle@v6
+      - name: Install the native NDK
+        run: |
+          mkdir -p build/native-evidence
+          revision=$(cat scripts/android-ndk-version)
+          sdkmanager "ndk;$revision" 2>&1 | tee build/native-evidence/ndk-install.log
+          for variable in ANDROID_NDK_HOME ANDROID_NDK_ROOT NDK_HOME NDK_ROOT; do
+            echo "$variable=$ANDROID_HOME/ndk/$revision" >> "$GITHUB_ENV"
+          done
+      - name: Test native guards
+        run: python3 -B -m unittest discover -s scripts/tests -v
       # The built-in Tailscale node goes into every release.
       - run: ./scripts/build-tailnet.sh
       - name: Restore the signing key
@@ -56,11 +66,23 @@ jobs:
         run: |
           apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           "$apksigner" verify --print-certs "$APK"
+      - name: Validate native APK
+        run: |
+          zipalign=$(ls "$ANDROID_HOME"/build-tools/*/zipalign | sort -V | tail -1)
+          reports=$(mktemp -d build/native-evidence/release-apk.XXXXXX)
+          python3 scripts/validate-native-artifact.py "$APK" --zipalign "$zipalign" --report "$reports/release.json"
+      - name: Retain native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-native-evidence
+          path: build/native-evidence/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.APK }}
           path: ${{ env.APK }}
-      - if: github.event_name == 'push'
+      - if: success() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         # A tag with a suffix, v1.2.3-rc1, is published as a pre-release.

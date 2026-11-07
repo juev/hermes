@@ -2,6 +2,7 @@ package org.evsyukov.hermes.ui.search
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -26,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,6 +36,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -53,10 +60,26 @@ import java.util.Date
 
 /** Full-text search over every chat of the server, the FTS5 index of Hermes doing the work. */
 @Composable
-fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (SearchHit, SearchRequestIdentity?) -> Unit, onBack: () -> Unit) {
+fun SearchScreen(
+    state: SearchState,
+    onQuery: (String) -> Unit,
+    onOpen: (SearchHit, SearchRequestIdentity?) -> Unit,
+    onBack: () -> Unit,
+    /** Where the results list opens, and whether the field may take the keyboard. */
+    initialIndex: Int = 0,
+    initialOffset: Int = 0,
+    requestFocusOnOpen: Boolean = true,
+    /** The place the results list shows now, for the return after a result is opened. */
+    onListPosition: (Int, Int) -> Unit = { _, _ -> },
+) {
     val colors = ChatTheme.colors
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex, initialFirstVisibleItemScrollOffset = initialOffset)
+    LaunchedEffect(Unit) { if (requestFocusOnOpen) focus.requestFocus() }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) -> onListPosition(index, offset) }
+    }
     Column(Modifier.fillMaxSize().background(colors.background).statusBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back), tint = colors.text) }
@@ -64,18 +87,31 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (SearchH
                 Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(colors.userBubble).padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    if (state.query.isEmpty()) Text(stringResource(R.string.search_placeholder), color = colors.faintText, fontSize = 16.sp)
+                Box(Modifier.weight(1f)) {
+                    val label = stringResource(R.string.search_placeholder)
                     BasicTextField(
                         state.query, onQuery,
                         singleLine = true,
                         textStyle = TextStyle(color = colors.text, fontSize = 16.sp),
                         cursorBrush = SolidColor(colors.text),
-                        modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = label },
                     )
+                    // The hint supplies the visible placeholder without taking part in measurement, so the
+                    // field itself keeps one height and does not move when the text appears.
+                    if (state.query.isEmpty()) {
+                        Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterStart) {
+                            Text(
+                                label, color = colors.faintText, fontSize = 16.sp,
+                                modifier = Modifier.clearAndSetSemantics {},
+                            )
+                        }
+                    }
                 }
                 if (state.query.isNotEmpty()) {
-                    Icon(Icons.Outlined.Close, stringResource(R.string.search_clear), tint = colors.faintText, modifier = Modifier.clickable { onQuery("") })
+                    Icon(
+                        Icons.Outlined.Close, stringResource(R.string.search_clear), tint = colors.faintText,
+                        modifier = Modifier.clickable(role = Role.Button) { onQuery("") },
+                    )
                 }
             }
         }
@@ -90,7 +126,14 @@ fun SearchScreen(state: SearchState, onQuery: (String) -> Unit, onOpen: (SearchH
                 color = colors.faintText, fontSize = 14.sp, modifier = Modifier.padding(16.dp),
             )
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        if (state.hits.isNotEmpty()) {
+            Text(
+                stringResource(R.string.search_result_hint),
+                color = colors.faintText, fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             items(state.hits, key = { it.chat.id + it.snippet.hashCode() }) { hit ->
                 HitRow(hit, state.query) { onOpen(hit, state.request) }
                 HorizontalDivider(color = colors.divider)

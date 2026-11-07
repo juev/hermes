@@ -32,6 +32,15 @@ jobs:
           go-version-file: tailnet/go.mod
           cache-dependency-path: tailnet/go.sum
       - uses: gradle/actions/setup-gradle@v6
+      - name: Install the native NDK
+        shell: bash
+        run: |
+          mkdir -p build/native-evidence
+          revision=$(cat scripts/android-ndk-version)
+          sdkmanager "ndk;$revision" 2>&1 | tee build/native-evidence/ndk-install.log
+          for variable in ANDROID_NDK_HOME ANDROID_NDK_ROOT NDK_HOME NDK_ROOT; do
+            echo "$variable=$ANDROID_HOME/ndk/$revision" >> "$GITHUB_ENV"
+          done
       - run: ./scripts/build-tailnet.sh
       - name: Repeat the stress test until one run fails
         run: |
@@ -56,6 +65,13 @@ jobs:
         env:
           RUNS: ${{ inputs.runs }}
           STRESS_ROUNDS: ${{ inputs.rounds }}
+      - name: Retain native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reconnect-native-evidence
+          path: build/native-evidence/
+          if-no-files-found: error
       - if: always()
         uses: actions/upload-artifact@v7
         with:

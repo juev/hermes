@@ -112,6 +112,28 @@ data class SidebarState(
 internal fun SidebarState.withMore(mode: ListMode, more: List<ChatSummary>, total: Int, size: Int): SidebarState =
     if (this.mode != mode) this else copy(chats = (chats + mode.keep(more)).distinctBy { it.id }, total = total, listed = listed + size, loading = false)
 
+/**
+ * The search a result was opened from, kept while its conversation is on the screen so Back can
+ * show the same query, results and list place. It belongs to one request: a replaced connection or a
+ * new attempt retires it rather than restoring results of another server.
+ */
+data class SearchJourney(
+    val request: SearchRequestIdentity,
+    val chatId: String,
+    val index: Int,
+    val offset: Int,
+)
+
+/**
+ * How the search screen opens: the place in its list, and whether it may take the keyboard. A
+ * return from a result comes back without asking for focus, so the keyboard does not cover it again.
+ */
+data class SearchEntry(
+    val index: Int = 0,
+    val offset: Int = 0,
+    val requestFocus: Boolean = true,
+)
+
 /** What the app needs from the server before chatting: nothing, a sign-in, or a working network. */
 enum class Access { UNKNOWN, OK, SIGN_IN, OFFLINE }
 
@@ -175,6 +197,18 @@ class MainViewModel(
 
     private val searchOwner = SearchOwner(container.connection, viewModelScope, searchChats)
     val search: StateFlow<SearchState> = searchOwner.search
+
+    /** The result journey under the chat on the screen; null when Back is ordinary. */
+    private val _searchJourney = MutableStateFlow<SearchJourney?>(null)
+    val searchJourney: StateFlow<SearchJourney?> = _searchJourney.asStateFlow()
+
+    /** Where the search screen opens: its list place and whether it takes the keyboard. */
+    private val _searchEntry = MutableStateFlow(SearchEntry())
+    val searchEntry: StateFlow<SearchEntry> = _searchEntry.asStateFlow()
+
+    /** The list place the open Search screen showed last, read when a result is activated. */
+    private var searchListIndex = 0
+    private var searchListOffset = 0
 
     private val _chat = MutableStateFlow<ChatController?>(null)
     val chat: StateFlow<ChatController?> = _chat.asStateFlow()
@@ -258,6 +292,9 @@ class MainViewModel(
                 if (connection != null) beforeInitialConnection?.invoke(connection)
                 val hasCurrentAccess = connection != null && accessConnection === connection &&
                     accessJob?.isCancelled == false && accessOwner?.let { eligible(it, connection) } == true
+                _searchJourney.value = null
+                _searchEntry.value = SearchEntry()
+                searchScrolled(0, 0)
                 _chat.value?.close()
                 _chat.value = null
                 draftBindings.clear()
@@ -574,26 +611,33 @@ class MainViewModel(
         refreshChats()
     }
 
+    /** Ordinary navigation ends a result journey only after the destination is admitted. */
     fun openChat(id: String) {
         val connection = container.connection.value
         if (connection == null) {
             pendingChat = id
             return
         }
-        openChat(id, connection, connection.session.owner())
+        if (openChat(id, connection, connection.session.owner(), clearScreens = true)) _searchJourney.value = null
     }
 
-    private fun openChat(id: String, connection: Connection, owner: WorkOwner) {
-        if (!eligible(owner, connection)) return
-        if (_chat.value?.state?.value?.storedId == id) {
-            markRead(id, owner = owner, expectedConnection = connection)
-            return
+    /** One admitted owner-bound destination for ordinary navigation and result activation. */
+    private fun openChat(id: String, connection: Connection, owner: WorkOwner, clearScreens: Boolean = true): Boolean {
+        if (!eligible(owner, connection)) return false
+        val draft = draftsOf(connection).obtain(DraftKey.Chat(id))
+        if (draft == null) {
+            refuseDraft()
+            return false
         }
-        val draft = draftsOf(connection).obtain(DraftKey.Chat(id)) ?: return refuseDraft()
+        val current = _chat.value
+        val alreadyOpen = current != null && current.state.value.storedId == id && draftOf(current, connection) === draft
         markRead(id, owner = owner, expectedConnection = connection)
-        _chat.value?.close()
-        _chat.value = controller(connection, id, draft, owner)
-        stack.clear()
+        if (!alreadyOpen) {
+            current?.close()
+            _chat.value = controller(connection, id, draft, owner)
+        }
+        if (clearScreens) stack.clear()
+        return true
     }
 
     /**
@@ -701,7 +745,11 @@ class MainViewModel(
         // Sign-out retires bindings even for an empty controller. Only an issued current binding
         // can take this shortcut; otherwise install a fresh controller with the retained/new draft.
         if (current != null && current.state.value.storedId == null && current.state.value.items.isEmpty() &&
-            draftOf(current, connection) != null) return true
+            draftOf(current, connection) != null) {
+            _searchJourney.value = null
+            stack.clear()
+            return true
+        }
         val draft = memory.obtain(DraftKey.NewChat)
         if (draft == null) {
             refuseDraft()
@@ -709,6 +757,7 @@ class MainViewModel(
         }
         current?.close()
         _chat.value = controller(connection, null, draft, owner)
+        _searchJourney.value = null
         stack.clear()
         return true
     }
@@ -992,11 +1041,71 @@ class MainViewModel(
         }
     }
 
-    fun setQuery(query: String) = searchOwner.setQuery(query)
+    /** Opens Search from the drawer, fresh: its list starts at the top and the keyboard may open. */
+    fun showSearch() {
+        _searchJourney.value = null
+        _searchEntry.value = SearchEntry()
+        searchScrolled(0, 0)
+        push(Screen.Search)
+    }
 
-    /** Opens only a result of the current request and current connection. */
+    /** Current viewport reported by the composed results list. */
+    internal val searchListPosition: Pair<Int, Int> get() = searchListIndex to searchListOffset
+
+    /** The place the open Search screen shows; kept for the return from a result. */
+    fun searchScrolled(index: Int, offset: Int) {
+        searchListIndex = index
+        searchListOffset = offset
+    }
+
+    fun setQuery(query: String) {
+        val before = search.value.request
+        searchOwner.setQuery(query)
+        if (search.value.request != before) {
+            _searchJourney.value = null
+            _searchEntry.value = SearchEntry()
+        }
+    }
+
+    /**
+     * Opens a search result, if it still belongs to the current request of the current server. The
+     * conversation is opened first; Search and its place are cleared only once it is the chat on the
+     * screen, so a refused navigation leaves the person where they were with the results intact.
+     */
     fun openSearchHit(hit: SearchHit, identity: SearchRequestIdentity?) {
-        if (searchOwner.admits(hit, identity)) openChat(hit.chat.id)
+        if (identity == null || !searchOwner.admits(hit, identity)) return
+        val journey = _searchJourney.value
+        val current = _chat.value?.state?.value?.storedId
+        // A second tap of the same row is the journey already under way, not another navigation.
+        if (journey != null && journey.request == identity && journey.chatId == hit.chat.id && current == hit.chat.id) return
+        val place = SearchJourney(identity, hit.chat.id, searchListIndex, searchListOffset)
+
+        if (!openChat(hit.chat.id, identity.connection, identity.connection.session.owner(), clearScreens = false)) return
+
+        stack.clear()
+        _searchJourney.value = place
+    }
+
+    /**
+     * Back from a result's conversation: shows Search with the same query, results and list place,
+     * without asking the server again. A journey whose request or chat no longer belongs to the
+     * screen is dropped instead of restoring results of another server; the caller then leaves the
+     * conversation as usual. False when there was no journey to return to.
+     */
+    fun returnToSearch(): Boolean {
+        val journey = _searchJourney.value ?: return false
+        // A screen over the conversation handles Back itself; the journey waits under it.
+        if (stack.isNotEmpty()) return false
+        if (container.connection.value !== journey.request.connection || search.value.request != journey.request ||
+            _chat.value?.state?.value?.storedId != journey.chatId
+        ) {
+            _searchJourney.value = null
+            return false
+        }
+        _searchJourney.value = null
+        _searchEntry.value = SearchEntry(journey.index, journey.offset, requestFocus = false)
+        push(Screen.Search)
+        return true
     }
 
     fun push(screen: Screen) {
