@@ -610,7 +610,7 @@ class DraftNavigationTest {
             primary = failure
             throw failure
         } finally {
-            try { phase.close() } catch (cleanup: Throwable) {
+            try { phase.close(::idle) } catch (cleanup: Throwable) {
                 val failure = primary
                 if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)
             }
