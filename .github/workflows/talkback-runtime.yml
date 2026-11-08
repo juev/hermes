@@ -21,6 +21,23 @@ jobs:
         shell: bash
         run: |
           python3 -B -m unittest discover -s scripts/talkback-ci/tests -v
+      - name: Prepare disposable runner KVM access
+        shell: bash
+        run: |
+          test -c /dev/kvm
+          id -u
+          id -g
+          stat -L -c '%u %g %a' /dev/kvm
+          if test -r /dev/kvm && test -w /dev/kvm; then
+            :
+          else
+            sudo -n chown -- "$(id -u):$(id -g)" /dev/kvm
+            sudo -n chmod -- u+rw /dev/kvm
+          fi
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          stat -L -c '%u %g %a' /dev/kvm
       - name: Probe KVM
         shell: bash
         env:
