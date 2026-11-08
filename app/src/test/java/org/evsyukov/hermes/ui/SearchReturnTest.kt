@@ -312,20 +312,33 @@ class SearchReturnTest {
 
     @Test
     fun `refused New Chat preserves the journey until a mutable slot is freed`() = runTest(main.scheduler) {
-        val vm = viewModel()
+        val admission = kotlinx.coroutines.CompletableDeferred<Unit>()
+        lifecycle.release { admission.complete(Unit) }
+        val vm = MainViewModel(container, ::search)
+        lifecycle.root(requireNotNull(vm.viewModelScope.coroutineContext[Job]))
+        lifecycle.stop { vm.chat.value?.close() }
+        vm.beforeInitialOwnerAdmission = { _, _ -> admission.await() }
+        advance(0)
         vm.openChat("origin")
-        val current = requireNotNull(vm.chat.value)
-        val draft = requireNotNull(vm.draftOf(current))
+        val beforeNavigation = requireNotNull(vm.chat.value)
+        val draft = requireNotNull(vm.draftOf(beforeNavigation))
         draft.text = "origin words"
         val memory = container.drafts.of(PROFILE_ID)
         val retained = (1..15).map { index ->
             requireNotNull(memory.obtain(DraftKey.Chat("filled-$index"))).also { it.text = "keep $index" }
         }
         vm.showSearch()
+        // Let initial admission encounter a full memory before selecting the search result.
+        // Its fallback may replace the controller, but must keep the origin's retained draft.
+        admission.complete(Unit)
         results(vm, hit("origin"))
         vm.openSearchHit(hit("origin"), vm.search.value.request)
+        val current = requireNotNull(vm.chat.value)
+        assertThat(current).isNotSameInstanceAs(beforeNavigation)
+        assertThat(vm.draftOf(current)).isSameInstanceAs(draft)
         val journey = vm.searchJourney.value
         assertThat(journey).isNotNull()
+        // Refusal must preserve the controller at this action, not one from before navigation.
         assertThat(vm.newChat()).isFalse()
         assertThat(vm.searchJourney.value).isSameInstanceAs(journey)
         assertThat(vm.chat.value).isSameInstanceAs(current)
