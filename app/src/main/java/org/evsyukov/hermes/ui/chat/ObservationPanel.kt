@@ -43,11 +43,6 @@ internal fun ObservationPanel(row: LocalObservation, actions: MessageActions, re
             } }
             ObservationFiles(row, openLocal)
             row.error?.let { Text(it, color = ChatTheme.colors.text, modifier = Modifier.padding(16.dp)) }
-            // The ordinary tool renderer intentionally shortens large outputs. The retained raw
-            // semantic frames make the complete on-device result available without another RPC.
-            row.frames.filter { it.type == "tool.complete" }.forEach { frame ->
-                Text(frame.payload.toString(), color = ChatTheme.colors.text, fontSize = 12.sp, modifier = Modifier.padding(16.dp))
-            }
         }
     }
 }

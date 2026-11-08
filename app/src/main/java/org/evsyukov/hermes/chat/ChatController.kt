@@ -80,6 +80,8 @@ data class ChatState(
     val observations: List<LocalObservation> = emptyList(),
     val currentObservationId: String? = null,
     val observationStorageError: Boolean = false,
+    /** Successful explicit history reads, including when a newer live turn prevented replacement. */
+    val historyRefresh: Long = 0,
     val loading: Boolean = false,
     val running: Boolean = false,
     val prompt: Prompt? = null,
@@ -157,15 +159,15 @@ class ChatController(
     )
 
     /** Per-operation carrier. A root without a ready transport binds once, never to its replacement. */
-    private class Work(val owner: WorkOwner, val chat: String?, transport: Long, val observationTicket: ObservationTicket? = null, val publicObservationProducer: Boolean = false) {
+    private class Work(val owner: WorkOwner, val chat: String?, transport: Long, val observationTicket: ObservationTicket? = null, val publicObservationProducer: Boolean = false, val historyItemsAtAction: List<ChatItem>? = null) {
         val transport = AtomicLong(transport)
     }
     private val workContext = ThreadLocal<Work?>()
-    private fun captureWork(owner: WorkOwner = session.owner(), inheritedTicket: ObservationTicket? = null, publicObservationProducer: Boolean = false): Work {
+    private fun captureWork(owner: WorkOwner = session.owner(), inheritedTicket: ObservationTicket? = null, publicObservationProducer: Boolean = false, showStoredHistory: Boolean = false): Work {
         val transport = socket.transport.value
         val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
         val eligibleTransport = if (real != null && real.ownerOn(transport) != owner) 0L else transport
-        return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty()), publicObservationProducer)
+        return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty()), publicObservationProducer, if (showStoredHistory) current.items else null)
     }
     private val initialWork = captureWork(initialOwner)
     internal val initialWorkOwner: WorkOwner get() = initialWork.owner
@@ -631,6 +633,9 @@ class ChatController(
      */
     fun reload() = enqueueReload(captureWork())
 
+    /** Show the server's copy after a successful read; retain local evidence for opt-in recovery. */
+    fun refreshHistory() = enqueueReload(captureWork(showStoredHistory = true))
+
     private fun enqueueReload(origin: Work) {
         publish(origin.owner) { if (!closed && reloadRequests.trySend(origin).isSuccess) acceptedReloadRequests.incrementAndGet() }
     }
@@ -745,11 +750,20 @@ class ChatController(
                 (read.exceptionOrNull() as? CancellationException)?.let { throw it }
                 if (!holds(owner)) return@coroutineScope
                 if (read.isSuccess) {
-                    publish(owner) {
+                    publish(owner) { synchronized(lock) {
                         observedHistory = read.getOrThrow()
-                        showHistory(transcriptOf(read.getOrThrow().rows), beforeHistory, joined?.getOrNull()?.first)
+                        val historyItems = transcriptOf(read.getOrThrow().rows)
+                        flushStreamed()
+                        // Bind replacement to the click, not dequeue time: a queued refresh must
+                        // not hide a send or live event observed after that action.
+                        val replaceLocal = origin.historyItemsAtAction != null && !_state.value.running && _state.value.items === origin.historyItemsAtAction
+                        showHistory(historyItems, beforeHistory, joined?.getOrNull()?.first)
+                        if (origin.historyItemsAtAction != null) edit { state ->
+                            if (replaceLocal) state.copy(items = historyItems, currentObservationId = null, historyRefresh = state.historyRefresh + 1)
+                            else state.copy(historyRefresh = state.historyRefresh + 1)
+                        }
                         syncObservations()
-                    }
+                    } }
                     // What is on the screen now is read: a mark in the sidebar clears, and a new
                     // answer after this will mark it again.
                     summary?.let { tellRead(id, it.lastActive, owner) }

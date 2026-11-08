@@ -595,6 +595,8 @@
     <string name="connect_tap_retry">Couldn\'t connect. Tap to retry</string>
     <string name="connect_directory_closed">The card is closed</string>
     <string name="settings_sign_out_cleanup_failed">Signed out of %1$s. Some local cached responses, read marks, unsent drafts or on-device reply copies could not be cleared.</string>
+    <string name="chat_local_show_copies">On-device copies (%1$d)</string>
+    <string name="chat_local_hide_copies">Hide on-device copies (%1$d)</string>
     <string name="chat_local_copy">On-device reply · not matched to stored history</string>
     <string name="chat_local_overlap">Recent on-device replies may overlap stored history and cannot yet be matched. Both copies are kept. Refresh reads history only; it never sends a message.</string>
     <string name="chat_local_unsaved">Some on-device replies could not be saved. Keep this chat open until local storage is available.</string>

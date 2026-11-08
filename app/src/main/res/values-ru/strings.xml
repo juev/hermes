@@ -605,6 +605,8 @@
     <string name="connect_tap_retry">Не подключилось. Нажмите, чтобы повторить</string>
     <string name="connect_directory_closed">Карточка закрыта</string>
     <string name="settings_sign_out_cleanup_failed">Вы вышли из %1$s. Не удалось полностью очистить локальные ответы из кэша, отметки о прочтении, неотправленные черновики или копии ответов на устройстве.</string>
+    <string name="chat_local_show_copies">Копии на устройстве (%1$d)</string>
+    <string name="chat_local_hide_copies">Скрыть копии на устройстве (%1$d)</string>
     <string name="chat_local_copy">Ответ на устройстве · связь с историей не установлена</string>
     <string name="chat_local_overlap">Недавние ответы на устройстве могут совпадать с сохранённой историей, но сопоставить их пока нельзя. Обе копии сохранены. Обновление только читает историю и не отправляет сообщения.</string>
     <string name="chat_local_unsaved">Не удалось сохранить часть ответов на устройстве. Не закрывайте чат, пока локальное хранилище недоступно.</string>
