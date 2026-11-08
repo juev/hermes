@@ -1363,6 +1363,11 @@ class LocalActionLifetimeTest {
         val betaSince = betaServer.listed.get()
         container.servers.activate(beta.id)
         settle(beta.id, betaServer, betaSince)
+        // settle() observes the HTTP list, which can finish before the legitimate WebSocket
+        // upgrade. Finish that startup too before counting requests caused by the stale result.
+        val replacement = requireNotNull(container.connection.value)
+        assertThat(replacement.session.profile.id).isEqualTo(beta.id)
+        withTimeout(10_000) { replacement.socket.ready.first() }
         val requestsBefore = betaServer.server.requestCount
 
         hold.release.countDown()

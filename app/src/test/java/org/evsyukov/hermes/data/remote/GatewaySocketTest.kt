@@ -393,6 +393,82 @@ class GatewaySocketTest {
         assertThat(server.requestCount).isEqualTo(0)
     }
 
+    @Test
+    fun `state delivery takes authority before the socket monitor`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val resources = org.evsyukov.hermes.testing.ChatTestResources()
+        val profile = org.evsyukov.hermes.data.server.ServerProfile("socket-lock-order", "Lock order", server.url("/").toString())
+        val cipher = object : org.evsyukov.hermes.data.auth.TokenCipher {
+            override fun encrypt(plain: String) = plain
+            override fun decrypt(sealed: String) = sealed
+        }
+        val store = resources.store(app, cipher, scope, profile)
+        val strings = AppStrings(app.resources)
+        val session = org.evsyukov.hermes.data.server.ServerSession(profile, OkHttpClient(), store, strings)
+        val owner = session.owner()
+        val socket = GatewaySocket(session.http, scope, strings).also { this@GatewaySocketTest.socket = it }
+        val workers = Executors.newFixedThreadPool(2)
+        val authorityHeld = CountDownLatch(1)
+        val inspect = CountDownLatch(1)
+        val stoppedThread = java.util.concurrent.atomic.AtomicReference<Thread>()
+        val socketHeldAtAuthority = java.util.concurrent.atomic.AtomicBoolean(true)
+        val delivered = java.util.concurrent.atomic.AtomicBoolean()
+        var collector: kotlinx.coroutines.Job? = null
+        try {
+            server.enqueue(upgrade())
+            settled(socket)
+            // StateFlow resumes this real collector on the thread changing the state, just as
+            // the undispatched draft continuation in ChatController can re-enter session.holds.
+            collector = launch(Dispatchers.Unconfined) {
+                socket.state.collect { state ->
+                    if (state == SocketState.DISCONNECTED) delivered.set(session.holds(owner))
+                }
+            }
+            val publisher = workers.submit {
+                session.publish(owner) {
+                    authorityHeld.countDown()
+                    check(inspect.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "monitor inspection not released" }
+                    // In RED, skip the second edge instead of creating a permanent JVM deadlock.
+                    if (!socketHeldAtAuthority.get()) socket.start(owner)
+                }
+            }
+            check(authorityHeld.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val stopping = workers.submit { stoppedThread.set(Thread.currentThread()); socket.stop() }
+            try {
+                val bean = java.lang.management.ManagementFactory.getThreadMXBean()
+                val deadline = System.nanoTime() + 5_000_000_000L
+                var waiting: java.lang.management.ThreadInfo? = null
+                while (System.nanoTime() < deadline) {
+                    val thread = stoppedThread.get()
+                    val info = thread?.let { bean.getThreadInfo(longArrayOf(it.id), true, true).single() }
+                    if (info?.threadState == Thread.State.BLOCKED) { waiting = info; break }
+                    Thread.yield()
+                }
+                val blocked = requireNotNull(waiting) { "stop did not reach the held authority" }
+                check(blocked.stackTrace.any { it.className == "org.evsyukov.hermes.data.server.ProfileLifetime" }) {
+                    "stop blocked somewhere other than the real authority: $blocked"
+                }
+                socketHeldAtAuthority.set(blocked.lockedMonitors.any {
+                    it.identityHashCode == System.identityHashCode(socket)
+                })
+            } finally {
+                inspect.countDown()
+            }
+            publisher.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            stopping.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertThat(delivered.get()).isTrue()
+            assertThat(socket.state.value).isEqualTo(SocketState.DISCONNECTED)
+            assertThat(socket.transport.value).isEqualTo(0L)
+            assertThat(socketHeldAtAuthority.get()).isFalse()
+        } finally {
+            inspect.countDown()
+            workers.shutdown()
+            check(workers.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) { "lock-order workers survived" }
+            collector?.cancel()
+            resources.finish(requireNotNull(scope.coroutineContext[kotlinx.coroutines.Job]), emptyList())
+        }
+    }
+
     /** Ready, and done with the calls that follow the gateway's ready, so no late answer counts as a pong. */
     private suspend fun settled(socket: GatewaySocket) {
         socket.awaitReady()

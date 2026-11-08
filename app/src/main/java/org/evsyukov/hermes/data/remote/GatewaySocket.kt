@@ -146,7 +146,11 @@ class GatewaySocket(
 
     @Volatile private var connectorOwner: WorkOwner? = null
 
-    fun ownerOn(transport: Long): WorkOwner? = synchronized(this) {
+    // Every entry to the socket monitor takes authority first. A flow/deferred/cancellation
+    // continuation resumed here may synchronously check authority on this same thread.
+    private fun <T> locked(block: () -> T): T = http.withSocketLock(this, block)
+
+    fun ownerOn(transport: Long): WorkOwner? = locked {
         connectorOwner.takeIf { transport != 0L && _transport.value == transport }
     }
 
@@ -158,9 +162,9 @@ class GatewaySocket(
 
     fun start(owner: WorkOwner?) {
         http.publishWork(owner) {
-            synchronized(this) {
-                if (stopped) return@synchronized
-                if (connector?.isActive == true && connectorOwner == owner) { wanted = true; return@synchronized }
+            locked {
+                if (stopped) return@locked
+                if (connector?.isActive == true && connectorOwner == owner) { wanted = true; return@locked }
                 if (connectorOwner != owner) {
                     attempt++
                     connector?.cancel()
@@ -189,7 +193,7 @@ class GatewaySocket(
      */
     fun stop() {
         val closed = IOException(strings.get(R.string.error_connection_closed))
-        val lost = synchronized(this) {
+        val lost = locked {
             stopped = true
             wanted = false
             attempt++
@@ -225,10 +229,9 @@ class GatewaySocket(
         }
     }
 
-    @Synchronized
-    private fun probe() {
-        if (probing?.isActive == true) return
-        val probed = socket ?: return
+    private fun probe() = locked {
+        if (probing?.isActive == true) return@locked
+        val probed = socket ?: return@locked
         probing = scope.launch {
             val sentAt = System.currentTimeMillis()
             val seen = frames.get()
@@ -284,27 +287,24 @@ class GatewaySocket(
     }
 
     /** Numbers the next attempt and hands out its gate; null once the socket is no longer wanted. */
-    @Synchronized
-    private fun begin(): Pair<Long, CompletableDeferred<Unit>>? {
-        if (!wanted) return null
+    private fun begin(): Pair<Long, CompletableDeferred<Unit>>? = locked {
+        if (!wanted) return@locked null
         attempt++
         lose()
         _state.value = SocketState.CONNECTING
-        return attempt to readyGate
+        attempt to readyGate
     }
 
     /** Makes attempt [number] the last one, unless a start came in between. */
-    @Synchronized
-    private fun giveUp(number: Long) {
+    private fun giveUp(number: Long) = locked {
         if (attempt == number) wanted = false
     }
 
     /** Opens the socket of attempt [number], unless a stop came in between. */
-    @Synchronized
-    private fun open(number: Long, request: Request, listener: Listener): Boolean {
-        if (attempt != number) return false
+    private fun open(number: Long, request: Request, listener: Listener): Boolean = locked {
+        if (attempt != number) return@locked false
         socket = http.client.newWebSocket(request, listener)
-        return true
+        true
     }
 
     /**
@@ -313,8 +313,8 @@ class GatewaySocket(
      * heartbeat. False when a stop has cleared up already or the socket gave up.
      */
     private fun finish(number: Long, gate: CompletableDeferred<Unit>): Boolean {
-        val (more, lost) = synchronized(this) {
-            if (attempt != number) return false
+        val (more, lost) = locked {
+            if (attempt != number) return@locked null
             attempt++
             socket?.cancel()
             heartbeat?.cancel()
@@ -327,7 +327,7 @@ class GatewaySocket(
             // The loop ends here, so the next start must begin another one.
             if (!wanted) connector = null
             wanted to pending.close()
-        }
+        } ?: return false
         // Outside the lock: a caller resumed by its failure may call the socket again.
         val error = IOException(strings.get(R.string.error_connection_lost))
         lost.forEach { it.completeExceptionally(error) }
@@ -335,8 +335,7 @@ class GatewaySocket(
     }
 
     /** True while attempt [number] is the one under way. */
-    @Synchronized
-    private fun current(number: Long): Boolean = attempt == number
+    private fun current(number: Long): Boolean = locked { attempt == number }
 
     /** A ticket lives 30 seconds and opens one socket; a server without sign-in takes no ticket. */
     private suspend fun socketUrl(owner: WorkOwner?): String {
@@ -363,7 +362,7 @@ class GatewaySocket(
     }
 
     override suspend fun callOn(owner: WorkOwner, transport: Long, method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
-        val via = synchronized(this) { readyOn.takeIf { transport != 0L && _transport.value == transport && connectorOwner == owner } }
+        val via = locked { readyOn.takeIf { transport != 0L && _transport.value == transport && connectorOwner == owner } }
             ?: throw IOException("Retired socket transport")
         return request(via, method, params, timeoutMillis, owner, transport)
     }
@@ -387,7 +386,7 @@ class GatewaySocket(
             put("params", params)
         }
         val sent = http.publishWork(owner) {
-            synchronized(this) {
+            locked {
                 if (readyOn !== via || (transport != null && _transport.value != transport) || !pending.add(via, id, deferred)) false
                 else via.send(HermesJson.encodeToString(JsonElement.serializer(), frame)).also { if (it) onRequestEnqueued?.invoke(method) }
             }
@@ -417,13 +416,13 @@ class GatewaySocket(
 
     /** Sends the answer over the websocket of [transport] itself, so it never goes over a connection that replaced it. */
     override fun respondOn(transport: Long, id: String, result: JsonElement?): Boolean {
-        val via = synchronized(this) { readyOn.takeIf { transport != 0L && _transport.value == transport } } ?: return false
+        val via = locked { readyOn.takeIf { transport != 0L && _transport.value == transport } } ?: return false
         return via.send(answerFrame(id, result, null))
     }
 
     override fun respondOwned(owner: WorkOwner, transport: Long, id: String, result: JsonElement?, error: String?): Boolean =
         http.publishWork(owner) {
-            synchronized(this) {
+            locked {
                 readyOn?.takeIf { connectorOwner == owner && transport != 0L && _transport.value == transport }
                     ?.send(answerFrame(id, result, error)) ?: false
             }
@@ -551,9 +550,8 @@ class GatewaySocket(
      * Turns the state READY for attempt [number]. An attempt that is over, given up after its timeout
      * or stopped, stays over; the check and the change happen under the lock [stop] takes.
      */
-    @Synchronized
-    private fun markReady(number: Long, via: WebSocket, gate: CompletableDeferred<Unit>, payload: JsonObject): Boolean {
-        if (attempt != number || gate.isCompleted) return false
+    private fun markReady(number: Long, via: WebSocket, gate: CompletableDeferred<Unit>, payload: JsonObject): Boolean = locked {
+        if (attempt != number || gate.isCompleted) return@locked false
         sessionAuthority = payload.bool("session_authority") ?: false
         pings = payload.bool("heartbeat") == true
         pending.open(via)
@@ -562,7 +560,7 @@ class GatewaySocket(
         _transport.value = number
         _state.value = SocketState.READY
         gate.complete(Unit)
-        return true
+        true
     }
 
     /** The connection the socket was READY on is no longer its own; called under the lock. */
@@ -571,9 +569,8 @@ class GatewaySocket(
         _transport.value = 0
     }
 
-    @Synchronized
-    private fun startHeartbeat(number: Long, via: WebSocket) {
-        if (attempt != number) return
+    private fun startHeartbeat(number: Long, via: WebSocket) = locked {
+        if (attempt != number) return@locked
         heartbeat?.cancel()
         heartbeat = scope.launch {
             while (true) {
