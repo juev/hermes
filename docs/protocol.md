@@ -535,16 +535,25 @@ a missing row keeps the local copy. The existing oldest-500 request is unchanged
 a missing row does not mean it was never stored. There is no assumed snapshot,
 next-event, `after_id` or shared HTTP/socket cut guarantee.
 
-Without that proof, fetched history stays visible in its existing order and a
-separately labelled on-device observation retains the local prompt, selected file
-bytes, answer parts, semantic tool frames and outcome. It may overlap history;
-it is not asserted to be another historical turn. A dedicated client DataStore
+Without that proof, fetched history stays in its existing order and retained
+on-device observations keep the local prompt, selected file bytes, answer parts,
+semantic tool frames and outcome. A live or recently completed reply uses the
+ordinary transcript renderer, with folded tool work and no routine copy warnings.
+One collapsed recovery section above the transcript exposes the separately
+labelled copies on demand. It may overlap history; it is not asserted to be another
+historical turn. Raw semantic frame JSON is retained, not printed in the chat.
+A dedicated client DataStore
 keeps semantic checkpoints and completed copies independently of the evictable
 GET cache. Token deltas are not journaled individually. Normal controller close
 captures the current partial transcript; abrupt process loss can precede that
 checkpoint. Local write failures keep an in-memory pending copy and show a
-storage warning. Refresh only reads history and retries pending persistence;
-it never resubmits. Collapse/reopen changes presentation only, including after
+storage warning. Explicit refresh reads history and retries pending persistence;
+it never resubmits or treats a read as correlation proof. On success it closes
+recovery and, if no live turn is running and the transcript has not changed since
+the refresh action (including time in the load queue), shows the fetched server
+copy. Otherwise newer live content stays visible. Read failure keeps the existing
+reply/recovery selection and reports an error. Automatic reload/reconnect retains
+its existing merge policy. Collapse/reopen changes presentation only, including after
 correlation. Explicit chat clear, profile removal and sign-out clear only their
 admitted captured targets through the existing serialized ownership boundary;
 retired or pre-clear writers cannot recreate their records.

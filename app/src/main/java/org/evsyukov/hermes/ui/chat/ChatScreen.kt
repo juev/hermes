@@ -175,18 +175,13 @@ fun ChatScreen(
     }
     val atBottom by remember { derivedStateOf { !listState.canScrollBackward } }
     // The rows are reversed with their day separators, so a separator stays above the messages of its day.
-    val currentObservation = state.observations.firstOrNull { it.id == state.currentObservationId && !it.reconciled && !it.completed }
-    val completedObservation = state.observations.firstOrNull { it.id == state.currentObservationId && it.completed && !it.reconciled }
-    // A live question keeps its existing compact surface. The live answer still carries its
-    // unmatched label; every completed retained copy has the full disclosure in its own panel.
-    val showObservationDisclosure = state.observationStorageError || (currentObservation != null && state.questions.isEmpty())
-    val localKeys = currentObservation?.items?.mapTo(HashSet()) { it.key }.orEmpty()
+    var showCopies by remember(controller) { mutableStateOf(false) }
+    LaunchedEffect(controller, state.historyRefresh) { showCopies = false }
     val storedHistory = state.storedHistory
-    val archivedKeys = state.observations.filter { it.id != currentObservation?.id }.flatMap { it.items }.mapTo(HashSet()) { it.key }
-    val displayedItems = if (storedHistory == null) state.items.filterNot { it.key in archivedKeys } else {
+    val displayedItems = if (storedHistory == null) state.items else {
         val storedKeys = storedHistory.mapTo(HashSet()) { it.key }
-        val working = state.items.filterNot { it.key in archivedKeys }.associateBy { it.key }
-        storedHistory.map { working[it.key] ?: it } + state.items.filterNot { it.key in storedKeys || it.key in archivedKeys }
+        val working = state.items.associateBy { it.key }
+        storedHistory.map { working[it.key] ?: it } + state.items.filterNot { it.key in storedKeys }
     }
     val reversed = remember(displayedItems, state.questions) { transcriptRows(displayedItems, questions = state.questions).asReversed() }
     // Only the last message of the chat can be answered again, and only the last of the user edited.
@@ -282,7 +277,7 @@ fun ChatScreen(
     }
     // The rows before the transcript in the list: the waiting reply and the cards no answer holds.
     val leading = (if (state.awaitingAnswer) 1 else 0) + cardsOf[null].orEmpty().size +
-        (if (completedObservation != null) 1 else 0) + (if (showObservationDisclosure) 1 else 0)
+        (if (state.observationStorageError) 1 else 0)
     val waitingAt = reversed.indexOfFirst { it is TranscriptRow.Ask && it.card.state == QuestionState.PENDING }.let { if (it < 0) -1 else leading + it }
     // A card settled by its own button gets shorter: its end, with how it ended, stays in view rather
     // than slipping under the edge of the list.
@@ -355,15 +350,9 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize().nestedScroll(pull).offset { IntOffset(0, -pull.distance.roundToInt()) }.testTag("transcript"),
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
-                    completedObservation?.let { observation ->
-                        item(key = "observation:${observation.id}") {
-                            ObservationPanel(observation, actions, controller::reload, { controller.reviewObservation(observation.id, it) }, openLocal, active = true)
-                        }
-                    }
-                    if (showObservationDisclosure) {
+                    if (state.observationStorageError) {
                         item(key = "observation-disclosure") { Column {
-                            ObservationDisclosure(state.observationStorageError, controller::reload)
-                            currentObservation?.let { ObservationFiles(it, openLocal) }
+                            Text(stringResource(R.string.chat_local_unsaved), color = colors.danger, modifier = Modifier.padding(16.dp))
                         } }
                     }
                     // The turn runs without an open answer, e.g. while the socket connects or the agent starts.
@@ -382,7 +371,6 @@ fun ChatScreen(
                                 AgentQuestion(row.card, controller.answersOf(row.card), connected, questionActions)
                             }
                             is TranscriptRow.Message -> Column {
-                                if (row.item.key in localKeys) Text(stringResource(R.string.chat_local_copy), color = colors.secondaryText, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
                                 when (val item = row.item) {
                                 is ChatItem.User -> UserBubble(item, last = item.key == lastUser, actions = actions)
                                 is ChatItem.CronReport -> CronReportMessage(item)
@@ -394,11 +382,17 @@ fun ChatScreen(
                             }
                         }
                     }
-                    // Older retained copies must not displace the single current question/action
-                    // surface at the bottom of this reverse list. They remain inspectable above it.
-                    state.observations.filter { it.id != currentObservation?.id && it.id != completedObservation?.id }.asReversed().forEach { observation ->
+                    // Recovery is opt-in, above the transcript, never a replacement for each reply.
+                    if (showCopies) state.observations.asReversed().forEach { observation ->
                         item(key = "observation:${observation.id}") {
-                            ObservationPanel(observation, actions, controller::reload, { controller.reviewObservation(observation.id, it) }, openLocal)
+                            ObservationPanel(observation, actions, controller::refreshHistory, { controller.reviewObservation(observation.id, it) }, openLocal)
+                        }
+                    }
+                    if (state.observations.isNotEmpty()) {
+                        item(key = "local-copies") {
+                            TextButton(onClick = { showCopies = !showCopies }, modifier = Modifier.testTag("local-copies")) {
+                                Text(stringResource(if (showCopies) R.string.chat_local_hide_copies else R.string.chat_local_show_copies, state.observations.size))
+                            }
                         }
                     }
                 }

@@ -59,6 +59,19 @@ class ObservationPanelTest {
     @Test @Config(qualifiers = "en-w360dp-h800dp") fun `English disclosure at enlarged font is visible and refresh only reads`() = disclosure("en-large", 1.5f)
     @Test @Config(qualifiers = "ru-w360dp-h800dp") fun `Russian disclosure at normal font is visible and refresh only reads`() = disclosure("ru-normal", 1f)
     @Test @Config(qualifiers = "ru-w360dp-h800dp") fun `Russian disclosure at enlarged font is visible and refresh only reads`() = disclosure("ru-large", 1.5f)
+    @Test fun `tool frames never appear as raw transcript text`() {
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            put("result_text", kotlinx.serialization.json.JsonPrimitive("RAW_RESULT_SENTINEL"))
+        }
+        val row = LocalObservation(profile = "p", lineage = "url", session = "s", generation = 1,
+            completed = true, frames = listOf(ObservedFrame(ReceiptOrigin("p", 1, "live", 1, null), "tool.complete", payload)),
+            items = listOf(ChatItem.Assistant("a", listOf(Part.Tool(ToolRun("t", "terminal", "pwd", "{}", true,
+                output = toolOutput("RAW_RESULT_SENTINEL")))), false)))
+        val actions = MessageActions({}, {}, {}, {}, {}, {}, { null })
+        compose.setContent { HermesTheme { ObservationPanel(row, actions, {}, {}) } }
+        compose.onAllNodes(hasText("RAW_RESULT_SENTINEL", substring = true)).assertCountEquals(0)
+        assertThat(row.frames.single().payload).isEqualTo(payload)
+    }
     @Test fun `retained attachment opens its exact local bytes without a remote path lookup`() {
         val row = LocalObservation(profile = "p", lineage = "url", session = "s", generation = 1,
             files = listOf(ObservationFile("note.txt", "text/plain", "AQID", "local")))

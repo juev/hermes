@@ -29,45 +29,79 @@ class ReconciliationScreenTest {
     private fun show(current: ChatController) {
         compose.setContent { HermesTheme { ChatScreen(current, Settings(), "Synthetic", true, {}, {}, {}, { null }, { error("not requested") }, {}, { c, visible -> c.setVisible(visible) }, remember { ChatDraft() }) } }
     }
-    @Test fun `completed receiptless copy stays inspectable through actual predating refresh and presentation actions`() {
+    @Test fun `ordinary receiptless reply stays in the transcript without copy warnings`() {
         val fixture = FirstHistoryReconciliationTest()
         fixture.withScreenController({ it.holdFirst = true; it.freezeFirst = true; it.toolRich = true }) { current, backend ->
             check(backend.firstEntered.await(10, TimeUnit.SECONDS))
             val load = checkNotNull(current.loadCompletion)
             val terminal = CompletableDeferred<Unit>()
-            current.afterCurrentEvent = { if(it == "message.complete") terminal.complete(Unit) }
-            val producers = current.continuationProducers
+            current.afterCurrentEvent = { if (it == "message.complete") terminal.complete(Unit) }
             current.send("early prompt", emptyList())
             withTimeout(10_000) { terminal.await() }
-            backend.release.countDown(); withTimeout(10_000) { load.await(); producers.toList().joinAll() }
+            backend.release.countDown(); withTimeout(10_000) { load.await() }
             show(current)
-            val result = "full tool result ".repeat(200)
-            val matcher = hasText(result, substring = true)
-            compose.onNodeWithTag("transcript").performScrollToNode(matcher)
-            compose.onNode(matcher).assertIsDisplayed()
-            compose.onAllNodesWithContentDescription(app.getString(R.string.chat_regenerate)).assertCountEquals(1)
-            compose.onNodeWithTag("transcript").performScrollToNode(hasContentDescription(app.getString(R.string.chat_regenerate)))
-            compose.onNodeWithContentDescription(app.getString(R.string.chat_regenerate)).assertIsDisplayed()
+            compose.onAllNodes(hasText(app.getString(R.string.chat_local_overlap))).assertCountEquals(0)
+            compose.onAllNodes(hasText(app.getString(R.string.chat_local_copy))).assertCountEquals(0)
+            compose.waitUntil(5_000) { compose.onAllNodes(hasText("done", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText("done", substring = true))
+            compose.onNodeWithText("done", substring = true).assertIsDisplayed()
+            compose.onAllNodes(hasText("full tool result", substring = true)).assertCountEquals(0)
+            assertThat(current.state.value.observations.single().frames).isNotEmpty()
+            assertThat(backend.prompts.get()).isEqualTo(1)
+        }
+    }
+    @Test fun `starting another turn does not hide the previous local conversation`() {
+        val fixture = FirstHistoryReconciliationTest()
+        fixture.withScreenController({}) { current, backend ->
+            check(backend.firstEntered.await(10, TimeUnit.SECONDS))
+            withTimeout(10_000) { checkNotNull(current.loadCompletion).await() }
+            for (prompt in listOf("first local prompt", "second local prompt")) {
+                val terminal = CompletableDeferred<Unit>()
+                current.afterCurrentEvent = { if (it == "message.complete") terminal.complete(Unit) }
+                current.send(prompt, emptyList())
+                withTimeout(10_000) { terminal.await() }
+            }
+            show(current)
+            // Markdown parsing is asynchronous; all these short rows fit in this viewport.
+            compose.waitUntil(5_000) { compose.onAllNodes(hasText("first local prompt")).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText("first local prompt"))
+            compose.onNodeWithText("first local prompt").assertIsDisplayed()
+            assertThat(current.state.value.observations).hasSize(2)
+            assertThat(backend.prompts.get()).isEqualTo(2)
+        }
+    }
+    @Test fun `refresh shows server history and keeps the unmatched reply only in recovery`() {
+        val fixture = FirstHistoryReconciliationTest()
+        fixture.withScreenController({ it.holdFirst = true; it.freezeFirst = true; it.toolRich = true }) { current, backend ->
+            check(backend.firstEntered.await(10, TimeUnit.SECONDS))
+            val load = checkNotNull(current.loadCompletion)
+            val terminal = CompletableDeferred<Unit>()
+            current.afterCurrentEvent = { if (it == "message.complete") terminal.complete(Unit) }
+            current.send("early prompt", emptyList())
+            withTimeout(10_000) { terminal.await() }
+            backend.release.countDown(); withTimeout(10_000) { load.await(); current.continuationProducers.toList().joinAll() }
             val retained = current.state.value.observations.single().items
-            compose.onNodeWithTag("transcript").performScrollToNode(hasText(app.getString(R.string.chat_local_collapse)))
-            compose.onNodeWithText(app.getString(R.string.chat_local_collapse)).performClick()
-            compose.onNode(matcher).assertDoesNotExist()
-            compose.onNodeWithText(app.getString(R.string.chat_local_reopen)).performClick()
-            compose.onNodeWithTag("transcript").performScrollToNode(matcher)
-            compose.onNode(matcher).assertIsDisplayed()
-            val before = current.loadCompletion
+            show(current)
+            compose.onNodeWithTag("transcript").performScrollToNode(hasTestTag("local-copies"))
+            compose.onNodeWithTag("local-copies").performTouchInput { click(center) }
             backend.holdSecond = true
             compose.onNodeWithTag("transcript").performScrollToNode(hasText(app.getString(R.string.chat_local_refresh)))
-            compose.onNodeWithText(app.getString(R.string.chat_local_refresh)).performClick()
+            compose.onNodeWithText(app.getString(R.string.chat_local_refresh)).performTouchInput { click(center) }
             check(backend.secondEntered.await(10, TimeUnit.SECONDS)) { "UI refresh did not enter HTTP" }
             val refresh = checkNotNull(current.loadCompletion)
-            assertThat(refresh).isNotSameInstanceAs(before)
             backend.secondRelease.countDown(); withTimeout(10_000) { refresh.await() }
             compose.waitForIdle()
-            compose.onNodeWithTag("transcript").performScrollToNode(matcher)
-            compose.onNode(matcher).assertIsDisplayed()
+            assertThat(current.state.value.currentObservationId).isNull()
+            compose.onAllNodes(hasText(app.getString(R.string.chat_local_overlap))).assertCountEquals(0)
+            compose.onAllNodes(hasText("done")).assertCountEquals(0)
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText("hi"))
+            compose.onNodeWithText("hi").assertIsDisplayed()
             assertThat(current.state.value.observations.single().items).isEqualTo(retained)
-            assertThat(current.state.value.storedHistory?.filterIsInstance<ChatItem.Assistant>()?.single()?.text).isEqualTo("hi")
+            assertThat(current.state.value.observations.single().reconciled).isFalse()
+            compose.onNodeWithTag("transcript").performScrollToNode(hasTestTag("local-copies"))
+            compose.onNodeWithTag("local-copies").performTouchInput { click(center) }
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText("done"))
+            compose.onNodeWithText("done").assertIsDisplayed()
             assertThat(backend.prompts.get()).isEqualTo(1)
         }
     }
