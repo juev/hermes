@@ -148,6 +148,13 @@ class ProfileLifetime private constructor(private val backing: Any) {
         if (epochs.containsKey(owner.profileId) || removals[owner.profileId] != owner.generation) null else block()
     }
 
+    /**
+     * Orders a socket's monitor after the publication guard, including shutdown of a retired
+     * socket. This only orders locks: callers still need publish/holds for owner admission.
+     * StateFlow delivery may synchronously re-enter this authority from inside a socket change.
+     */
+    internal fun <T> withSocketPublicationLock(block: () -> T): T = synchronized(guard) { block() }
+
     /** Short synchronous publication, ordered with generation replacement; never suspends. */
     fun <T> publish(owner: WorkOwner, block: () -> T): T? = synchronized(guard) {
         if (epochs[owner.profileId] != owner.generation) null else block()

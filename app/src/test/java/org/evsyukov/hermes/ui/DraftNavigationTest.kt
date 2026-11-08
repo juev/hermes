@@ -491,6 +491,9 @@ class DraftNavigationTest {
         // The user opens another server while the first server is still deleting.
         val second = profile("draft-late-two", otherServer)
         connect(second)
+        // A null chat also differs from the old controller. Wait for the initial controller
+        // bound to the replacement connection before opening and editing its stored chat.
+        await { model.chat.value?.let { model.draftOf(it) } != null }
         draftOf(open("s1")).text = "second server draft"
         val secondChat = checkNotNull(model.chat.value)
 

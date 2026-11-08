@@ -73,6 +73,12 @@ class HermesHttp(
         lifetime != null && owner != null -> lifetime.publish(owner, block)
         else -> block()
     }
+    /** Authority guard before socket monitor, even for a stop whose owner has been retired. */
+    internal fun <T> withSocketLock(socket: Any, block: () -> T): T {
+        val locked = { synchronized(socket) { block() } }
+        return if (lifetime == null) locked() else lifetime.withSocketPublicationLock(locked)
+    }
+
     suspend fun accessToken(owner: WorkOwner, force: Boolean = false): String? {
         if (!holds(owner)) throw SignInRequiredException("Retired request origin")
         return accessToken(force, owner.generation)
