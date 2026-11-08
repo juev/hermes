@@ -1,0 +1,30 @@
+name: KVM readiness
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/talkback-runtime.yml'
+      - 'scripts/talkback-ci/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kvm-readiness-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  kvm-readiness:
+    name: Hardware-only KVM readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unit suite
+        shell: bash
+        run: |
+          python3 -B -m unittest discover -s scripts/talkback-ci/tests -v
+      - name: Probe KVM
+        shell: bash
+        env:
+          HARNESS_ROOT: ${{ github.workspace }}
+          KVM_DEVICE: /dev/kvm
+        run: |
+          python3 -B "$HARNESS_ROOT/scripts/talkback-ci/probe.py" --device "$KVM_DEVICE"
