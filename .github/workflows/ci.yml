@@ -70,3 +70,28 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet cryptography http_ece
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests
+
+  # Minimal Android channel, including the actual documented dashboard loader.
+  android-channel-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install minimal SDK test dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/channel-venv"
+          "$RUNNER_TEMP/channel-venv/bin/pip" install -r server/hermes-android/requirements-test.txt
+      - name: Fetch the pinned dashboard SDK source
+        run: |
+          # Hermes intentionally does not publish wheels. Test the loader source,
+          # not an installation of the unrelated full agent/browser dependency set.
+          mkdir -p "$RUNNER_TEMP/hermes-sdk"
+          curl --fail --location --silent --show-error https://github.com/NousResearch/hermes-agent/archive/2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19.tar.gz -o "$RUNNER_TEMP/hermes-sdk.tar.gz"
+          tar -xzf "$RUNNER_TEMP/hermes-sdk.tar.gz" -C "$RUNNER_TEMP/hermes-sdk" --strip-components=1
+      - name: Exercise channel boundaries and measured loopback delivery
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          PYTHONPATH="$RUNNER_TEMP/hermes-sdk" "$RUNNER_TEMP/channel-venv/bin/python" -m unittest discover -s server/hermes-android/tests -v

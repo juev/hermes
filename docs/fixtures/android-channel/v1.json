@@ -1,0 +1,15 @@
+{
+  "provenance": "Synthetic protocol examples exercised by the channel tests; not production captures or credentials.",
+  "ticket_result": {"ticket": "fixture-single-use-ticket", "ttl_seconds": 20, "channel_version": 1},
+  "queued_submission": {"status": "queued", "admission_id": "fixture-admission", "ref": {"session_id": "fixture-live"}, "authority_epoch": 1},
+  "completion": {"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": "fixture-live", "seq": 113, "admission_id": "fixture-admission", "payload": {"status": "complete", "text": "Visible final", "persisted_turn": {"complete": true, "user_row_id": 1, "final_assistant_row_id": 4, "row_ids": [1, 2, 3, 4]}}}},
+  "history": {
+    "session_id": "fixture-stored", "profile": "default", "projection": "android-minimal-v1",
+    "pagination": {"limit": 50, "offset": 0, "total": 4, "order": "oldest"},
+    "messages": [{"id": 1, "role": "user", "content": "Fixture user"}, {"id": 2, "role": "assistant", "content": ""}, {"id": 3, "role": "tool", "content": "", "display_kind": "hidden"}, {"id": 4, "role": "assistant", "content": "Visible final"}],
+    "receipt_rows": [{"id": 1, "role": "user", "content": "Fixture user"}, {"id": 2, "role": "assistant", "content": "", "tool_calls": [{"id": "fixture-tool-call"}]}, {"id": 3, "role": "tool", "content": "", "tool_call_id": "fixture-tool-call"}, {"id": 4, "role": "assistant", "content": "Visible final"}]
+  },
+  "filtered_replay_window": {"events": [], "count": 0, "latest_seq": 113, "epoch": "fixture-epoch", "truncated": false},
+  "truncated_replay": {"events": [], "count": 0, "latest_seq": 113, "epoch": "fixture-new-epoch", "truncated": true, "snapshot_required": true},
+  "push": {"type": "turn", "session_id": "fixture-stored", "platform": "android", "channel": "android-minimal-v1", "channel_owner": "0000000000000000000000000000000000000000000000000000000000000000", "preview": "Visible final"}
+}

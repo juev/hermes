@@ -1,0 +1,12 @@
+# Minimal dashboard SDK/ASGI test dependencies, not the entire agent runtime.
+fastapi==0.133.1
+httpx==0.28.1
+websockets==15.0.1
+cryptography==50.0.2
+PyYAML>=6.0.2,<7
+ruamel.yaml>=0.18,<0.20
+rich>=13,<15
+platformdirs>=4,<5
+filelock>=3,<4
+packaging>=24
+python-dotenv>=1,<2

@@ -52,7 +52,7 @@ data class ChatSummary(
  */
 data class SessionUsage(val input: Long, val output: Long, val costUsd: Double?, val included: Boolean)
 
-data class HistoryPage(val rows: List<StoredMessage>, val session: String?, val profile: String?)
+data class HistoryPage(val rows: List<StoredMessage>, val session: String?, val profile: String?, val receiptRows: List<StoredMessage> = rows)
 
 /** A hit of the full-text search with the matching piece of text. */
 data class SearchHit(val chat: ChatSummary, val snippet: String, val role: String?)
@@ -76,7 +76,12 @@ data class ToolCallInfo(val id: String, val name: String, val arguments: String)
 class ChatPage(val chats: List<ChatSummary>, val total: Int)
 
 /** The chat routes of the dashboard that work over plain HTTP; the live chat goes through [GatewaySocket]. */
-class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null, private val owner: org.evsyukov.hermes.data.server.WorkOwner? = null) {
+class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null, private val owner: org.evsyukov.hermes.data.server.WorkOwner? = null) {
+    private val rawReads = reads
+    private val reads = object : Reads {
+        override suspend fun kept(path: String, query: Map<String, Any?>): JsonElement = rawReads.kept(http.chatPath(path), query)
+        override suspend fun fresh(path: String, query: Map<String, Any?>): JsonElement = rawReads.fresh(http.chatPath(path), query)
+    }
     /** The same reads answered from the phone's cache alone; null without a cache. Not for changes. */
     val cached: ChatApi? = cachedReads?.let { ChatApi(http, it, owner = owner) }
 
@@ -117,7 +122,11 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
 
     suspend fun history(id: String, limit: Int = 500): HistoryPage {
         val root = reads.kept("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
-        return HistoryPage((root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty(), root.string("session_id"), root.string("profile"))
+        val rows = (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+        val receipts = if (http.androidChannel && root.string("projection") == "android-minimal-v1")
+            (root["receipt_rows"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+        else rows
+        return HistoryPage(rows, root.string("session_id"), root.string("profile"), receipts)
     }
 
     /**
@@ -149,7 +158,8 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
                 archived?.let { put("archived", it) }
                 unread?.let { put("unread", it) }
             }
-        if (owner == null) http.patchJson("api/sessions/$id", body) else http.patchJson(owner, "api/sessions/$id", body)
+        val path = http.chatPath("api/sessions/$id")
+        if (owner == null) http.patchJson(path, body) else http.patchJson(owner, path, body)
     }
 
     suspend fun delete(id: String) {
@@ -159,7 +169,8 @@ class ChatApi(private val http: HermesHttp, private val reads: Reads = NetworkRe
             fence.revision?.let { append("&expected_revision=$it") }
             fence.generation?.let { append("&expected_generation=$it") }
         }
-        if (owner == null) http.delete(query) else http.delete(owner, query)
+        val path = http.chatPath(query)
+        if (owner == null) http.delete(path) else http.delete(owner, path)
     }
 
     /**

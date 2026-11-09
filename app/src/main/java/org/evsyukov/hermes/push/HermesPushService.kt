@@ -19,7 +19,7 @@ class HermesPushService : PushService() {
 
     override fun onMessage(message: UnifiedPushMessage, instance: String) {
         if (!message.decrypted) return
-        container.scope.launch { container.pushMessages.handle(message.content) }
+        container.scope.launch { container.pushMessages.handle(message.content, instance) }
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {

@@ -49,8 +49,12 @@ suspend fun withLocalPins(
     page: List<ChatSummary>,
     pins: Set<String>,
     admits: (ChatSummary) -> Boolean,
+    useLocalPins: Boolean = true,
     fetch: suspend (String) -> ChatSummary?,
 ): List<ChatSummary> {
+    // Native channel pins are already in its page. Do not fetch, import or
+    // remove the old dashboard's local pins through the new channel's 404s.
+    if (!useLocalPins) return page
     val listed = page.mapTo(HashSet()) { it.id }
     val beyond = (pins - listed).mapNotNull { fetch(it) }.filter(admits)
     return (page + beyond).map { if (!it.pinned && it.id in pins) it.copy(pinned = true) else it }

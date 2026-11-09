@@ -121,6 +121,7 @@ internal fun ServerEditContent(
     val source = draft ?: existing
     var name by remember(source) { mutableStateOf(source?.name ?: "Hermes") }
     var url by remember(source) { mutableStateOf(source?.baseUrl ?: "") }
+    var androidChannel by remember(source) { mutableStateOf(source?.androidChannel ?: false) }
     var proxyType by remember(source) { mutableStateOf(source?.proxy?.type ?: ProxyType.NONE) }
     var proxyHost by remember(source) { mutableStateOf(source?.proxy?.host ?: "") }
     var proxyPort by remember(source) { mutableStateOf(source?.proxy?.port?.takeIf { it > 0 }?.toString() ?: "") }
@@ -154,6 +155,7 @@ internal fun ServerEditContent(
         baseUrl = normalizeBaseUrl(url) ?: url.trim(),
         proxy = ProxySettings(proxyType, proxyHost.trim(), proxyPort.toIntOrNull() ?: 0, proxyUser, proxyPassword),
         tailnet = TailnetSettings(controlUrl.trim().trimEnd('/'), authKey.trim(), hostname.trim()),
+        androidChannel = androidChannel,
     )
 
     val valid = normalizeBaseUrl(url) != null &&
@@ -204,6 +206,13 @@ internal fun ServerEditContent(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            Text(stringResource(R.string.setup_connection), color = ChatTheme.colors.secondaryText, fontSize = 14.sp)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = !androidChannel, onClick = { androidChannel = false }, label = { Text(stringResource(R.string.setup_connection_dashboard)) })
+                FilterChip(selected = androidChannel, onClick = { androidChannel = true }, label = { Text(stringResource(R.string.setup_connection_channel)) })
+            }
+            if (androidChannel) Text(stringResource(R.string.setup_connection_channel_hint), color = ChatTheme.colors.faintText, fontSize = 13.sp)
 
             Text(stringResource(R.string.setup_route), color = ChatTheme.colors.secondaryText, fontSize = 14.sp)
             // Chips wrap: with a large system font four of them do not fit one line.

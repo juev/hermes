@@ -38,6 +38,20 @@ class ChatPinsTest {
     private lateinit var chats: ChatApi
     private lateinit var mutations: ChatMutations
 
+    @Test
+    fun `a channel page neither imports nor fetches old dashboard local pins`() = runBlocking<Unit> {
+        val fetched = mutableListOf<String>()
+        val page = listOf(chat("owned").copy(pinned = true))
+        val pins = setOf("legacy-foreign")
+        val result = withLocalPins(page, pins, ListMode.CHATS::admits, useLocalPins = false) { id ->
+            fetched += id
+            chat(id)
+        }
+        assertThat(fetched).isEmpty()
+        assertThat(result).containsExactlyElementsIn(page)
+        assertThat(pins).containsExactly("legacy-foreign")
+    }
+
     @Before
     fun setUp() {
         server.start()

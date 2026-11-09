@@ -12,9 +12,9 @@ data class ObservationFile(val name: String, val mime: String?, val base64: Stri
 @Serializable
 data class ObservedFrame(val origin: ReceiptOrigin, val type: String, val payload: JsonObject)
 @Serializable
-data class SubmitBinding(val key: String, val origin: ReceiptOrigin, val sent: String, val userRow: Long?, val admissible: Boolean)
+data class SubmitBinding(val key: String, val origin: ReceiptOrigin, val sent: String, val userRow: Long?, val admissible: Boolean, val admissionId: String? = null)
 @Serializable
-data class CompletionProof(val origin: ReceiptOrigin, val userRow: Long, val finalRow: Long?, val rows: List<Long>, val text: String?, val valid: Boolean)
+data class CompletionProof(val origin: ReceiptOrigin, val userRow: Long, val finalRow: Long?, val rows: List<Long>, val text: String?, val valid: Boolean, val admissionId: String? = null)
 @Serializable
 data class LocalObservation(
     val id: String = UUID.randomUUID().toString(),
@@ -76,7 +76,10 @@ internal class ObservationBook {
         val root = result as? JsonObject
         val row = positive(root?.get("user_row_id"))
         val status = (root?.get("status") as? JsonPrimitive)?.takeIf { it.isString }?.content
-        val binding = SubmitBinding(key, origin, sent, row, row != null && status == "streaming")
+        val native = (root?.get("admission_id") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+            ?.takeIf { status in setOf("queued", "started", "terminal") &&
+                (root["ref"] as? JsonObject)?.get("session_id") == JsonPrimitive(origin.live) && positive(root["authority_epoch"]) != null }
+        val binding = SubmitBinding(key, origin, sent, row, row != null && status == "streaming" || native != null, native)
         replace(group.copy(bindings = group.bindings + binding, proofs = (group.proofs + pending).distinct()))
     }
     @Synchronized fun semantic(origin: ReceiptOrigin, type: String, payload: JsonObject) {
@@ -92,8 +95,8 @@ internal class ObservationBook {
         replace(group.copy(items = if (start >= 0) working.drop(start) else group.items, completed = true, error = error))
     }
     @Synchronized fun sealActive() { groups.firstOrNull { it.id == active }?.let { replace(it.copy(completed = true)) }; active = null }
-    @Synchronized fun terminal(origin: ReceiptOrigin, payload: JsonObject, working: List<ChatItem>, error: String?) {
-        val receipt = parseProof(origin, payload)
+    @Synchronized fun terminal(origin: ReceiptOrigin, payload: JsonObject, working: List<ChatItem>, error: String?, admissionId: String? = null) {
+        val receipt = parseProof(origin, payload)?.copy(admissionId = admissionId?.takeIf { it.isNotBlank() })
         if (receipt != null) pending += receipt
         groups.toList().forEach { group ->
             if (group.profile != origin.profile || group.generation != origin.generation) return@forEach
@@ -137,11 +140,14 @@ internal class ObservationBook {
             val bindings = group.bindings.filter { it.key == key }.distinct()
             if (bindings.size != 1) return false
             val binding = bindings.single()
-            val user = binding.userRow ?: return false
-            if (!binding.admissible || !bound.add(user) || binding.origin.profile != group.profile || binding.origin.generation != group.generation || binding.origin.remoteProfile != remoteProfile) return false
-            val candidates = group.proofs.filter { it.origin == binding.origin && it.userRow == user }.distinct()
+            if (!binding.admissible || binding.origin.profile != group.profile || binding.origin.generation != group.generation || binding.origin.remoteProfile != remoteProfile) return false
+            val candidates = group.proofs.filter { proof -> proof.origin == binding.origin &&
+                if (binding.admissionId != null) proof.admissionId == binding.admissionId && (binding.userRow == null || binding.userRow == proof.userRow)
+                else proof.userRow == binding.userRow }.distinct()
             if (candidates.size != 1) return false
             val proof = candidates.single()
+            val user = binding.userRow ?: proof.userRow
+            if (!bound.add(user)) return false
             if (!proof.valid || proof.rows.any { it !in byId || !addressed.add(it) }) return false
             val raw = proof.rows.map { byId.getValue(it) }
             if (raw.any { it.hidden || it.role !in setOf("user", "assistant", "tool") }) return false
