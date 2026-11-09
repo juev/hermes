@@ -32,22 +32,22 @@ class HistoryRefreshTest {
             }
             val retained = current.working.items
             val observation = current.working.currentObservationId
-            backend.frozen = "not valid JSON"
-            backend.holdSecond = true
             val previousLoad = current.loadCompletion
             val completedBeforeRefresh = current.completedLoadCycles.get()
+            backend.frozen = "not valid JSON"
             current.refreshHistory()
-            check(backend.secondEntered.await(10, TimeUnit.SECONDS))
-            val load = checkNotNull(current.loadCompletion)
-            assertThat(load).isNotSameInstanceAs(previousLoad)
-            backend.secondRelease.countDown()
             withTimeout(10_000) {
+                // An ordinal HTTP latch can already belong to an earlier read. This
+                // scenario needs no held response: await the actual new load instead.
+                while (current.loadCompletion === previousLoad) kotlinx.coroutines.yield()
+                val load = checkNotNull(current.loadCompletion)
+                assertThat(load).isNotSameInstanceAs(previousLoad)
                 load.await()
                 while (current.completedLoadCycles.get() <= completedBeforeRefresh) kotlinx.coroutines.yield()
             }
             com.google.common.truth.Truth.assertWithMessage(
                 "Failed read outcome: histories=${backend.histories.get()}, cycles=${current.completedLoadCycles.get()}, " +
-                    "accepted=${current.acceptedReloadRequests.get()}, loadIsLatest=${current.loadCompletion === load}, " +
+                    "accepted=${current.acceptedReloadRequests.get()}, " +
                     "latestComplete=${current.loadCompletion?.isCompleted}, loading=${current.working.loading}, " +
                     "refreshes=${current.working.historyRefresh}",
             ).that(current.working.error).isNotNull()
