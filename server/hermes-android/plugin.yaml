@@ -1,0 +1,8 @@
+name: hermes-android
+version: 0.1.0
+description: "Minimal, authenticated Android conversation channel with scoped Web Push."
+requires_hermes: ">=0.23.0"
+author: "Denis Evsyukov"
+provides_hooks:
+  - post_llm_call
+  - post_compaction

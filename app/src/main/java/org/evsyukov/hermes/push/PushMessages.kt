@@ -16,6 +16,8 @@ data class PushMessage(
     val platform: String = "",
     val job: String? = null,
     val preview: String = "",
+    val channel: String = "",
+    @SerialName("channel_owner") val channelOwner: String = "",
 ) {
     companion object {
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
@@ -35,8 +37,9 @@ data class PushMessage(
  * app already announced is that same answer, not a second message.
  */
 class PushMessages(private val container: AppContainer) {
-    suspend fun handle(content: ByteArray) {
+    suspend fun handle(content: ByteArray, instance: String? = null) {
         val message = PushMessage.parse(content) ?: return
+        if (!container.push.accepts(message, instance)) return
         val notifications = container.notifications
         if (message.type == "test") {
             notifications.activity("push-test", container.strings.get(R.string.push_test_title), container.strings.get(R.string.push_test_text))

@@ -37,6 +37,8 @@ data class ServerProfile(
     val baseUrl: String,
     val proxy: ProxySettings = ProxySettings(),
     val tailnet: TailnetSettings = TailnetSettings(),
+    /** Explicit opt-in to the owned minimal-delivery plugin; no automatic legacy fallback. */
+    val androidChannel: Boolean = false,
 ) {
     /** The parsed address without a trailing slash, or null while it is not a valid http(s) URL. */
     val url: HttpUrl? get() = normalizeBaseUrl(baseUrl)?.toHttpUrlOrNull()

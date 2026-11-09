@@ -45,6 +45,9 @@ class ServerSession(
 ) {
     private val authority = store.authority
     val observations get() = store.observations
+    val observationServer: String get() = if (profile.androidChannel)
+        requireNotNull(profile.url).newBuilder().addPathSegments("api/plugins/hermes-android").build().toString()
+    else profile.url.toString()
 
     /** Suspension gates for actual native/cleanup boundary fixtures; absent in app use. */
     @Volatile
@@ -63,6 +66,7 @@ class ServerSession(
         saveTokensAt = { tokens, at -> authority.commitRefresh(store, profile.id, at, tokens) },
         credentialsAt = { at -> authority.credentials(profile.id, at) },
         holdsAt = { at -> authority.holds(profile.id, at) },
+        androidChannel = profile.androidChannel,
     )
     /** False once the server left the phone or was signed out, so a late answer is not kept again. */
     @Volatile
@@ -105,9 +109,9 @@ class ServerSession(
                 catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
                 catch (error: Exception) { val first = failure; if (first == null) failure = error else if (first !== error) first.addSuppressed(error) }
             }
-            obligation { cache?.drop(profile.id, cacheKey("api/sessions/$id", emptyMap()), wanted) }
-            obligation { cache?.forget(profile.id, "api/sessions/$id/", wanted) }
-            obligation { if (wanted()) observations.clearAdmitted(profile.id, profile.url.toString(), id) }
+            obligation { cache?.drop(profile.id, cacheKey(http.chatPath("api/sessions/$id"), emptyMap()), wanted) }
+            obligation { cache?.forget(profile.id, http.chatPath("api/sessions/$id/"), wanted) }
+            obligation { if (wanted()) observations.clearAdmitted(profile.id, observationServer, id) }
             failure?.let { throw it }
         }
     }

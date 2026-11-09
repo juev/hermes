@@ -64,6 +64,7 @@ class HermesHttp(
     private val credentialsAt: ((Long) -> Tokens?)? = null,
     /** Whether a generation is still the current authority; a stale chain sends nothing. */
     private val holdsAt: ((Long) -> Boolean)? = null,
+    val androidChannel: Boolean = false,
 ) {
     fun owner(): WorkOwner? = lifetime?.owner(profileId)
     fun holds(owner: WorkOwner?): Boolean = if (owner == null) lifetime == null else
@@ -87,6 +88,10 @@ class HermesHttp(
     private val refreshLock = Mutex()
 
     fun endpoint(path: String): HttpUrl.Builder = base.newBuilder().addPathSegments(path.trimStart('/'))
+
+    fun chatPath(path: String): String = if (androidChannel &&
+        (path == "api/sessions" || path.startsWith("api/sessions/") || path.startsWith("api/sessions?"))
+    ) "api/plugins/hermes-android/$path" else path
 
     /** A valid access token, refreshed when it is about to run out; null on a server without sign-in. */
     suspend fun accessToken(force: Boolean = false): String? = accessToken(force, generation())

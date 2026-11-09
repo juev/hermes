@@ -167,7 +167,7 @@ class ChatController(
         val transport = socket.transport.value
         val real = socket as? org.evsyukov.hermes.data.remote.GatewaySocket
         val eligibleTransport = if (real != null && real.ownerOn(transport) != owner) 0L else transport
-        return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty()), publicObservationProducer, if (showStoredHistory) current.items else null)
+        return Work(owner, _state.value.storedId, eligibleTransport, inheritedTicket ?: session.observations.capture(owner.profileId, session.observationServer, _state.value.storedId.orEmpty()), publicObservationProducer, if (showStoredHistory) current.items else null)
     }
     private val initialWork = captureWork(initialOwner)
     internal val initialWorkOwner: WorkOwner get() = initialWork.owner
@@ -722,11 +722,15 @@ class ChatController(
                 // chat would open on its history alone and the tools and answer of the running turn
                 // would never arrive.
                 val since = heardLive.get()
-                val lookup = if (summary?.active == true) null else liveSession(id)
+                // The plugin's registry is already the channel boundary. Canonical
+                // read-only resume can mount an ended chat without restarting it;
+                // the global active list intentionally excludes native tool sources.
+                val ownedChannel = session.profile.androidChannel
+                val lookup = if (ownedChannel || summary?.active == true) null else liveSession(id)
                 val live = lookup?.getOrNull()
                 // Live nowhere the gateway knows: none of the chat's questions can still wait for an answer.
                 if (summary != null && lookup?.isSuccess == true && live == null) closeUnlisted(emptySet(), since)
-                val joined = if (summary?.active == true || live != null) {
+                val joined = if (ownedChannel || summary?.active == true || live != null) {
                     runCatching {
                         joining.withLock {
                             // A join over the connection the socket is on now needs no other; one over a
@@ -1055,7 +1059,7 @@ class ChatController(
         if (_state.value.running && observationBook.active == null) {
             val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
             if (tail != null) {
-                val id = observationBook.continuation(answer.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), answer.owner.generation, tail)
+                val id = observationBook.continuation(answer.owner.profileId, session.observationServer, _state.value.storedId.orEmpty(), answer.owner.generation, tail)
                 observationWrites[id] = ObservationWrite(answer.owner, liveObservationTicket)
                 edit { it.copy(currentObservationId = id, observations = observationBook.snapshot()) }
                 stageObservations(); persistObservations()
@@ -1132,7 +1136,7 @@ class ChatController(
                 if (resumed && observationBook.active == null) {
                     val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
                     if (tail != null) {
-                        val id = observationBook.continuation(joinAnswer.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), joinAnswer.owner.generation, tail)
+                        val id = observationBook.continuation(joinAnswer.owner.profileId, session.observationServer, _state.value.storedId.orEmpty(), joinAnswer.owner.generation, tail)
                         observationWrites[id] = ObservationWrite(joinAnswer.owner, liveObservationTicket)
                         edit { it.copy(currentObservationId = id, observations = observationBook.snapshot()) }
                         stageObservations(); persistObservations()
@@ -1192,7 +1196,7 @@ class ChatController(
             edit { it.copy(items = it.items + ChatItem.User(key, text, shown, delivery = Delivery.SENDING, time = nowSeconds()), running = true, error = null) }
             val localUser = _state.value.items.last() as ChatItem.User
             observationBook.active?.let { id -> observationWrites[id]?.let { if (!session.observations.valid(it.ticket, _state.value.storedId.orEmpty())) observationBook.sealActive() } }
-            val observationId = observationBook.begin(origin.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.owner.generation, localUser,
+            val observationId = observationBook.begin(origin.owner.profileId, session.observationServer, _state.value.storedId.orEmpty(), origin.owner.generation, localUser,
                 attachments.map { ObservationFile(it.name, it.mime, Base64.getEncoder().encodeToString(it.bytes), key) })
             observationWrites.getOrPut(observationId) { ObservationWrite(origin.owner, checkNotNull(origin.observationTicket)) }
             stageObservations()
@@ -1348,7 +1352,7 @@ class ChatController(
         val text = again.sent
         val oldFiles = observationBook.snapshot().flatMap { it.files }.filter { it.userKey == lastUser.key }.map { it.copy(userKey = again.key) }
         observationBook.active?.let { id -> observationWrites[id]?.let { if (!session.observations.valid(it.ticket, _state.value.storedId.orEmpty())) observationBook.sealActive() } }
-            val observationId = observationBook.begin(origin.owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.owner.generation, again, oldFiles)
+            val observationId = observationBook.begin(origin.owner.profileId, session.observationServer, _state.value.storedId.orEmpty(), origin.owner.generation, again, oldFiles)
         observationWrites[observationId] = ObservationWrite(origin.owner, checkNotNull(origin.observationTicket))
         stageObservations()
         edit { it.copy(observations = observationBook.snapshot(), currentObservationId = observationId) }
@@ -1858,7 +1862,7 @@ class ChatController(
                 if (observed.none { it.id == observationBook.active && !it.completed }) {
                     val tail = _state.value.items.lastOrNull() as? ChatItem.Assistant
                     if (tail != null && observed.none { row -> row.items.any { it.key == tail.key } }) {
-                        val id = observationBook.continuation(origin.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty(), origin.generation, tail)
+                        val id = observationBook.continuation(origin.profileId, session.observationServer, _state.value.storedId.orEmpty(), origin.generation, tail)
                         observationWrites[id] = ObservationWrite(origin, operation().observationTicket ?: liveObservationTicket)
                         edit { it.copy(currentObservationId = id) }
                     }
@@ -1868,7 +1872,7 @@ class ChatController(
                 syncObservations()
             }
             if (event.type == "message.complete" || event.type == "error") {
-                observationBook.terminal(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.payload, _state.value.items, _state.value.error)
+                observationBook.terminal(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.payload, _state.value.items, _state.value.error, admissionId = event.admissionId)
                 syncObservations()
             }
             afterCurrentEvent?.invoke(event.type)
@@ -1894,7 +1898,7 @@ class ChatController(
 
     private fun syncObservations() {
         val page = observedHistory
-        val groups = if (page == null) observationBook.snapshot() else observationBook.reconcile(page.rows, page.session, page.profile, operation().owner.generation)
+        val groups = if (page == null) observationBook.snapshot() else observationBook.reconcile(page.receiptRows, page.session, page.profile, operation().owner.generation)
         val retired = groups.filter { it.reconciled }.flatMap { it.items }.mapTo(HashSet()) { it.key }
         edit { it.copy(observations = groups, items = if (retired.isEmpty()) it.items else it.items.filterNot { item -> item.key in retired }) }
         stageObservations()
@@ -1904,7 +1908,7 @@ class ChatController(
     private fun stageObservations() {
         observationBook.snapshot().forEach { row -> observationWrites[row.id]?.let { session.observations.stage(it.owner, it.ticket, row) } }
     }
-    private fun observationWarning(owner: WorkOwner) = session.observations.hasFailures(owner.profileId, session.profile.url.toString(), _state.value.storedId.orEmpty())
+    private fun observationWarning(owner: WorkOwner) = session.observations.hasFailures(owner.profileId, session.observationServer, _state.value.storedId.orEmpty())
     private suspend fun saveObservation(pair: Pair<ObservationWrite, LocalObservation>) {
         val id = pair.second.id
         try {
@@ -1927,7 +1931,7 @@ class ChatController(
         }
     }
     private suspend fun restoreObservations(owner: WorkOwner, id: String) {
-        val lineage = session.profile.url.toString()
+        val lineage = session.observationServer
         val saved = try { session.observations.load(owner, lineage, id) }
         catch (cancel: CancellationException) { throw cancel }
         catch (_: Exception) { session.observations.pending(owner, lineage, id) }
@@ -1945,7 +1949,7 @@ class ChatController(
     fun reviewObservation(id: String, collapsed: Boolean) = withRoot { origin ->
         synchronized(lock) {
             val row = observationBook.snapshot().firstOrNull { it.id == id } ?: return@synchronized
-            val ticket = session.observations.capture(origin.owner.profileId, session.profile.url.toString(), row.session)
+            val ticket = session.observations.capture(origin.owner.profileId, session.observationServer, row.session)
             observationBook.collapse(id, collapsed)
             edit { it.copy(observations = observationBook.snapshot()) }
             recordContinuation(scope.launch(Dispatchers.IO) {

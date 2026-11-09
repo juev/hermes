@@ -543,7 +543,7 @@ class MainViewModel(
      */
     private suspend fun withPins(connection: Connection, api: ChatApi, chats: List<ChatSummary>, mode: ListMode, forgetGone: Boolean, owner: WorkOwner): List<ChatSummary> {
         val server = connection.session.profile.id
-        return withLocalPins(chats, container.pins.of(server), mode::admits) { id ->
+        return withLocalPins(chats, container.pins.of(server), mode::admits, useLocalPins = !connection.session.profile.androidChannel) { id ->
             try {
                 api.get(id)
             } catch (e: CancellationException) {

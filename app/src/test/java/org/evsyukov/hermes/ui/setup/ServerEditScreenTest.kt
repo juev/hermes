@@ -97,6 +97,23 @@ class ServerEditScreenTest {
     }
 
     @Test
+    fun `minimal channel is an explicit saved connection choice rather than silent fallback`() {
+        val existing = directProfile()
+        var saved: ServerProfile? = null
+        var checked: ServerProfile? = null
+        show(TailnetStatus(available = false), existing = existing, onSave = { saved = it }, onCheck = { checked = it; "OK" })
+        compose.onNodeWithText("Android channel plugin").performScrollTo().performClick()
+        compose.onNodeWithText(string(R.string.setup_check)).performScrollTo().performClick()
+        compose.waitForIdle()
+        assertThat(checked?.androidChannel).isTrue()
+        compose.onNodeWithText(string(R.string.common_save)).performScrollTo().performClick()
+        compose.waitForIdle()
+        assertThat(saved?.androidChannel).isTrue()
+        assertThat(saved?.id).isEqualTo(existing.id)
+        assertThat(saved?.baseUrl).isEqualTo(existing.baseUrl)
+    }
+
+    @Test
     fun `without the embedded node a new server cannot pick Tailscale and is told what to use instead`() {
         show(TailnetStatus(available = false))
 

@@ -28,6 +28,23 @@ class ObservationEvidenceTest {
         return b
     }
     private fun matched(b: ObservationBook, raw: List<StoredMessage> = rows, session: String = "session", profile: String = "remote") = b.reconcile(raw, session, profile, 2).single().reconciled
+    @Test fun `a canonical queued admission retires only through its exact completion receipt and raw rows`() {
+        fun admitted(admission: String): ObservationBook {
+            val b = ObservationBook()
+            val id = b.begin("p", "https://synthetic/", "session", 2, user, emptyList())
+            b.bind(id, user.key, origin, "same", buildJsonObject {
+                put("status", "queued"); put("admission_id", "native-a1"); put("authority_epoch", 1)
+                putJsonObject("ref") { put("session_id", "live") }
+            })
+            b.terminal(origin, completion(), listOf(user, answer), null, admissionId = admission)
+            return b
+        }
+        assertThat(matched(admitted("native-a1"))).isTrue()
+        assertThat(matched(admitted("native-a2"))).isFalse()
+        assertThat(matched(admitted("native-a1"), rows.take(1))).isFalse()
+        assertThat(matched(book(binding = buildJsonObject { put("status", "queued"); put("admission_id", "native-a1") }))).isFalse()
+    }
+
     @Test fun `complete ACK first proof matches only its addressed rows`() { assertThat(matched(book())).isTrue() }
     @Test fun `completion before ACK uses exact binding rather than event order`() { assertThat(matched(book(first = true))).isTrue() }
     @Test fun `a predating page cannot retire a completed local answer`() { assertThat(matched(book(), rows.take(1))).isFalse() }

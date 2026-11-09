@@ -1,0 +1,10 @@
+{
+  "name": "hermes-android",
+  "label": "Android channel",
+  "description": "Owned Android conversations with minimal delivery",
+  "icon": "Smartphone",
+  "version": "0.1.0",
+  "tab": {"hidden": true},
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

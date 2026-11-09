@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicLong
  * An event of a session. [transport] is not on the wire: it is the connection, by
  * [GatewayChannel.transport], the frame came over, 0 for one the app made itself.
  */
-data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject, val transport: Long = 0L, val owner: WorkOwner? = null)
+data class GatewayEvent(val type: String, val sessionId: String?, val seq: Long?, val payload: JsonObject, val transport: Long = 0L, val owner: WorkOwner? = null, val admissionId: String? = null)
 
 /**
  * A question the server asks the client (approval, clarify); answered with [GatewaySocket.respond].
@@ -339,10 +339,15 @@ class GatewaySocket(
 
     /** A ticket lives 30 seconds and opens one socket; a server without sign-in takes no ticket. */
     private suspend fun socketUrl(owner: WorkOwner?): String {
-        val url = http.endpoint("api/ws")
+        val url = http.endpoint(if (http.androidChannel) "api/plugins/hermes-android/ws" else "api/ws")
         val token = if (owner == null) http.accessToken() else http.accessToken(owner)
-        if (token != null) {
-            val ticket = (if (owner == null) http.postJson("api/auth/ws-ticket") else http.postJson(owner, "api/auth/ws-ticket")).jsonObject.string("ticket")
+        if (token != null || http.androidChannel) {
+            val path = if (http.androidChannel) "api/plugins/hermes-android/ws-ticket" else "api/auth/ws-ticket"
+            val answer = (if (owner == null) http.postJson(path) else http.postJson(owner, path)).jsonObject
+            if (http.androidChannel && answer.long("channel_version") != 1L) {
+                throw IOException(strings.get(R.string.error_channel_version))
+            }
+            val ticket = answer.string("ticket")
             url.addQueryParameter("ticket", ticket)
         }
         val built = url.build().toString()
@@ -505,6 +510,7 @@ class GatewaySocket(
                     payload = params["payload"] as? JsonObject ?: JsonObject(emptyMap()),
                     transport = number,
                     owner = owner,
+                    admissionId = (params["admission_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content,
                 )
                 if (event.type == "gateway.ready") {
                     onReady(event.payload, via, number, gate)
