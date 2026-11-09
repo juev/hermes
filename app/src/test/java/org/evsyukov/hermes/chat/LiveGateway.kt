@@ -9,6 +9,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -158,6 +159,11 @@ internal class LiveGateway : GatewayChannel {
     /** Returns once the chat has taken every event sent before: an event of another session follows them. */
     suspend fun deliver() {
         _events.emit(GatewayEvent("session.info", "elsewhere", null, JsonObject(emptyMap())))
+    }
+
+    /** Emitting to a SharedFlow without subscribers silently drops the synthetic request. */
+    suspend fun awaitRequestCollector() {
+        _requests.subscriptionCount.first { it > 0 }
     }
 
     /** Returns once the chat has taken every question sent before: a question of another session follows them. */
