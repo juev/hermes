@@ -796,8 +796,46 @@ class QuestionChatTest {
     }
 
     @Test
+    fun `a load in progress can confirm the replacement before its count is announced`() = runBlocking<Unit> {
+        val chat = opened()
+        withTimeout(5_000) { while (chat.completedLoadCycles.get() == 0L) delay(10) }
+        chat.asked("r1", "Which file?")
+        val history = server.holdHistory()
+        try {
+            chat.reload()
+            check(history.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val oldLoad = checkNotNull(chat.loadCompletion)
+            gateway.replaceUnheard()
+            chat.answerQuestion("r1", mapOf("q0" to "stale"))
+            chat.cancelQuestion("r1")
+            assertThat(gateway.responses).isEmpty()
+            gateway.heard()
+            chat.until { !it.questions.single().confirmed }
+            history.release.countDown()
+            withTimeout(5_000) { oldLoad.await() }
+            chat.until { it.questions.single().confirmed && chat.joinedTransport == gateway.transport.value }
+            withTimeout(5_000) { checkNotNull(chat.loadCompletion).await() }
+            // READY permits this load's genuine replacement join, even before capabilities/count.
+            // Unconfirmed is not a stable state while that older load can still finish.
+            assertThat(gateway.connections.value).isEqualTo(1)
+            assertThat(gateway.count("session.resume")).isEqualTo(2)
+            chat.answerQuestion("r1", mapOf("q0" to "notes.md"))
+            chat.answerQuestion("r1", mapOf("q0" to "duplicate"))
+            assertThat(gateway.responses.map { it.id }).containsExactly("r1")
+        } finally {
+            history.release.countDown()
+        }
+    }
+
+    @Test
     fun `an answer the moment its connection is replaced, before anything has heard of it, does not go`() = runBlocking<Unit> {
         val chat = opened()
+        // This scenario isolates replacement of a settled join. `opened` observes visible
+        // streaming state, not completion of the initial load loop: a still-finishing load may
+        // legitimately resume the READY replacement before its count is announced.
+        withTimeout(5_000) { while (chat.completedLoadCycles.get() == 0L) delay(10) }
+        assertThat(checkNotNull(chat.loadCompletion).isCompleted).isTrue()
+        assertThat(gateway.count("session.resume")).isEqualTo(1)
         chat.asked("r1", "Which file?")
 
         // Lost and replaced at once: the socket is READY on a new connection, the card still shows confirmed.

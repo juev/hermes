@@ -2305,12 +2305,16 @@ class LocalActionLifetimeTest {
             settle(beta.id, betaServer, since)
             val current = container.connection.value!!
             val currentCheck = vm.accessProducer
+            // HTTP access/list completion does not mean the independent socket handshake
+            // finished. Establish the live transport before releasing the retired status.
+            val transport = withTimeout(10_000) { current.socket.transport.first { it > 0L } }
             hold.release.countDown()
             withTimeout(10_000) { old.join() }
             assertThat(old.isCancelled).isTrue()
             assertThat(vm.access.value).isEqualTo(Access.OK)
             assertThat(vm.accessProducer).isSameInstanceAs(currentCheck)
             assertThat(current.socket.transport.value).isGreaterThan(0L)
+            assertThat(current.socket.transport.value).isEqualTo(transport)
             assertThat(origin.socket.transport.value).isEqualTo(0L)
             assertThat(alphaServer.requests.filter { it.url.encodedPath == "/api/system/stats" }).isEmpty()
         } finally {

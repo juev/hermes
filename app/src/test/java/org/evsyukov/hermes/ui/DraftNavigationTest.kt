@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.evsyukov.hermes.AppContainer
+import org.evsyukov.hermes.Connection
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.LiveGateway
 import org.evsyukov.hermes.chat.LiveServer
@@ -65,6 +66,8 @@ class DraftNavigationTest {
 
     internal lateinit var container: AppContainer
     private var vm: MainViewModel? = null
+    private val connectionInputs = java.util.concurrent.CopyOnWriteArrayList<Triple<Connection, ServerProfile, Long?>>()
+    private val writePhases = mutableListOf<DraftRoomWritePhase>()
     private val driver = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     internal var joinDeadlineMillis = 5_000L
 
@@ -93,10 +96,12 @@ class DraftNavigationTest {
         val ownedServers = listOfNotNull(firstServer, secondServer)
         val roots = listOfNotNull(driver.coroutineContext[Job], vm?.viewModelScope?.coroutineContext?.get(Job), app?.scope?.coroutineContext?.get(Job))
         var joined = false
+        var phasesClosed = false
         val steps = mutableListOf<suspend () -> Unit>(
             { ownedServers.forEach { it.releaseCreate() } },
             { ownedServers.forEach { it.releaseDelete() } },
             { ownedServers.forEach { it.historyGate?.countDown() } },
+            { writePhases.forEach { it.releaseAll() } },
             { vm?.chat?.value?.close() },
             { app?.connection?.value?.socket?.stop() },
             *roots.map { root -> suspend { root.cancel() } }.toTypedArray(),
@@ -106,6 +111,14 @@ class DraftNavigationTest {
             },
             {
                 if (joined) {
+                    // A registry snapshot cannot exclude later launches. Stop and join every
+                    // owning root before detaching a phase or closing its dependent resources.
+                    runCleanupSteps(writePhases.map { phase -> suspend { phase.close(::idle) } })
+                    phasesClosed = true
+                }
+            },
+            {
+                if (joined && phasesClosed) {
                     // No global DataStore lifetime is inferred: this is a serialized reset after our producers finish.
                     val close: () -> Unit = {
                         runBlocking {
@@ -182,7 +195,9 @@ class DraftNavigationTest {
         try { WorkManager.getInstance(context) } catch (_: IllegalStateException) {
             WorkManager.initialize(context, Configuration.Builder().build())
         }
-        container = AppContainer(context, PlainCipher)
+        container = AppContainer(context, PlainCipher, connectionConstructionObserver = { connection, profile, incarnation ->
+            connectionInputs += Triple(connection, profile, incarnation)
+        })
     }
 
     internal fun start(profile: ServerProfile): MainViewModel {
@@ -190,16 +205,28 @@ class DraftNavigationTest {
         // A profile left in the shared synthetic DataStore must not become this case's fallback.
         runBlocking { container.servers.clearSyntheticServers() }
         connect(profile)
-        return MainViewModel(container).also { vm = it }
+        return MainViewModel(container).also { model ->
+            vm = model
+            await { model.chat.value?.let { model.draftOf(it) != null } == true }
+        }
     }
 
     private fun connect(profile: ServerProfile) {
         val previous = vm?.chat?.value
         onMain { container.servers.save(profile) }
-        runBlocking { withTimeout(10_000) { container.connection.first { it?.session?.profile == profile } } }
+        val intendedIncarnation = container.lifetime.incarnations.value[profile.id]
+        runBlocking { withTimeout(10_000) {
+            container.connection.first { candidate ->
+                candidate?.session?.profile == profile && connectionInputs.any {
+                    it.first === candidate && it.second == profile && it.third == intendedIncarnation
+                }
+            }
+        } }
         // The view model follows the connection on the main looper; a test that opens a chat at once
         // must not still see the controller of the previous server.
-        if (previous != null) await { vm?.chat?.value !== previous }
+        if (previous != null) await {
+            vm?.let { model -> model.chat.value?.let { it !== previous && model.draftOf(it) != null } } == true
+        }
     }
 
     private fun shown(): ChatController {
@@ -214,7 +241,7 @@ class DraftNavigationTest {
 
     private fun open(id: String?): ChatController {
         val model = checkNotNull(vm)
-        if (id == null) model.newChat() else model.openChat(id)
+        onMain { if (id == null) model.newChat() else model.openChat(id) }
         idle()
         return shown()
     }
@@ -604,13 +631,13 @@ class DraftNavigationTest {
     /** Both cases own the same installed phase; only the regression enables its independent probe. */
     private fun heldRoomSignout(probe: Boolean = false) {
         acquireContainer()
-        val phase = DraftRoomWritePhase(container.responses, probe)
+        val phase = DraftRoomWritePhase(container.responses, probe).also { writePhases += it }
         var primary: Throwable? = null
         try { heldRoomSignoutScenario(phase, probe) } catch (failure: Throwable) {
             primary = failure
             throw failure
         } finally {
-            try { phase.close() } catch (cleanup: Throwable) {
+            try { phase.releaseAll() } catch (cleanup: Throwable) {
                 val failure = primary
                 if (failure == null) throw cleanup else if (failure !== cleanup) failure.addSuppressed(cleanup)
             }
@@ -896,6 +923,7 @@ class DraftNavigationTest {
         fun complete(on: LiveServer, controller: ChatController, text: String): org.evsyukov.hermes.chat.LocalObservation {
             val writes = controller.continuationProducers
             model.chatShown(controller, true)
+            await { controller.loadCompletion != null }
             onMain {
                 checkNotNull(controller.loadCompletion).await()
                 controller.send(text, listOf(LocalAttachment("note.txt", "text/plain", byteArrayOf(7))))

@@ -163,7 +163,11 @@ class QuestionCardTest {
     }
 
     private fun ask(id: String, params: JsonObject) {
-        runBlocking { gateway.ask(id, "clarify", params) }
+        runBlocking { withTimeout(5_000) {
+            gateway.awaitRequestCollector()
+            gateway.ask(id, "clarify", params)
+            gateway.deliverRequests()
+        } }
         waitFor(hasTestTag("question:$id"))
     }
 

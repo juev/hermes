@@ -3,8 +3,7 @@ package org.evsyukov.hermes.ui
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+
 import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.server.WorkOwner
 import java.util.concurrent.ConcurrentHashMap
@@ -66,10 +65,10 @@ internal class DraftRoomWritePhase(private val cache: ResponseCache, private val
     }
 
     /** Actual captured writer exits precede detaching callbacks; outer fixture also joins its roots. */
-    fun close() {
+    fun close(pump: () -> Unit) {
         releaseAll()
         try {
-            runBlocking { withTimeout(10_000) { producers.toList().forEach { it.join() } } }
+            check(joinDraftJobs(producers.toList(), 10_000, pump)) { "write phase producers did not finish" }
             check(producers.all { it.isCompleted }) { "write phase producers remain unjoined" }
             if (probe) {
                 println("ROOM_PHASE_CLEANUP independent releases complete; capturedRegisteredJobsJoined=${producers.size}; attributedOtherWrites=${otherWrites.size}; selectedCompleted=${selected?.child?.isCompleted}")

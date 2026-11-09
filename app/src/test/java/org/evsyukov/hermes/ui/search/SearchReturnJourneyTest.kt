@@ -119,6 +119,7 @@ class SearchReturnJourneyTest {
     private lateinit var container: AppContainer
     private lateinit var server: MockWebServer
     private lateinit var vm: MainViewModel
+    private var beforeReplacementWait: (suspend (Connection) -> Unit)? = null
     private val viewerFixtures = mutableListOf<File>()
 
     /** The answer of the test's lookup, by chat id in the order the rows show it. */
@@ -280,21 +281,67 @@ class SearchReturnJourneyTest {
         openSearch()
         search("alpha")
         clickRow("Chat s1")
-        val previous = container.connection.value
-
-        val replaced = runBlocking {
-            container.servers.save(profile(trailingSlash = false))
-            withContext(Dispatchers.Default) { withTimeout(10_000) { container.connection.filterNotNull().first { it !== previous } } }
-        }
-        shadowOf(Looper.getMainLooper()).idle()
-        compose.waitUntil(10_000) { vm.search.value.request?.connection === replaced }
-        compose.waitForIdle()
+        replaceActiveProfile(profile(trailingSlash = false))
 
         back()
 
         assertThat(vm.stack).isEmpty()
         assertThat(compose.onAllNodes(hasContentDescription(strings.get(R.string.chat_chats))).fetchSemanticsNodes()).isNotEmpty()
         assertThat(compose.onAllNodes(hasText("alpha")).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test fun `replacement readiness follows current identity when an intermediate is superseded`() {
+        start()
+        openChat("s0")
+        openSearch()
+        search("alpha")
+        clickRow("Chat s1")
+        val desired = profile(trailingSlash = false)
+        var superseded: Connection? = null
+        beforeReplacementWait = { candidate ->
+            superseded = candidate
+            val intermediate = desired.copy(name = "Intermediate")
+            container.servers.save(intermediate)
+            container.connection.first { it?.session?.profile == intermediate && it !== candidate }
+            container.servers.save(desired)
+            container.connection.first { it?.session?.profile == desired && it !== candidate }
+            assertThat(container.connection.value).isNotSameInstanceAs(candidate)
+        }
+        val replaced = replaceActiveProfile(desired)
+        assertThat(replaced).isNotSameInstanceAs(superseded)
+        assertThat(replaced).isSameInstanceAs(container.connection.value)
+        assertThat(vm.search.value.request?.connection).isSameInstanceAs(replaced)
+        assertThat(vm.searchJourney.value).isNull()
+        back()
+        assertThat(vm.stack).isEmpty()
+        assertThat(compose.onAllNodes(hasContentDescription(strings.get(R.string.chat_chats))).fetchSemanticsNodes()).isNotEmpty()
+        assertThat(compose.onAllNodes(hasText("alpha")).fetchSemanticsNodes()).isEmpty()
+    }
+
+    private fun replaceActiveProfile(desired: ServerProfile): Connection {
+        val previous = container.connection.value
+        runBlocking {
+            container.servers.save(desired)
+            withContext(Dispatchers.Default) {
+                withTimeout(10_000) {
+                    container.connection.filterNotNull().first { it !== previous }
+                        .also { beforeReplacementWait?.invoke(it) }
+                }
+            }
+        }
+        var replaced: Connection? = null
+        compose.waitUntil(10_000) {
+            // IO can publish a newer connection after any single Main drain. Apply the
+            // current identity, not a first emission that StateFlow may already have retired.
+            shadowOf(Looper.getMainLooper()).idle()
+            val current = container.connection.value
+            val applied = current != null && current !== previous && current.session.profile == desired &&
+                vm.search.value.request?.connection === current
+            if (applied) replaced = current
+            applied
+        }
+        compose.waitForIdle()
+        return checkNotNull(replaced)
     }
 
     @Test
