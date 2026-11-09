@@ -22,6 +22,21 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [36], application = Application::class)
 @LooperMode(LooperMode.Mode.PAUSED)
 class DraftRoomWritePhaseTest {
+    @Test fun `actual draft scenario keeps its phase attached until fixture launch roots finish`() {
+        val fixture = DraftNavigationTest()
+        fixture.runFixture {
+            fixture.`a signout suspended at the real cache transaction clears only its captured profile`()
+            assertThat(fixture.container.scope.coroutineContext.job.isActive).isTrue()
+            com.google.common.truth.Truth.assertWithMessage("PHASE_MUST_OUTLIVE_ACTIVE_LAUNCH_ROOTS")
+                .that(fixture.container.responses.beforeOwnedWriteObservation).isNotNull()
+            assertThat(fixture.container.responses.beforeOwnedWrite).isNotNull()
+        }
+        assertThat(fixture.container.scope.coroutineContext.job.isCompleted).isTrue()
+        assertThat(fixture.container.responses.beforeOwnedWriteObservation).isNull()
+        assertThat(fixture.container.responses.beforeOwnedWrite).isNull()
+        assertThat(fixture.container.cacheDatabase.isOpen).isFalse()
+    }
+
     @Test fun `closing the real phase pumps queued Main work needed by an actual cache writer`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val db = Room.inMemoryDatabaseBuilder(app, CacheDatabase::class.java).build()
