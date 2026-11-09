@@ -68,6 +68,7 @@ class SearchReturnTest {
 
     private lateinit var container: AppContainer
     private lateinit var server: MockWebServer
+    private val connectionInputs = java.util.concurrent.CopyOnWriteArrayList<Triple<Connection, ServerProfile, Long?>>()
 
     private object PlainCipher : TokenCipher {
         override fun encrypt(plain: String) = plain
@@ -94,7 +95,9 @@ class SearchReturnTest {
             start()
         }
         runCatching { WorkManager.initialize(context, Configuration.Builder().build()) }
-        container = AppContainer(context, PlainCipher)
+        container = AppContainer(context, PlainCipher, connectionConstructionObserver = { connection, profile, incarnation ->
+            connectionInputs += Triple(connection, profile, incarnation)
+        })
         lifecycle.root(requireNotNull(container.scope.coroutineContext[Job]))
         lifecycle.stop {
             container.connection.value?.socket?.stop()
@@ -105,7 +108,12 @@ class SearchReturnTest {
         runBlocking(Dispatchers.Default) {
             container.servers.clearSyntheticServers()
             container.servers.save(profile())
-            awaitConnection { it?.session?.profile == profile() }
+            val intended = container.lifetime.incarnations.value[PROFILE_ID]
+            awaitConnection { candidate ->
+                candidate?.session?.profile == profile() && connectionInputs.any {
+                    it.first === candidate && it.second == profile() && it.third == intended
+                }
+            }
         }
     }
 
@@ -364,6 +372,14 @@ class SearchReturnTest {
         lifecycle.stop { vm.chat.value?.close() }
         // The start of the connection opens the first empty chat before the test picks one.
         advance(0)
+        runBlocking {
+            withTimeout(10_000) {
+                while (vm.chat.value?.let { vm.draftOf(it) != null } != true) {
+                    main.scheduler.runCurrent()
+                    kotlinx.coroutines.yield()
+                }
+            }
+        }
         return vm
     }
 
