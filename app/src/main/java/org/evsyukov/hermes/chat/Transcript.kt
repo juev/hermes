@@ -244,12 +244,22 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
                 )
             }
             "assistant" -> {
-                val parts = (current?.parts ?: emptyList()).toMutableList()
-                m.reasoning?.takeIf { it.isNotBlank() }?.let { parts += Part.Reasoning(it) }
-                if (m.text.isNotBlank()) parts += Part.Text(m.text)
-                m.toolCalls.forEach { call -> parts += Part.Tool(ToolRun(call.id, call.name, argumentContext(call.arguments), call.arguments, done = true)) }
-                // A turn spans several stored rows and keeps the time of the first of them.
-                current = ChatItem.Assistant(current?.key ?: "a${m.rowId}", parts, streaming = false, time = current?.time ?: time)
+                // Two pieces of text with nothing between them are two messages of the assistant: the
+                // channel keeps reasoning and tools out of the transcript, so the work between them no
+                // longer draws a line, and the row of the second one starts a block of its own the way
+                // a user row starts a turn.
+                val addsWork = m.reasoning?.isNotBlank() == true || m.toolCalls.isNotEmpty()
+                if (m.text.isNotBlank() && !addsWork && current?.parts?.lastOrNull() is Part.Text) {
+                    flush()
+                    current = ChatItem.Assistant("a${m.rowId}", listOf(Part.Text(m.text)), streaming = false, time = time)
+                } else {
+                    val parts = (current?.parts ?: emptyList()).toMutableList()
+                    m.reasoning?.takeIf { it.isNotBlank() }?.let { parts += Part.Reasoning(it) }
+                    if (m.text.isNotBlank()) parts += Part.Text(m.text)
+                    m.toolCalls.forEach { call -> parts += Part.Tool(ToolRun(call.id, call.name, argumentContext(call.arguments), call.arguments, done = true)) }
+                    // A turn spans several stored rows and keeps the time of the first of them.
+                    current = ChatItem.Assistant(current?.key ?: "a${m.rowId}", parts, streaming = false, time = current?.time ?: time)
+                }
             }
             "tool" -> {
                 val turn = current ?: continue
@@ -370,8 +380,15 @@ fun closeOpen(items: List<ChatItem>, interrupted: Boolean): List<ChatItem> {
 fun resumeTurn(items: List<ChatItem>, streamed: String, keyOf: () -> String, now: () -> Double = ::nowSeconds, updateStreaming: Boolean = false): List<ChatItem> {
     val last = items.lastOrNull()
     if (last is ChatItem.Assistant && last.streaming && !updateStreaming) return items
-    val opened = if (last is ChatItem.Assistant) items.dropLast(1) + last.copy(streaming = true) else openAnswer(items, keyOf, now)
-    val stored = (opened.last() as ChatItem.Assistant).parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
+    val tail = last as? ChatItem.Assistant
+    val stored = tail?.parts?.filterIsInstance<Part.Text>()?.joinToString("") { it.text }.orEmpty()
+    // A turn writes one message at a time and the stored answer is the previous one when the running
+    // message has not been written down yet: text that does not continue it opens a block of its own,
+    // as the stored rows of the channel keep the messages apart.
+    if (tail != null && streamed.isNotBlank() && !streamed.startsWith(stored)) {
+        return items + ChatItem.Assistant(keyOf(), listOf(Part.Text(streamed)), streaming = true, time = now())
+    }
+    val opened = if (tail != null) items.dropLast(1) + tail.copy(streaming = true) else openAnswer(items, keyOf, now)
     val missing = if (streamed.startsWith(stored)) streamed.substring(stored.length) else ""
     return if (missing.isEmpty()) opened else updateOpen(opened) { appendPart(it, missing) { previous -> Part.Text(previous + missing) } }
 }
