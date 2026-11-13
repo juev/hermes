@@ -122,7 +122,8 @@ def make_router(store, native_http, native_connect=None, push=None):
         return projection.history({**page, "session_id": logical})
 
     @router.get("/api/sessions")
-    async def sessions(request: Request, limit: int = Query(50, ge=0, le=500), offset: int = Query(0, ge=0)):
+    async def sessions(request: Request, limit: int = Query(50, ge=0, le=500), offset: int = Query(0, ge=0),
+                       min_messages: int = Query(0, ge=0)):
         owner = principal(request)
         rows = []
         for session_id in store.sessions(owner):
@@ -133,6 +134,10 @@ def make_router(store, native_http, native_connect=None, push=None):
                     continue  # A newly created native session may not be persisted yet.
                 raise
             row = summary(row, store.logical(session_id))
+            # A chat whose session the client created before its first message holds no rows yet;
+            # the phone asks with min_messages=1 so its list shows only chats it can read.
+            if int(row.get("message_count") or 0) < min_messages:
+                continue
             archive = request.query_params.get("archived")
             if archive == "exclude" and row.get("archived") or archive == "only" and not row.get("archived"):
                 continue
