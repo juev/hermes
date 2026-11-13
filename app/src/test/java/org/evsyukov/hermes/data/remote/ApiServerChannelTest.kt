@@ -109,8 +109,9 @@ class ApiServerChannelTest {
             assertThat(request.headers["Accept"]).isEqualTo("text/event-stream")
             assertThat(request.body!!.utf8()).contains("\"message\":\"Reply with exactly: OK\"")
             assertThat(events.filterIsInstance<ApiServerChannel.Event.Delta>().map { it.text }).containsExactly("O", "K").inOrder()
-            assertThat(events.filterIsInstance<ApiServerChannel.Event.Completed>().last().text).isEqualTo("OK")
+            assertThat(events.filterIsInstance<ApiServerChannel.Event.Completed>().single().text).isEqualTo("OK")
             assertThat(events.first()).isInstanceOf(ApiServerChannel.Event.Started::class.java)
+            assertThat(events.last()).isEqualTo(ApiServerChannel.Event.Finished)
         }
     }
 

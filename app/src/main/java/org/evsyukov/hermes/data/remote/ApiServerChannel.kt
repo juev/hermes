@@ -60,7 +60,10 @@ class ApiServerChannel(private val http: HermesHttp) {
         /** A tool or reasoning step; the client shows one working indicator, never the payload. */
         data class Working(val tool: String?) : Event
         data class Approval(val text: String, val runId: String) : Event
+        /** The readable answer of the turn; [text] is what the phone shows. */
         data class Completed(val text: String, val runId: String) : Event
+        /** The turn is over and the stream is closing; nothing new to show. */
+        data object Finished : Event
         data class Failed(val message: String) : Event
     }
 
@@ -206,7 +209,7 @@ class ApiServerChannel(private val http: HermesHttp) {
                 Event.Working(root.string("tool_name"))
             "approval.request" -> Event.Approval(root.string("description") ?: root.string("command").orEmpty(), runId)
             "assistant.completed" -> Event.Completed(root.string("content").orEmpty(), runId)
-            "run.completed" -> Event.Completed(root.string("content").orEmpty(), runId)
+            "run.completed", "done" -> Event.Finished
             "run.cancelled", "run.failed" -> Event.Failed(root.string("error") ?: name.orEmpty())
             "error" -> Event.Failed(root.string("message").orEmpty())
             else -> null
