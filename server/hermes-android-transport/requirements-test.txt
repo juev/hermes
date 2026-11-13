@@ -1,0 +1,9 @@
+# Gateway config/runtime imports the adapter exercises, not the whole agent runtime.
+websockets==15.0.1
+PyYAML>=6.0.2,<7
+ruamel.yaml>=0.18,<0.20
+rich>=13,<15
+platformdirs>=4,<5
+filelock>=3,<4
+packaging>=24
+python-dotenv>=1,<2

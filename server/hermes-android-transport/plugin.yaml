@@ -1,0 +1,36 @@
+name: hermes-android-transport
+label: Android
+kind: platform
+version: 0.1.0
+requires_hermes: ">=0.23.0"
+description: >
+  Android channel as a first-class gateway transport. The phone connects to this
+  adapter's own WebSocket endpoint and is handled exactly like any other chat
+  platform: one gateway session per conversation, streamed drafts, clarify and
+  execution-approval answers, slash commands, cron delivery and send_message.
+  Reasoning and tool payloads never reach the phone because they never reach a
+  platform layer. Replaces the previous dashboard-router plugin, which had to
+  re-implement session ownership, projection and replay in front of the stock
+  dashboard API.
+requires_env:
+  - name: ANDROID_CHANNEL_TOKEN
+    description: "Bearer token the Android client presents on the channel WebSocket. Without it the adapter refuses to start."
+    prompt: "Android channel token"
+    password: true
+optional_env:
+  - name: ANDROID_CHANNEL_HOST
+    description: "Bind host for the channel WebSocket (default 127.0.0.1; TLS terminates at the reverse proxy)."
+    prompt: "Android channel bind host (default 127.0.0.1)"
+    password: false
+  - name: ANDROID_CHANNEL_PORT
+    description: "Bind port for the channel WebSocket (default 8799)."
+    prompt: "Android channel port (default 8799)"
+    password: false
+  - name: ANDROID_HOME_CHANNEL
+    description: "Default chat id for cron and notification delivery (deliver=android)."
+    prompt: "Android home chat id"
+    password: false
+  - name: ANDROID_ALLOWED_USERS
+    description: "Comma-separated principal ids allowed to talk to the agent (default: the token owner)."
+    prompt: "Allowed Android principals (comma-separated)"
+    password: false
