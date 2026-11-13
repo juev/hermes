@@ -100,7 +100,7 @@ class ApiServerChannelTest {
                     data: {"run_id":"run_1","seq":7}
 
                     """.trimIndent(),
-                ).header("Content-Type", "text/event-stream").build(),
+                ).addHeader("Content-Type", "text/event-stream").build(),
             )
             val events = mutableListOf<ApiServerChannel.Event>()
             channel(server).stream("api_1", "Reply with exactly: OK") { events += it }
@@ -131,7 +131,7 @@ class ApiServerChannelTest {
                     data: {"run_id":"run_1","text":"Проверил"}
 
                     """.trimIndent(),
-                ).header("Content-Type", "text/event-stream").build(),
+                ).addHeader("Content-Type", "text/event-stream").build(),
             )
             val events = mutableListOf<ApiServerChannel.Event>()
             channel(server).stream("api_1", "go") { events += it }
