@@ -126,6 +126,41 @@ class ApiTest(unittest.TestCase):
                     self.assertEqual(404, client.request(method, "/plugin/api/sessions/" + path).status_code)
                 self.assertEqual(before, len(calls))
 
+    def test_chat_list_omits_empty_drafts_when_the_client_asks_for_chats_with_messages(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as directory:
+            store = registry.Registry(Path(directory))
+            owner = json.dumps(["fixture", "", "alice"], separators=(",", ":"))
+            rows = {
+                "used": {"id": "used", "title": "Owned", "preview": "", "message_count": 12, "last_active": 5, "archived": False},
+                "draft": {"id": "draft", "title": None, "preview": None, "message_count": 0, "last_active": 9, "archived": False},
+            }
+            for session_id in rows:
+                store.claim(owner, session_id)
+
+            async def native(request, method, path, **kwargs):
+                return dict(rows[path.rsplit("/", 1)[-1]])
+
+            app = FastAPI()
+
+            @app.middleware("http")
+            async def signed_in(request, call_next):
+                request.state.session = SimpleNamespace(user_id="alice", provider="fixture", issuer="")
+                return await call_next(request)
+
+            app.include_router(api.make_router(store, native), prefix="/plugin")
+            with TestClient(app, headers={"Authorization": "Bearer fixture-alice"}) as client:
+                # What ChatApi.list() sends for the chats list; min_messages=1 hides the drafts.
+                listed = client.get("/plugin/api/sessions", params={"limit": 50, "offset": 0, "order": "recent",
+                                                                   "archived": "exclude", "min_messages": 1})
+                self.assertEqual(200, listed.status_code, listed.text)
+                self.assertEqual(["used"], [row["id"] for row in listed.json()["sessions"]],
+                                 "A phone that asks for chats with messages must not be shown an empty draft")
+                self.assertEqual(1, listed.json()["total"], "The total must count only the rows the filter kept")
+                everything = client.get("/plugin/api/sessions").json()
+                self.assertEqual(["draft", "used"], [row["id"] for row in everything["sessions"]],
+                                 "Without min_messages every claimed conversation stays listed")
+                self.assertEqual(2, everything["total"])
+
     def test_authenticated_http_flow_never_reads_or_exposes_foreign_conversations(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as directory:
             store = registry.Registry(Path(directory))
