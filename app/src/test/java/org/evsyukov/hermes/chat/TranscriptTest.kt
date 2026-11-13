@@ -103,9 +103,68 @@ class TranscriptTest {
     }
 
     @Test
-    fun `text that does not continue the stored answer is not shown twice`() {
-        val stored = listOf(ChatItem.User("u1", "найди", emptyList()), ChatItem.Assistant("a2", listOf(Part.Text("Ищу")), streaming = false))
-        assertThat((resumeTurn(stored, "Другое", keys).last() as ChatItem.Assistant).parts).containsExactly(Part.Text("Ищу"))
+    fun `text that does not continue the stored answer opens the next message of the turn`() {
+        val stored = listOf(ChatItem.User("u1", "найди", emptyList()), ChatItem.Assistant("a2", listOf(Part.Text("Ищу. ")), streaming = false))
+        val items = resumeTurn(stored, "Нашёл", keys)
+        // The channel history keeps the two messages apart by row; what streamed while the chat was
+        // away goes into the running one rather than growing the stored answer.
+        assertThat(items.filterIsInstance<ChatItem.Assistant>().map { it.text }).containsExactly("Ищу.", "Нашёл").inOrder()
+        assertThat((items.last() as ChatItem.Assistant).streaming).isTrue()
+        val grown = play(event("message.delta", """{"text":" файл"}"""), start = items)
+        assertThat((grown.last() as ChatItem.Assistant).text).isEqualTo("Нашёл файл")
+        assertThat((grown[grown.size - 2] as ChatItem.Assistant).text).isEqualTo("Ищу.")
+    }
+
+    @Test
+    fun `two assistant messages of one turn are two blocks`() {
+        val items = transcriptOf(
+            listOf(
+                StoredMessage(1, "user", "выпускай", null, emptyList(), null, null, 10.0, false, emptyList()),
+                StoredMessage(2, "assistant", "Сначала задача", null, emptyList(), null, null, 11.0, false, emptyList()),
+                StoredMessage(3, "assistant", "Готово: PR и RC", null, emptyList(), null, null, 12.0, false, emptyList()),
+            ),
+        )
+        val answers = items.filterIsInstance<ChatItem.Assistant>()
+        assertThat(answers.map { it.text }).containsExactly("Сначала задача", "Готово: PR и RC").inOrder()
+        assertThat(answers.map { it.key }).containsExactly("a2", "a3").inOrder()
+        assertThat(answers.map { it.time }).containsExactly(11.0, 12.0).inOrder()
+    }
+
+    @Test
+    fun `a notice the chat hides does not glue the answer after it to the previous one`() {
+        val items = transcriptOf(
+            listOf(
+                StoredMessage(1, "user", "релиз", null, emptyList(), null, null, 10.0, false, emptyList()),
+                StoredMessage(2, "assistant", "Тег поставлен, релиз идёт", null, emptyList(), null, null, 11.0, false, emptyList()),
+                StoredMessage(3, "user", "[IMPORTANT: Background process p1 finished]", null, emptyList(), null, null, 12.0, true, emptyList()),
+                StoredMessage(4, "assistant", "RC выпущен", null, emptyList(), null, null, 13.0, false, emptyList()),
+            ),
+        )
+        val answers = items.filterIsInstance<ChatItem.Assistant>()
+        assertThat(answers.map { it.text }).containsExactly("Тег поставлен, релиз идёт", "RC выпущен").inOrder()
+        assertThat(items.filterIsInstance<ChatItem.User>().map { it.text }).containsExactly("релиз") // The notice itself stays hidden.
+    }
+
+    @Test
+    fun `a turn that wrote twice reads the same live and from history`() {
+        val stored = transcriptOf(
+            listOf(
+                StoredMessage(1, "user", "выпускай", null, emptyList(), null, null, 10.0, false, emptyList()),
+                StoredMessage(2, "assistant", "Сначала задача", null, emptyList(), null, null, 11.0, false, emptyList()),
+                StoredMessage(3, "assistant", "Готово: PR и RC", null, emptyList(), null, null, 12.0, false, emptyList()),
+            ),
+        )
+        val live = play(
+            event("message.start"),
+            event("message.delta", """{"text":"Сначала задача"}"""),
+            event("message.complete", """{"text":"Сначала задача","status":"complete"}"""),
+            event("message.start"),
+            event("message.delta", """{"text":"Готово: PR и RC"}"""),
+            event("message.complete", """{"text":"Готово: PR и RC","status":"complete"}"""),
+            start = listOf(ChatItem.User("u1", "выпускай", emptyList())),
+        )
+        assertThat(live.filterIsInstance<ChatItem.Assistant>().map { it.text })
+            .isEqualTo(stored.filterIsInstance<ChatItem.Assistant>().map { it.text })
     }
 
     @Test
