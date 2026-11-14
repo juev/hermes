@@ -40,6 +40,7 @@ internal fun ObservationPanel(row: LocalObservation, actions: MessageActions, re
                 is ChatItem.User -> UserBubble(if (item.delivery == org.evsyukov.hermes.chat.Delivery.SENDING) item.copy(delivery = org.evsyukov.hermes.chat.Delivery.UNKNOWN) else item, last = active && item.key == lastUser, actions = actions)
                 is ChatItem.Assistant -> AssistantMessage(item.copy(streaming = false), last = active && item.key == lastAnswer, showReasoning = true, status = null, actions = actions)
                 is ChatItem.CronReport -> CronReportMessage(item)
+                is ChatItem.Command -> CommandCard(item)
             } }
             ObservationFiles(row, openLocal)
             row.error?.let { Text(it, color = ChatTheme.colors.text, modifier = Modifier.padding(16.dp)) }

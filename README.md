@@ -24,6 +24,14 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   message, or stops the turn when the field is empty. There is no dictation button: the keyboard's
   own voice input still types into the field, and an answer can still be read aloud. The words being
   written, the files picked and the place in the chat stay while another screen is open over it.
+- Hermes chat commands work in the field: type `/help`, `/status`, `/new`, `/stop`, `/title <name>`
+  and the rest of the server's command surface. A command runs on the server's own command path and
+  shows its output, refusal or state as a card in the chat — it is never sent to the model as a
+  prompt, and text that merely contains a slash stays an ordinary message. `/restart` restarts the
+  gateway from the chat: it is the force restart (active runs are interrupted), the app waits for
+  the gateway to come back and confirms it, and a lost acknowledgement is never blindly repeated.
+  On the stock API channel only the commands that channel supports are offered (`/new`, `/stop`,
+  `/title`, `/approve`, `/deny`, `/help`); the rest are reported as unavailable there.
 - Attachments: photos, camera, any file. Pictures, PDF, Markdown, text and code, audio and
   video open inside the app.
 - Hermes is in the Android share sheet. A link, text, pictures or files shared from another app

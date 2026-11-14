@@ -158,6 +158,7 @@ class HiddenChatTest {
         when (item) {
             is ChatItem.User -> "user:${item.text}"
             is ChatItem.CronReport -> "cron:${item.text}"
+            is ChatItem.Command -> "command:${item.name}:${item.state}"
             is ChatItem.Assistant -> "assistant:${item.streaming}:${item.error}:" + item.parts.joinToString("|") { part ->
                 when (part) {
                     is Part.Text -> "text=${part.text}"

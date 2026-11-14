@@ -294,6 +294,17 @@
     <string name="chat_cron_report">Задача cron</string>
     <string name="chat_retry">Повторить</string>
     <string name="chat_stopped">Остановлено</string>
+    <string name="chat_command_stopped">Текущий ход остановлен.</string>
+    <string name="chat_command_new">Открываю новый чат.</string>
+    <string name="chat_command_model">Открываю выбор модели.</string>
+    <string name="chat_command_renamed">Переименовано.</string>
+    <string name="chat_command_title_usage">Использование: /title &lt;имя&gt;</string>
+    <string name="chat_command_no_approval">Нет ожидающего подтверждения.</string>
+    <string name="chat_command_unavailable">Недоступно в этом канале.</string>
+    <string name="chat_command_restarting">Перезапускаю gateway (принудительный перезапуск: активные ходы прерываются)…</string>
+    <string name="chat_command_restarted">Gateway перезапущен и снова в сети.</string>
+    <string name="chat_command_restart_unconfirmed">Перезапуск запрошен, но gateway не вернулся вовремя. Проверьте сервер перед повторной попыткой; запрос автоматически не повторяется.</string>
+    <string name="chat_command_help_channel">Команды канала: /new — новый чат, /stop — остановить ход, /title &lt;имя&gt; — переименовать, /approve / /deny — ответить на подтверждение, /help — этот список. Остальные команды Hermes в этом канале недоступны.</string>
     <string name="chat_read_aloud">Прочитать вслух</string>
     <string name="chat_delivery_sending">Отправляется…</string>
     <string name="chat_delivery_unknown">Доставка не подтверждена — проверьте, прежде чем отправлять снова</string>

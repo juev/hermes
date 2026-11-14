@@ -392,11 +392,21 @@ internal class LiveGateway : GatewayChannel {
 
     @Volatile var beforePrompt: (suspend (JsonObject) -> Unit)? = null
 
+    /** The answer of the reviewed command path; null answers an empty object. */
+    @Volatile var slashAnswer: JsonObject? = null
+
+    /** The refusal of the reviewed command path, thrown instead of an answer. */
+    @Volatile var slashError: org.evsyukov.hermes.data.remote.RpcException? = null
+
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
         if (_state.value != SocketState.READY) throw IOException("no connection")
         calls += method to params
         if (method == "prompt.submit") beforePrompt?.invoke(params)
         return when (method) {
+            "slash.exec" -> {
+                slashError?.let { throw it }
+                slashAnswer ?: JsonObject(emptyMap())
+            }
             "session.resume" -> {
                 resumedOn += _connections.value
                 val answer = synchronized(lock) {
@@ -518,6 +528,14 @@ internal class LiveServer(private val gateway: LiveGateway) {
     private val openSockets = java.util.concurrent.CopyOnWriteArrayList<WebSocket>()
     val submittedPrompts = AtomicInteger()
 
+    /** How many restarts the admin route took, and what it answers. */
+    val restarts = AtomicInteger()
+    @Volatile var restartStatus = 200
+    @Volatile var gatewayRunning = true
+
+    /** The restart request drops the connection before an answer: the acknowledgement is lost. */
+    @Volatile var restartDisconnect = false
+
     /** Synthetic external input, delivered through the actual production socket collector. */
     fun sendEvent(type: String, payload: JsonObject) {
         check(openSockets.isNotEmpty()) { "No synthetic wire client" }
@@ -591,7 +609,13 @@ internal class LiveServer(private val gateway: LiveGateway) {
                 }
                 "/api/sessions/s1/mutation-snapshot" -> json("{}")
                 "/api/system/stats" -> json("{}")
-                "/api/status" -> json("""{"auth_required":false,"version":"test"}""")
+                "/api/gateway/restart" -> {
+                    restarts.incrementAndGet()
+                    if (restartDisconnect) return MockResponse.Builder().onResponseStart(mockwebserver3.SocketEffect.CloseSocket(true, true, true)).build()
+                    if (restartStatus != 200) MockResponse.Builder().code(restartStatus).body("""{"detail":"restart refused"}""").build()
+                    else json("""{"status":"restarting"}""")
+                }
+                "/api/status" -> json("""{"auth_required":false,"version":"test","gateway_running":$gatewayRunning}""")
                 "/api/ws" -> MockResponse.Builder().webSocketUpgrade(socketGateway).build()
                 else -> MockResponse.Builder().code(404).build()
                 }
