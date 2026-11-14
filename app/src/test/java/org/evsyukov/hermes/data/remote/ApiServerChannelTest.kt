@@ -5,7 +5,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.jsonObject
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
@@ -17,7 +16,9 @@ import org.robolectric.annotation.Config
 
 /**
  * The channel speaks the stock API server: these fixtures are the documented response shapes, and the
- * request assertions pin the source filter and the exact run-control bodies the server validates.
+ * request assertions pin the source filter, the detached run routes and the exact run-control bodies
+ * the server validates. A turn runs through `/v1/runs` + `/v1/runs/{id}/events`, not `chat/stream`:
+ * the latter interrupts the run when the client disconnects, the former survives it and replays.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
@@ -31,6 +32,9 @@ class ApiServerChannelTest {
             strings = AppStrings(ApplicationProvider.getApplicationContext<Application>().resources),
         ),
     )
+
+    private fun sse(body: String): MockResponse =
+        MockResponse.Builder().body(body).addHeader("Content-Type", "text/event-stream").build()
 
     @Test
     fun `chats are read from the api_server source only`() = runBlocking<Unit> {
@@ -72,73 +76,191 @@ class ApiServerChannelTest {
     }
 
     @Test
-    fun `one turn streams the assistant deltas and the final answer`() = runBlocking<Unit> {
+    fun `a turn starts a detached run with an idempotency key`() = runBlocking<Unit> {
         MockWebServer().use { server ->
             server.start()
             server.enqueue(
-                MockResponse.Builder().body(
-                    """
-                    event: run.started
-                    data: {"run_id":"run_1","session_id":"api_1","seq":1}
-
-                    event: message.started
-                    data: {"run_id":"run_1","message":{"id":"msg_1","role":"assistant"}}
-
-                    event: assistant.delta
-                    data: {"run_id":"run_1","message_id":"msg_1","delta":"O"}
-
-                    event: assistant.delta
-                    data: {"run_id":"run_1","message_id":"msg_1","delta":"K"}
-
-                    event: assistant.completed
-                    data: {"run_id":"run_1","message_id":"msg_1","content":"OK"}
-
-                    event: run.completed
-                    data: {"run_id":"run_1","seq":6}
-
-                    event: done
-                    data: {"run_id":"run_1","seq":7}
-
-                    """.trimIndent(),
-                ).addHeader("Content-Type", "text/event-stream").build(),
+                MockResponse.Builder().code(202)
+                    .body("""{"run_id":"run_1","status":"started","replayed":false}""").build(),
             )
-            val events = mutableListOf<ApiServerChannel.Event>()
-            channel(server).stream("api_1", "Reply with exactly: OK") { events += it }
+            val runId = channel(server).startRun("api_1", "Reply with exactly: OK", "send-7")
             val request = server.takeRequest()
-            assertThat(request.url.encodedPath).isEqualTo("/api/sessions/api_1/chat/stream")
-            assertThat(request.headers["Accept"]).isEqualTo("text/event-stream")
-            assertThat(request.body!!.utf8()).contains("\"message\":\"Reply with exactly: OK\"")
-            assertThat(events.filterIsInstance<ApiServerChannel.Event.Delta>().map { it.text }).containsExactly("O", "K").inOrder()
-            assertThat(events.filterIsInstance<ApiServerChannel.Event.Completed>().single().text).isEqualTo("OK")
-            assertThat(events.first()).isInstanceOf(ApiServerChannel.Event.Started::class.java)
-            assertThat(events.last()).isEqualTo(ApiServerChannel.Event.Finished)
+            assertThat(runId).isEqualTo("run_1")
+            assertThat(request.method).isEqualTo("POST")
+            assertThat(request.url.encodedPath).isEqualTo("/v1/runs")
+            assertThat(request.headers["Idempotency-Key"]).isEqualTo("send-7")
+            val body = request.body!!.utf8()
+            assertThat(body).contains("\"session_id\":\"api_1\"")
+            assertThat(body).contains("\"input\":\"Reply with exactly: OK\"")
         }
     }
 
     @Test
-    fun `tool frames become one working state, not payload`() = runBlocking<Unit> {
+    fun `the run stream maps deltas, tools and the final answer with their seq`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                sse(
+                    """
+                    id: 1
+                    event: message.delta
+                    data: {"run_id":"run_1","delta":"O"}
+
+                    id: 2
+                    event: tool.started
+                    data: {"run_id":"run_1","tool":"terminal","preview":"ls"}
+
+                    id: 3
+                    event: reasoning.available
+                    data: {"run_id":"run_1","text":"thinking hard"}
+
+                    id: 4
+                    event: tool.completed
+                    data: {"run_id":"run_1","tool":"terminal","error":false}
+
+                    id: 5
+                    event: message.interim
+                    data: {"run_id":"run_1","text":"Проверил"}
+
+                    id: 6
+                    event: message.delta
+                    data: {"run_id":"run_1","delta":"K"}
+
+                    id: 7
+                    event: run.completed
+                    data: {"run_id":"run_1","output":"OK","usage":{"input_tokens":10}}
+
+                    """.trimIndent(),
+                ),
+            )
+            val events = mutableListOf<Pair<ApiServerChannel.Event, Long>>()
+            channel(server).runEvents("run_1") { event, seq -> events += event to seq }
+            val request = server.takeRequest()
+            assertThat(request.url.encodedPath).isEqualTo("/v1/runs/run_1/events")
+            assertThat(request.headers["Accept"]).isEqualTo("text/event-stream")
+            assertThat(events.map { it.first }).containsExactly(
+                ApiServerChannel.Event.Delta("O"),
+                ApiServerChannel.Event.Working("terminal"),
+                ApiServerChannel.Event.Working(null),
+                ApiServerChannel.Event.Working("terminal"),
+                ApiServerChannel.Event.Commentary("Проверил"),
+                ApiServerChannel.Event.Delta("K"),
+                ApiServerChannel.Event.Completed("OK", "run_1"),
+                ApiServerChannel.Event.Finished,
+            ).inOrder()
+            assertThat(events.map { it.second }).containsExactly(1L, 2L, 3L, 4L, 5L, 6L, 7L, 7L).inOrder()
+        }
+    }
+
+    @Test
+    fun `a reattach asks for the replay after the last seq it saw`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                sse(
+                    """
+                    id: 9
+                    event: replay.truncated
+                    data: {"run_id":"run_1","oldest_retained_seq":5,"requested_seq":2}
+
+                    id: 10
+                    event: run.completed
+                    data: {"run_id":"run_1","output":"done"}
+
+                    """.trimIndent(),
+                ),
+            )
+            val events = mutableListOf<ApiServerChannel.Event>()
+            channel(server).runEvents("run_1", lastSeq = 2) { event, _ -> events += event }
+            val request = server.takeRequest()
+            assertThat(request.headers["Last-Event-ID"]).isEqualTo("2")
+            assertThat(events).containsExactly(
+                ApiServerChannel.Event.Truncated(5),
+                ApiServerChannel.Event.Completed("done", "run_1"),
+                ApiServerChannel.Event.Finished,
+            ).inOrder()
+        }
+    }
+
+    @Test
+    fun `control prompts and their settlement ride the run stream`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                sse(
+                    """
+                    id: 1
+                    event: clarify.request
+                    data: {"run_id":"run_1","kind":"clarify","prompt_id":"cl_1","execution_generation":7,"question":"Какой сервер?","choices":["ams","loffe"],"multi_select":false}
+
+                    id: 2
+                    event: approval.request
+                    data: {"run_id":"run_1","kind":"approval","prompt_id":"req_1","execution_generation":7,"description":"rm -rf /tmp/x","choices":["once","deny"]}
+
+                    id: 3
+                    event: clarify.settled
+                    data: {"run_id":"run_1","kind":"clarify","request_id":"cl_1"}
+
+                    """.trimIndent(),
+                ),
+            )
+            val events = mutableListOf<ApiServerChannel.Event>()
+            channel(server).runEvents("run_1") { event, _ -> events += event }
+            assertThat(events).hasSize(4)
+            val clarify = events[0] as ApiServerChannel.Event.Control
+            assertThat(clarify.prompt.kind).isEqualTo("clarify")
+            assertThat(clarify.prompt.promptId).isEqualTo("cl_1")
+            assertThat(clarify.prompt.generation).isEqualTo(7)
+            assertThat(clarify.prompt.question).isEqualTo("Какой сервер?")
+            assertThat(clarify.prompt.choices).containsExactly("ams", "loffe").inOrder()
+            val approval = events[1] as ApiServerChannel.Event.Control
+            assertThat(approval.prompt.kind).isEqualTo("approval")
+            assertThat(approval.prompt.question).isEqualTo("rm -rf /tmp/x")
+            val settled = events[2] as ApiServerChannel.Event.Settled
+            assertThat(settled.kind).isEqualTo("clarify")
+            assertThat(settled.requestId).isEqualTo("cl_1")
+            assertThat(events[3]).isEqualTo(ApiServerChannel.Event.Finished)
+        }
+    }
+
+    @Test
+    fun `a failed run reports its error and closes`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                sse(
+                    """
+                    id: 1
+                    event: run.failed
+                    data: {"run_id":"run_1","error":"provider auth failed"}
+
+                    """.trimIndent(),
+                ),
+            )
+            val events = mutableListOf<ApiServerChannel.Event>()
+            channel(server).runEvents("run_1") { event, _ -> events += event }
+            assertThat(events).containsExactly(
+                ApiServerChannel.Event.Failed("provider auth failed"),
+                ApiServerChannel.Event.Finished,
+            ).inOrder()
+        }
+    }
+
+    @Test
+    fun `the run status is pollable and a forgotten run is null`() = runBlocking<Unit> {
         MockWebServer().use { server ->
             server.start()
             server.enqueue(
                 MockResponse.Builder().body(
-                    """
-                    event: tool.started
-                    data: {"run_id":"run_1","tool_name":"terminal","preview":"ls"}
-
-                    event: tool.completed
-                    data: {"run_id":"run_1","tool_name":"terminal"}
-
-                    event: assistant.commentary
-                    data: {"run_id":"run_1","text":"Проверил"}
-
-                    """.trimIndent(),
-                ).addHeader("Content-Type", "text/event-stream").build(),
+                    """{"run_id":"run_1","status":"completed","session_id":"api_1","output":"OK","pending_controls":[]}""",
+                ).build(),
             )
-            val events = mutableListOf<ApiServerChannel.Event>()
-            channel(server).stream("api_1", "go") { events += it }
-            assertThat(events.filterIsInstance<ApiServerChannel.Event.Working>().map { it.tool })
-                .containsExactly("terminal", "terminal").inOrder()
-            assertThat(events.filterIsInstance<ApiServerChannel.Event.Commentary>().single().text).isEqualTo("Проверил")
+            server.enqueue(MockResponse.Builder().code(404).body("""{"error":{"message":"Unknown run"}}""").build())
+            val channel = channel(server)
+            val status = channel.runStatus("run_1")
+            assertThat(status.string("status")).isEqualTo("completed")
+            assertThat(status.string("output")).isEqualTo("OK")
+            assertThat(channel.runStatusOrNull("run_gone")).isNull()
         }
     }
 
