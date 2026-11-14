@@ -629,3 +629,44 @@ Push stays the separate `hermes-push` plugin: `/api/plugins/hermes-push/key`,
 exactly that marker for a channel profile (dashboard profiles keep the ordinary
 `channel`-less payload). Changing modes retires this phone's prior endpoint
 before registering; other clients' subscriptions are untouched.
+
+## 17. Chat commands
+
+The composer recognizes a leading `/name [args]` token (names and aliases resolve
+as the server's `resolve_command` does, case-insensitively). Prose that merely
+contains a slash, an indented line, and any text with attachments stay ordinary
+prompts. A recognized command never enters the prompt path on its own: its
+result is a command card in the conversation — output, refusal or state — not an
+assistant turn and not a recovery observation. The inventory of the pinned
+command surface and its transport feasibility is in
+[`research/slash-commands.md`](research/slash-commands.md).
+
+### Dashboard mode
+
+- `/restart` goes to the admin route `POST api/gateway/restart`. That route is
+  the **force** restart (`hermes gateway restart --interrupt`): the graceful
+  drain of the messaging `/restart` has no remote seam, and the client labels
+  the force semantics honestly. The flow acknowledges, expects the disconnect,
+  reconnects and confirms `gateway_running` from `api/status`. A lost
+  acknowledgement is an unknown outcome: the request is never repeated blindly
+  — the client disables transport-level retries for it, and the server coalesces
+  restarts; a server refusal is shown as a refusal.
+- `/stop` interrupts through `session.interrupt`; `/new` opens a fresh chat and
+  `/model` opens the chat's model picker, as the desktop surface does.
+- Every other recognized command goes to `slash.exec`
+  (`{session_id, command}`), the reviewed local path: the server runs its reads
+  and admission-fenced controls and refuses the rest with `unsupported_command`
+  (a `data.detail` hint may ride along). The client shows the refusal verbatim;
+  it does not hard-code the refusal list. An answer of type `exec` shows its
+  `output`; an answer of type `send` or `skill` submits the `message` the server
+  built through the ordinary prompt path (shown as `display`), never through
+  command parsing again.
+
+### Channel mode
+
+The stock api_server has no command dispatch, so the channel offers only its
+stock equivalents: `/new` (a fresh chat), `/stop` (run stop), `/title <name>`
+(PATCH), `/approve` / `/deny` (the pending run approval), and a client-side
+`/help`. Everything else is reported as unavailable on this channel — never
+sent to the model. The administrative restart action keeps working in the
+admin screen on both modes.

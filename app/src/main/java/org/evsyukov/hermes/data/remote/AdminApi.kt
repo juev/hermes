@@ -121,7 +121,8 @@ class AdminApi(private val http: HermesHttp, private val reads: Reads = NetworkR
 
     suspend fun gateway(action: String, interrupt: Boolean = false): JsonObject {
         val path = if (action == "stop" && interrupt) "api/gateway/stop?interrupt=true" else "api/gateway/$action"
-        return http.postJson(path).jsonObject
+        // Destructive: a lost answer is an unknown outcome, never a transport retry.
+        return http.postJsonOnce(path).jsonObject
     }
 
     suspend fun action(name: String, lines: Int = 200): ActionStatus {

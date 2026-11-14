@@ -159,6 +159,15 @@ fun ChatScreen(
     // A chat opens to read it, as in ChatGPT: the keyboard waits for a tap on the field.
     val focus = LocalFocusManager.current
     LaunchedEffect(controller) { focus.clearFocus() }
+    DisposableEffect(controller) {
+        controller.commandUi = { action ->
+            when (action) {
+                "new" -> onNewChat()
+                "models" -> models = true
+            }
+        }
+        onDispose { controller.commandUi = null }
+    }
 
     val tts = remember { mutableStateOf<TextToSpeech?>(null) }
     DisposableEffect(Unit) { onDispose { tts.value?.shutdown() } }
@@ -374,6 +383,7 @@ fun ChatScreen(
                                 when (val item = row.item) {
                                 is ChatItem.User -> UserBubble(item, last = item.key == lastUser, actions = actions)
                                 is ChatItem.CronReport -> CronReportMessage(item)
+                                is ChatItem.Command -> CommandCard(item)
                                 is ChatItem.Assistant -> AssistantMessage(
                                     item, last = item.key == lastAnswer, showReasoning = settings.showReasoning, status = state.status, actions = actions,
                                     connections = cardsOf[item.key].orEmpty(), connectionActions = connectionActions,

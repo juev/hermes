@@ -49,6 +49,10 @@ sealed interface Part {
 @Serializable
 enum class Delivery { SENDING, SENT, UNKNOWN, FAILED }
 
+/** The outcome of a chat command: running, done, refused by the server, or failed. */
+@Serializable
+enum class CommandState { PENDING, OK, REFUSED, FAILED }
+
 @Serializable
 sealed interface ChatItem {
     val key: String
@@ -88,6 +92,20 @@ sealed interface ChatItem {
     /** The report of a cron job the server filed into the chat that scheduled the job. */
     @Serializable
     data class CronReport(override val key: String, val job: String, val text: String, override val time: Double? = null) : ChatItem
+
+    /**
+     * The result of a chat command: its output, refusal or state. Not an assistant turn and not a
+     * recovery observation — a control command never enters the prompt path.
+     */
+    @Serializable
+    data class Command(
+        override val key: String,
+        val name: String,
+        val arg: String,
+        val output: String,
+        val state: CommandState,
+        override val time: Double? = null,
+    ) : ChatItem
 
     @Serializable
     data class Assistant(

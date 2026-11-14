@@ -164,20 +164,20 @@ class HermesHttp(
     }
 
     /** Sends the request with the token and returns the open response; the caller closes it. */
-    suspend fun execute(build: Request.Builder.() -> Unit): Response = executeFor(null, build)
+    suspend fun execute(build: Request.Builder.() -> Unit): Response = executeFor(null, true, build)
 
     /**
      * Sends a request of the chain that captured [owner]. A superseded owner is rejected before
      * anything leaves the phone; the request can never borrow the credentials of a newer auth.
      */
-    suspend fun execute(owner: WorkOwner, build: Request.Builder.() -> Unit): Response = executeFor(owner, build)
+    suspend fun execute(owner: WorkOwner, build: Request.Builder.() -> Unit): Response = executeFor(owner, true, build)
 
-    private suspend fun executeFor(owner: WorkOwner?, build: Request.Builder.() -> Unit): Response {
+    private suspend fun executeFor(owner: WorkOwner?, transportRetry: Boolean = true, build: Request.Builder.() -> Unit): Response {
         // One generation for the whole request, retry included: if the profile left while the
         // first call was out, the retry's fresh tokens are as stale as the first answer.
         val at = owner?.generation ?: generation()
         if (owner != null && !holds(owner)) throw SignInRequiredException(strings.get(R.string.error_session_expired))
-        val first = send(build, accessToken(false, at), at)
+        val first = send(build, accessToken(false, at), at, transportRetry)
         val retry = try { first.code == 401 && credentials(at) != null }
         catch (failure: Throwable) {
             try { first.close() } catch (cleanup: Throwable) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
@@ -185,7 +185,7 @@ class HermesHttp(
         }
         if (!retry) return first
         first.close()
-        val retried = send(build, accessToken(true, at), at)
+        val retried = send(build, accessToken(true, at), at, transportRetry)
         if (retried.code == 401) {
             retried.close()
             publish(null, at)
@@ -194,12 +194,16 @@ class HermesHttp(
         return retried
     }
 
-    private suspend fun send(build: Request.Builder.() -> Unit, token: String?, at: Long): Response {
+    private suspend fun send(build: Request.Builder.() -> Unit, token: String?, at: Long, transportRetry: Boolean = true): Response {
         val builder = Request.Builder().apply(build)
         if (token != null) builder.header("Authorization", "Bearer $token")
         val origin = lifetime?.let { WorkOwner(profileId, at) }
+        val client = if (transportRetry) client else onceClient
         return client.newCall(builder.build()).await { enqueue -> publishWork(origin) { enqueue(); true } == true }
     }
+
+    /** A client that never repeats a request on a connection failure: a lost answer stays unknown. */
+    private val onceClient by lazy { client.newBuilder().retryOnConnectionFailure(false).build() }
 
     suspend fun getJson(path: String, query: Map<String, Any?> = emptyMap()): JsonElement = json {
         url(withQuery(path, query))
@@ -240,8 +244,19 @@ class HermesHttp(
 
     suspend fun json(owner: WorkOwner, build: Request.Builder.() -> Unit): JsonElement = jsonFor(owner, build)
 
+    /**
+     * A destructive control request: a lost answer is an unknown outcome, never a transport retry.
+     * The 401 token refresh still applies — a refused request was not executed.
+     */
+    suspend fun postJsonOnce(path: String, body: JsonElement = JsonObject(emptyMap())): JsonElement =
+        executeFor(null, transportRetry = false) { url(withQuery(path, emptyMap())).post(body.toBody()) }.consume { response ->
+            if (!response.isSuccessful) throw errorOf(response)
+            val text = response.body.string()
+            if (text.isBlank()) JsonObject(emptyMap()) else HermesJson.parseToJsonElement(text)
+        }
+
     private suspend fun jsonFor(owner: WorkOwner?, build: Request.Builder.() -> Unit): JsonElement =
-        executeFor(owner, build).consume { response ->
+        executeFor(owner, true, build).consume { response ->
             if (!response.isSuccessful) throw errorOf(response)
             val text = response.body.string()
             if (text.isBlank()) JsonObject(emptyMap()) else HermesJson.parseToJsonElement(text)

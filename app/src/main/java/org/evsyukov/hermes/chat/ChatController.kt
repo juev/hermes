@@ -12,13 +12,16 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -174,6 +177,9 @@ class ChatController(
 
     /** The stock api_server channel: text turns without undo, served by ApiServerGateway. */
     val channelMode: Boolean get() = session.profile.androidChannel
+
+    /** The screen acts on the commands that are UI actions on this surface ("new", "models"). */
+    var commandUi: ((String) -> Unit)? = null
     private val observationRecoveryTicket = checkNotNull(initialWork.observationTicket)
     @Volatile private var lastWork: Work? = null
     @Volatile private var draftWork: Work? = null
@@ -829,7 +835,7 @@ class ChatController(
             // Keep that local suffix, not only its user row; later ordinary reloads remain replaceable.
             val localStart = if (!before.second) state.items.indexOfFirst { it is ChatItem.User && it.rowId == null } else -1
             val local = state.items.filterIndexed { index, item ->
-                item.key !in known && (item is ChatItem.User && item.rowId == null ||
+                item.key !in known && (item is ChatItem.Command || item is ChatItem.User && item.rowId == null ||
                     join?.boundRevision != null && item.key.startsWith("live") ||
                     localStart >= 0 && index >= localStart &&
                         (item !is ChatItem.Assistant || !item.streaming || keepStreaming) || keepStreaming && item is ChatItem.Assistant && item.streaming)
@@ -1207,6 +1213,17 @@ class ChatController(
     }
 
     fun send(text: String, attachments: List<LocalAttachment>) {
+        // A recognized control command never enters the prompt path; attachments keep it a prompt.
+        val command = if (attachments.isEmpty()) SlashCommands.parse(text) else null
+        if (command != null) {
+            withRoot(publicAction = "command") { origin -> dispatchCommand(origin, command) }
+            return
+        }
+        submitPrompt(text, text, attachments)
+    }
+
+    /** The ordinary prompt path; [sent] is what the server takes when it differs from the shown [text]. */
+    private fun submitPrompt(text: String, sent: String, attachments: List<LocalAttachment>) {
         var start: (() -> Unit)? = null
         withRoot(publicAction = "send") { origin ->
             if (text.isBlank() && attachments.isEmpty()) return@withRoot
@@ -1249,7 +1266,7 @@ class ChatController(
                             val refs = attachments.mapNotNull { attach(live, it) }
                             // The words first: the server titles the chat by the start of its first message.
                             val prompt = buildString {
-                                append(text.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
+                                append(sent.ifBlank { if (attachments.all { it.image }) strings.get(R.string.chat_describe_image) else strings.get(R.string.chat_look_files) })
                                 if (refs.isNotEmpty()) append("\n").append(refs.joinToString("\n"))
                             }
                             sends.submitted(sendId)
@@ -1289,6 +1306,134 @@ class ChatController(
             }
         }
         start?.invoke()
+    }
+
+    /**
+     * Runs a recognized command on its own path: the result is a command card in this conversation,
+     * never an assistant turn and never a recovery observation. The server still decides permission
+     * and busy policy; a refusal is shown, not retried as a prompt.
+     */
+    private fun dispatchCommand(origin: Work, input: SlashInput) {
+        val key = "cmd$localNamespace:${keys.incrementAndGet()}"
+        edit { it.copy(items = it.items + ChatItem.Command(key, input.name, input.arg, "", CommandState.PENDING, nowSeconds()), error = null) }
+        launchOwned(origin) {
+            try {
+                when (SlashCommands.route(input, channelMode)) {
+                    CommandRoute.RESTART -> restartGateway(key)
+                    CommandRoute.STOP -> {
+                        val live = liveId
+                        if (live != null) rpc("session.interrupt", buildJsonObject { put("session_id", live) })
+                        commandResult(key, CommandState.OK, strings.get(R.string.chat_command_stopped))
+                    }
+                    CommandRoute.NEW_CHAT -> {
+                        commandResult(key, CommandState.OK, strings.get(R.string.chat_command_new))
+                        commandUi?.invoke("new")
+                    }
+                    CommandRoute.MODEL_PICKER -> {
+                        commandResult(key, CommandState.OK, strings.get(R.string.chat_command_model))
+                        commandUi?.invoke("models")
+                    }
+                    CommandRoute.RENAME -> {
+                        if (input.arg.isBlank()) {
+                            commandResult(key, CommandState.REFUSED, strings.get(R.string.chat_command_title_usage))
+                        } else {
+                            val live = liveId ?: ensureLive()
+                            rpc("session.title", buildJsonObject { put("session_id", live); put("title", input.arg) })
+                            commandResult(key, CommandState.OK, strings.get(R.string.chat_command_renamed))
+                        }
+                    }
+                    CommandRoute.APPROVAL -> {
+                        if (_state.value.prompt !is Prompt.Approval) {
+                            commandResult(key, CommandState.REFUSED, strings.get(R.string.chat_command_no_approval))
+                        } else {
+                            val choice = when {
+                                input.name == "deny" -> "deny"
+                                input.arg.equals("always", ignoreCase = true) -> "always"
+                                else -> "once"
+                            }
+                            answerApproval(choice)
+                            commandResult(key, CommandState.OK, "")
+                        }
+                    }
+                    CommandRoute.HELP -> commandResult(key, CommandState.OK, strings.get(R.string.chat_command_help_channel))
+                    CommandRoute.UNAVAILABLE -> commandResult(key, CommandState.REFUSED, strings.get(R.string.chat_command_unavailable))
+                    CommandRoute.SERVER_EXEC -> serverCommand(key, input)
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (refusal: RpcException) {
+                commandResult(key, CommandState.REFUSED, refusal.message ?: "Command refused")
+            } catch (error: Exception) {
+                commandResult(key, CommandState.FAILED, error.message ?: "Command failed")
+            }
+        }
+    }
+
+    /** The dashboard's reviewed command path; a send/skill directive submits the prompt the server built. */
+    private suspend fun serverCommand(key: String, input: SlashInput) {
+        awaitSocket()
+        val live = liveId ?: ensureLive()
+        val answer = rpc("slash.exec", buildJsonObject { put("session_id", live); put("command", input.typed) }) as? JsonObject
+            ?: error("Unexpected slash.exec answer")
+        when (answer.string("type")) {
+            "send", "skill" -> {
+                val message = answer.string("message").orEmpty()
+                val display = answer.string("display") ?: input.typed
+                commandResult(key, CommandState.OK, answer.string("notice").orEmpty())
+                // The built prompt may itself start with a slash (a skill): it goes straight to the
+                // prompt path, never through command parsing again.
+                if (message.isNotBlank()) submitPrompt(display, message, emptyList())
+            }
+            else -> commandResult(key, CommandState.OK, answer.string("output").orEmpty())
+        }
+    }
+
+    /**
+     * The in-chat /restart: the dashboard admin route, which is the force restart (the graceful
+     * drain is messaging-only). Acknowledge, expect the disconnect, reconnect and confirm the
+     * gateway is running again. A lost acknowledgement is an unknown outcome: the request is never
+     * repeated blindly — the server coalesces restarts, and the user is told to check first.
+     */
+    private suspend fun restartGateway(key: String) {
+        commandResult(key, CommandState.PENDING, strings.get(R.string.chat_command_restarting))
+        val admin = session.admin
+        try {
+            admin.gateway("restart")
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (refused: org.evsyukov.hermes.data.remote.HermesException) {
+            commandResult(key, CommandState.REFUSED, refused.message ?: "Restart refused")
+            return
+        } catch (lost: IOException) {
+            Log.w(TAG, "Restart acknowledgement lost; confirming without resubmitting", lost)
+        }
+        val back = try {
+            withTimeout(120_000) {
+                // The gateway goes down and comes back; a coalesced restart may not drop this socket.
+                withTimeoutOrNull(15_000) { socket.state.first { it != SocketState.READY } }
+                socket.state.first { it == SocketState.READY }
+                while (admin.status().bool("gateway_running") != true) delay(1_000)
+            }
+            true
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            Log.w(TAG, "Restart not confirmed", error)
+            false
+        }
+        // The command spans the reconnect: its result belongs to the chat on the connection now carrying it.
+        operation().transport.set(socket.transport.value)
+        commandResult(
+            key,
+            if (back) CommandState.OK else CommandState.FAILED,
+            strings.get(if (back) R.string.chat_command_restarted else R.string.chat_command_restart_unconfirmed),
+        )
+    }
+
+    private fun commandResult(key: String, state: CommandState, output: String) {
+        edit { current -> current.copy(items = current.items.map { item ->
+            if (item is ChatItem.Command && item.key == key) item.copy(state = state, output = output) else item
+        }) }
     }
 
 

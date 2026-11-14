@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -78,6 +79,7 @@ import java.time.LocalDate
 import kotlinx.coroutines.delay
 import org.evsyukov.hermes.chat.Attachment
 import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.CommandState
 import org.evsyukov.hermes.chat.ConnectionOp
 import org.evsyukov.hermes.chat.DayLabel
 import org.evsyukov.hermes.chat.Delivery
@@ -203,6 +205,33 @@ fun CronReportMessage(item: ChatItem.CronReport) {
             Text(item.job, color = colors.secondaryText, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (item.text.isNotBlank()) SelectionContainer { MarkdownText(keepLineBreaks(item.text), Modifier.fillMaxWidth().padding(vertical = 4.dp)) }
+    }
+}
+
+/** A chat command and its outcome: output, refusal or state — not an assistant turn. */
+@Composable
+fun CommandCard(item: ChatItem.Command) {
+    val colors = ChatTheme.colors
+    val tint = when (item.state) {
+        CommandState.REFUSED, CommandState.FAILED -> colors.danger
+        CommandState.PENDING -> colors.faintText
+        CommandState.OK -> colors.secondaryText
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Terminal, null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                buildString {
+                    append('/').append(item.name)
+                    if (item.arg.isNotBlank()) append(' ').append(item.arg)
+                },
+                color = colors.secondaryText, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (item.output.isNotBlank()) {
+            Text(item.output, color = tint, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+        }
     }
 }
 
