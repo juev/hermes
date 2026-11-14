@@ -77,10 +77,17 @@ fun ModelScreen(api: AdminApi, onBack: () -> Unit, onMainModelChanged: () -> Uni
         if (result.bool("confirm_required") == true) {
             confirm = Triple(provider, model, result.string("confirm_message") ?: resources.getString(R.string.admin_model_expensive))
         } else {
-            snackbar.showSnackbar(result.string("notice") ?: resources.getString(R.string.admin_model_new_chats, model))
+            // A managed server policy can keep the main model while the set answers ok, so the info decides.
+            val effective = api.modelInfo()
+            val applied = effective.string("provider") == provider && effective.string("model") == model
+            if (applied) {
+                snackbar.showSnackbar(result.string("notice") ?: resources.getString(R.string.admin_model_new_chats, model))
+            } else {
+                snackbar.showSnackbar(resources.getString(R.string.admin_model_policy_kept))
+            }
             info.reload()
             options.reload()
-            onMainModelChanged()
+            if (applied) onMainModelChanged()
         }
     }
 

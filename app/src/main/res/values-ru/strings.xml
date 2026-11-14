@@ -386,6 +386,7 @@
     <string name="admin_model_current"> · текущий</string>
     <string name="admin_model_expensive">Модель дорогая.</string>
     <string name="admin_model_new_chats">Сохранено: новые чаты используют %1$s</string>
+    <string name="admin_model_policy_kept">Политика сервера удерживает основную модель, поэтому выбор не применён.</string>
     <string name="admin_model_expensive_title">Дорогая модель</string>
     <string name="admin_form_connection_lost">Связь прервалась. Проверьте подключение и повторите.</string>
     <string name="admin_form_unknown_outcome">Связь прервалась. Изменение могло примениться — проверьте список, прежде чем повторять.</string>

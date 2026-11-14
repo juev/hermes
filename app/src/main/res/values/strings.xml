@@ -382,6 +382,7 @@
     <string name="admin_model_current"> · current</string>
     <string name="admin_model_expensive">The model is expensive.</string>
     <string name="admin_model_new_chats">Saved: new chats use %1$s</string>
+    <string name="admin_model_policy_kept">The server policy keeps the main model, so the selection was not applied.</string>
     <string name="admin_model_expensive_title">Expensive model</string>
     <string name="admin_form_connection_lost">Connection lost. Check the connection and try again.</string>
     <string name="admin_form_unknown_outcome">Connection lost. The change may have gone through — check the list before trying again.</string>
