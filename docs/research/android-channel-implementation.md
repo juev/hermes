@@ -1,5 +1,10 @@
 # Android channel implementation evidence (#155)
 
+> **Superseded (2026-11-14).** The plugin described here was removed: the channel
+> now speaks the stock `api_server` routes directly. This document is kept as the
+> historical evidence of the plugin candidate; the current contract is
+> [protocol §16](../protocol.md#16-android-channel-over-the-stock-api_server).
+
 ## Candidate and scope
 
 This change adds an opt-in Android connection plus the installable

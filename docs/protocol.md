@@ -560,112 +560,72 @@ retired or pre-clear writers cannot recreate their records.
 
 A bound join publishes its turn snapshot before accepting current frames; delayed history/adoption cannot replay that older turn state. The working transcript may carry folded server work context as an explicitly uncorrelated display overlay; raw fetched history and on-device evidence remain separate, and this never supplies receipt identity. Producer clear provenance is captured before enqueue/launch and inherited by continuation frames. Journal transforms construct candidate bytes only; memory acknowledgements follow successful DataStore commit. Pending work is not a storage failure, and journal IO does not precede submit admission. Recovery tests cover wrappers/controllers in one process, not durable numeric authority identity across process recreation.
 
-## 16. Android channel plugin v1
+## 16. Android channel over the stock api_server
 
-This is an **opt-in extension**, not a change to the stock dashboard contract.
-Package: [`server/hermes-android`](../server/hermes-android/README.md), version
-0.1.0. Native bridge observed on Hermes v0.23.0, upstream
-`2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19`. The mounted HTTP/WS boundary is
-covered with authenticated synthetic actors; production PKCE-to-facade/phone
-acceptance remains separate. Sanitized shapes: [`fixtures/android-channel/v1.json`](fixtures/android-channel/v1.json).
+The channel is an **opt-in connection mode** of the Android client, not a server
+extension: it speaks the stock `gateway.platforms.api_server` routes of Hermes
+(observed on v0.23.0, upstream `2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19`).
+There is no plugin of our own, no dashboard router, no tickets and no JSON-RPC
+bridge. The former `server/hermes-android` package and its wire fixtures are
+removed; this section replaces their contract.
 
-### Routing and authentication
+### Conversations and mutations
 
-- Prefix: `/api/plugins/hermes-android`. HTTP requires native middleware's verified
-  bearer principal, keyed by provider/issuer/user in profile-local plugin storage.
-  `?profile=` selection is rejected; use that profile's own listener. Source labels
-  and user-supplied IDs cannot create membership. Two installations of the same
-  principal/profile share the channel; other platforms are not imported.
-- `POST /ws-ticket` exchanges native bearer authority for an opaque, single-use,
-  20-second plugin ticket and returns `channel_version: 1`. The Android client
-  requires that exact version before upgrading `/ws?ticket=…`. Consumed/expired
-  tickets are rejected. Missing/incompatible plugin is a recoverable error with
-  no automatic global/full-data fallback.
-- `GET /api/sessions` returns only server-owned conversations, `total`, `limit`
-  (0–500), `offset`, and the ordinary archive/source filters. `GET /api/sessions/search`
-  searches readable owned history only; hidden context/tool results are not hits.
-  Detail, mutation-snapshot, PATCH, DELETE and `/messages` share the same membership
-  check, before invoking authenticated native routes. Unknown/foreign IDs return 404.
-- Ordinary HTTP cache keys include the plugin path. Recovery lineage includes the
-  plugin root. Old local pins, global cache rows and observations are not reused,
-  deleted or automatically migrated. Authentication/admin and explicitly requested
-  account settings/file downloads remain native routes, not global conversation
-  subscriptions.
+- The channel's conversations are the sessions the API server stamps
+  `source=api_server`: `GET /api/sessions?source=api_server` lists them,
+  `POST /api/sessions` creates one. Other platforms' conversations are not
+  imported, and a claimed source label is not a routing boundary — the server
+  stamps the source itself.
+- `GET /api/sessions/{id}` wraps the session in `session`; `GET …/messages`
+  returns `data` rows with `pagination {limit, offset, order, returned}` (a full
+  page may have more). The client reads both stock and dashboard envelopes.
+- `PATCH /api/sessions/{id}` takes the client-safe flags (`title`, `pinned`,
+  `archived`, `hidden`, `unread`) directly; there is no mutation snapshot on this
+  surface. `DELETE` during an active turn is refused with `409 session_active_turn`.
+- Cache keys and recovery lineage use the plain server URL. Dashboard history,
+  pins and observations of the same server stay separate; nothing is migrated.
 
-### Identity, live frames and replay
+### Turns, replay and recovery
 
-- JSON-RPC framing stays as in §5. The bridge records stored and live IDs only from
-  successful native create/resume. Canonical create gets a fresh server request ID
-  and `source=tool`, never title-as-identity lookup. A requested label uses fenced
-  `session.mutate rename`. Reconnect can resume only an existing owned stored ID.
-- `prompt.submit` returns the native admission identity, reference, authority epoch
-  and status (`queued`/`started`/`terminal`); it does **not** invent a persisted user
-  row at queue admission. `message.complete.params.admission_id` ties the completed
-  turn's `persisted_turn` to that admission. Android retains its copy unless the
-  original owner/generation/live session/transport, admission, complete row receipt,
-  exact history row membership, user/final text and tool-call ID lineage agree.
-- Reasoning and ordinary tool lifecycle/arguments/results are omitted before the
-  relay queue and network serialization, including history/replay/snapshots.
-  Readable message start/delta/complete, compact `status.update`, session identity,
-  request cancellation and semantic connection cards remain. Work status is
-  `Working`; there are no token-frequency reasoning progress frames. Canonical
-  model context is not modified.
-- Approval/clarify/secret/sudo responses are accepted only for requests delivered
-  or restored on this connection, until native withdrawal. Connection actions
-  require the delivered/restored `op_id` plus its exact owner; explicit account
-  settings operations acquire that authority from their own connect response.
-- `session.events.since` preserves the native `latest_seq`/`last_sequence`, epoch,
-  truncation and snapshot-required indicators even when filtering leaves no
-  visible events. `count` counts projected events, **not** cursor distance.
-  Advance to the native high-water mark, not the last visible event. Android v1
-  currently recovers by rejoin/snapshot/history rather than incremental replay.
-  Epoch change
-  or truncation requires the ordinary snapshot/history recovery; never synthesize
-  private events to fill cursor gaps. Interactive requests restore from the
-  current native snapshot, not from guessed old request IDs.
-- Overflow or native disconnect explicitly ends the transport, requiring a fresh
-  ticket and rejoin. The queue is bounded; it does not silently drop visible
-  messages and continue as if caught up.
-
-### History and receipts
-
-`GET /api/sessions/{id}/messages` preserves native pagination (`limit`, `offset`,
-`order`, `include_compacted`, total and order). The plugin forces
-`inline_images=false`. Every underlying row keeps its position/ID: hidden/tool
-rows become empty UI tombstones, so a filtered page can contain no visible text
-without losing its raw page boundary. Native pagination, not the visible count,
-determines whether to request another page.
-
-The response includes `projection: android-minimal-v1`, normal readable `messages`
-and separate `receipt_rows`. Receipt rows include user/assistant readable content,
-IDs, roles and cleaned tool-call **IDs**, but no reasoning, tool names, arguments
-or results. Android uses them only as receipt evidence, not as visible tool work.
-A missing/incomplete/conflicting receipt retains the local observation. No equal
-answer text alone authorizes retirement, and Android never fetches full native
-history behind the projection to rescue a failed proof.
+- A turn is a **detached run**: `POST /v1/runs` with `{session_id, input}` and an
+  `Idempotency-Key` admits it and returns `{run_id, status, replayed}` at once.
+  The same key and payload replay the same run; a different payload under the
+  same key is `409`. The `chat/stream` wrapper is not used: it interrupts the run
+  when the client disconnects.
+- `GET /v1/runs/{id}/events` streams the run and replays after `Last-Event-ID`
+  (the last seq the client saw). `replay.truncated` reports a lost tail; the
+  client then repairs from the raw history. The run outlives the stream: a
+  dropped connection reattaches, and a run the server no longer knows is
+  reported, never silently retried as a new turn.
+- The run vocabulary is `message.delta`, `message.interim`, `tool.started` /
+  `tool.completed`, `reasoning.available`, `approval.request` / `clarify.request`
+  and their `.settled`, and the terminal `run.completed` (the answer is its
+  `output`), `run.cancelled`, `run.failed`, `run.interrupted`. The client shows
+  readable text and one compact working state; reasoning text and tool payloads
+  are not rendered. The stock server still serializes them — omission here is a
+  client projection, not a wire guarantee.
+- The submit ack is the authority's own run projection (`GET /v1/runs/{id}`):
+  `admission_id`, `execution_generation`, `session_id`, mapped to the
+  `queued`/`started`/`terminal` status the observation book binds. Without an
+  authority projection no binding is invented and the local copy is retained.
+- The completed turn's receipt is read from the raw history: the rows after the
+  newest row id captured **before** the send, addressed by row identity, never
+  by text or time. Server-injected user rows (internal notifications) are not
+  the prompt. The ordinary receipt rules of §15 apply unchanged: a missing,
+  partial or conflicting receipt retains the local observation.
+- Approval/clarify answers go to `POST /v1/runs/{id}/approval|clarify` with the
+  exact `{request_id, execution_generation, choice|answer}` the server reported;
+  a stale generation is refused, never retried. `POST /v1/runs/{id}/stop`
+  interrupts. A cancelled clarify takes no fabricated answer.
+- The channel sends text only: attachments are refused with a visible error.
+  There is no undo on this surface, so the client hides regenerate; archive,
+  pin and rename work through the stock PATCH.
 
 ### Push and background
 
-- `/push/key`, `/push/subscriptions` (POST/DELETE), `/push/test` are authenticated,
-  principal-scoped plugin routes. VAPID keys and recipients live in plugin storage.
-  The completion hook sends only a registry-owned session to its owner's
-  endpoints. Trusted compaction hooks retain one logical channel identity.
-- Encrypted payloads carry `channel: android-minimal-v1`, `channel_owner` (a digest
-  of the verified principal), logical `session_id`, `platform: android`, `preview`
-  and ordinary type. This marker is scope metadata, not an independent credential.
-  Android also checks its distributor instance, active profile and authorization
-  generation before notifying. Existing answer deduplication remains unchanged.
-- Changing modes retires **this phone's** prior endpoint before registering in the
-  new namespace; it does not disable other clients' global push. Failure to retire
-  is visible rather than silently leaving dual subscriptions. With push off,
-  latest-answer/background reads use the same plugin history boundary.
-
-### Evidence boundaries
-
-`server/hermes-android/tests/test_wire.py` measures actual loopback WebSocket
-application payloads for identical synthetic workloads: 460,789 bytes / 119
-frames full versus 1,066 bytes / 8 frames minimal, including a positive question
-and final reply. It proves this fixture's omission/byte reduction, not device
-energy, TLS/TCP volume or a population battery percentage. The live native bridge
-probe separately proves actual create/submit/question/reconnect/reply; it uses an
-operator test bootstrap and does not attest a deployed Android sign-in flow.
+Push stays the separate `hermes-push` plugin: `/api/plugins/hermes-push/key`,
+`/subscriptions`, `/test`. Its completion hook already carries the executing
+`platform`; a channel turn is `platform: api_server`, and the client accepts
+exactly that marker for a channel profile (dashboard profiles keep the ordinary
+`channel`-less payload). Changing modes retires this phone's prior endpoint
+before registering; other clients' subscriptions are untouched.

@@ -312,7 +312,7 @@ fun ChatScreen(
                 }
             }
         },
-        regenerate = controller::regenerate,
+        regenerate = if (controller.channelMode) null else controller::regenerate,
         edit = { editing = it },
         openFile = openFile,
         loadFile = loadFile,

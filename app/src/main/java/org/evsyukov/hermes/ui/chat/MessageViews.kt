@@ -95,7 +95,8 @@ class MessageActions(
     val copy: (String) -> Unit,
     val share: (String) -> Unit,
     val speak: (String) -> Unit,
-    val regenerate: () -> Unit,
+    /** Null where the channel cannot redo a turn: the stock api_server has no undo. */
+    val regenerate: (() -> Unit)?,
     val edit: (ChatItem.User) -> Unit,
     val openFile: (String) -> Unit,
     /** Downloads a file of the server for an inline picture; null while it cannot. */
@@ -280,7 +281,8 @@ fun AssistantMessage(
                 Icon(Icons.Outlined.ErrorOutline, null, tint = colors.danger)
                 Spacer(Modifier.width(8.dp))
                 Text(error.ifBlank { stringResource(R.string.error_model) }, color = colors.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                if (last) IconButton(onClick = actions.regenerate) { Icon(Icons.Outlined.Refresh, stringResource(R.string.chat_retry), tint = colors.text) }
+                val regenerate = actions.regenerate
+                if (last && regenerate != null) IconButton(onClick = regenerate) { Icon(Icons.Outlined.Refresh, stringResource(R.string.chat_retry), tint = colors.text) }
             }
         }
         if (item.interrupted) Text(stringResource(R.string.chat_stopped), color = colors.faintText, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
@@ -305,7 +307,8 @@ private fun ActionBar(item: ChatItem.Assistant, last: Boolean, actions: MessageA
         }
         SmallAction(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.chat_read_aloud), tint) { actions.speak(stripMedia(item.text)) }
         SmallAction(Icons.Outlined.Share, stringResource(R.string.common_share), tint) { actions.share(stripMedia(item.text)) }
-        if (last) SmallAction(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), tint, actions.regenerate)
+        val regenerate = actions.regenerate
+        if (last && regenerate != null) SmallAction(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), tint, regenerate)
     }
 }
 

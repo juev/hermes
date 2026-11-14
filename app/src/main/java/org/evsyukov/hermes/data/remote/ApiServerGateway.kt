@@ -82,7 +82,7 @@ class ApiServerGateway(
     /** The controls the server holds open, by request id: the exact prompt an answer must carry. */
     private val pendingControls = ConcurrentHashMap<String, Pair<String, ApiServerChannel.Prompt>>()
 
-    fun start() {
+    override fun start() {
         if (stopped || connector?.isActive == true) return
         connector = scope.launch {
             var pause = 1_000L
@@ -107,7 +107,7 @@ class ApiServerGateway(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         stopped = true
         connector?.cancel()
         streamJobs.values.forEach { it.cancel() }
@@ -120,7 +120,12 @@ class ApiServerGateway(
         if (stopped) throw IOException("Channel stopped")
         if (_state.value == SocketState.READY) return
         start()
-        withTimeout(30_000) { _state.first { it == SocketState.READY } }
+        withTimeout(30_000) {
+            _state.first {
+                if (stopped) throw IOException("Channel stopped")
+                it == SocketState.READY
+            }
+        }
     }
 
     override suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement = when (method) {
@@ -341,6 +346,7 @@ class ApiServerGateway(
     private suspend fun completeTurn(sid: String, runId: String, text: String) {
         activeRuns.remove(sid)
         inflight.remove(sid)
+        runSeq.remove(sid)
         val boundary = boundaries.remove(runId) ?: 0L
         val admission = admissions.remove(runId)
         val receipt = runCatching { persistedTurn(sid, boundary) }.getOrNull()
@@ -357,6 +363,7 @@ class ApiServerGateway(
     private suspend fun failTurn(sid: String, runId: String, message: String) {
         activeRuns.remove(sid)
         inflight.remove(sid)
+        runSeq.remove(sid)
         boundaries.remove(runId)
         admissions.remove(runId)
         emit(sid, "error", buildJsonObject { put("message", message) })

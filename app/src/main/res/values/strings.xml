@@ -607,11 +607,10 @@
     <string name="chat_local_collapse">Collapse on-device copy</string>
     <string name="chat_local_file">Open on-device attachment: %1$s</string>
     <string name="chat_local_file_failed">This on-device attachment could not be read.</string>
-    <string name="error_channel_version">Unsupported Android channel plugin version. Update the hermes-android plugin and this app.</string>
     <string name="error_channel_attachments">This channel sends text only; attachments are not supported.</string>
     <string name="error_channel_run_lost">The server no longer knows this turn; its answer may be lost.</string>
     <string name="setup_connection">Chat connection</string>
     <string name="setup_connection_dashboard">Dashboard API</string>
-    <string name="setup_connection_channel">Android channel plugin</string>
-    <string name="setup_connection_channel_hint">Requires the installed, enabled hermes-android plugin and native sign-in. Only Android-channel conversations are delivered, without reasoning or tool payloads. Existing dashboard history stays separate. No automatic fallback.</string>
+    <string name="setup_connection_channel">Android channel</string>
+    <string name="setup_connection_channel_hint">Uses the server\'s built-in API channel with native sign-in. Only this channel\'s conversations are delivered, as readable text without reasoning or tool payloads. Existing dashboard history stays separate. No automatic fallback.</string>
 </resources>

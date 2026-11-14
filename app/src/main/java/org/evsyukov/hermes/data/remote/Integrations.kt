@@ -111,7 +111,7 @@ private val BROKEN = setOf("failed", "expired", "revoked", "inactive")
  * The accounts connected through Nous. The dashboard serves them only over the chat socket, as the
  * desktop Connectors page reads them, with the account of the server as the owner.
  */
-class ConnectorsApi(private val socket: GatewaySocket) {
+class ConnectorsApi(private val socket: GatewayChannel) {
     /** The catalog with the state of each service and its accounts; unavailable without Nous. */
     suspend fun hosted(): Hosted {
         val list = try {

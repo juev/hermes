@@ -171,6 +171,9 @@ class ChatController(
     }
     private val initialWork = captureWork(initialOwner)
     internal val initialWorkOwner: WorkOwner get() = initialWork.owner
+
+    /** The stock api_server channel: text turns without undo, served by ApiServerGateway. */
+    val channelMode: Boolean get() = session.profile.androidChannel
     private val observationRecoveryTicket = checkNotNull(initialWork.observationTicket)
     @Volatile private var lastWork: Work? = null
     @Volatile private var draftWork: Work? = null

@@ -150,7 +150,7 @@ class GatewaySocket(
     // continuation resumed here may synchronously check authority on this same thread.
     private fun <T> locked(block: () -> T): T = http.withSocketLock(this, block)
 
-    fun ownerOn(transport: Long): WorkOwner? = locked {
+    override fun ownerOn(transport: Long): WorkOwner? = locked {
         connectorOwner.takeIf { transport != 0L && _transport.value == transport }
     }
 
@@ -158,9 +158,9 @@ class GatewaySocket(
      * Keeps the socket open until [stop]; safe to call many times, and does nothing after [stop]. A
      * socket whose sign-in is over stops trying until it is started again.
      */
-    fun start() = start(http.owner())
+    override fun start() = start(http.owner())
 
-    fun start(owner: WorkOwner?) {
+    override fun start(owner: WorkOwner?) {
         http.publishWork(owner) {
             locked {
                 if (stopped) return@locked
@@ -191,7 +191,7 @@ class GatewaySocket(
      * still holds this one, e.g. a collector that read the connection just before, must not open it
      * again.
      */
-    fun stop() {
+    override fun stop() {
         val closed = IOException(strings.get(R.string.error_connection_closed))
         val lost = locked {
             stopped = true
@@ -220,7 +220,7 @@ class GatewaySocket(
      * nothing comes back. An open socket that answers keeps its calls in flight. A gateway without
      * the heartbeat is not pinged; OkHttp's own pings find its dead socket.
      */
-    fun checkAlive() {
+    override fun checkAlive() {
         if (!wanted) return
         when (_state.value) {
             SocketState.DISCONNECTED -> wakeup.trySend(Unit)
@@ -339,14 +339,10 @@ class GatewaySocket(
 
     /** A ticket lives 30 seconds and opens one socket; a server without sign-in takes no ticket. */
     private suspend fun socketUrl(owner: WorkOwner?): String {
-        val url = http.endpoint(if (http.androidChannel) "api/plugins/hermes-android/ws" else "api/ws")
+        val url = http.endpoint("api/ws")
         val token = if (owner == null) http.accessToken() else http.accessToken(owner)
-        if (token != null || http.androidChannel) {
-            val path = if (http.androidChannel) "api/plugins/hermes-android/ws-ticket" else "api/auth/ws-ticket"
-            val answer = (if (owner == null) http.postJson(path) else http.postJson(owner, path)).jsonObject
-            if (http.androidChannel && answer.long("channel_version") != 1L) {
-                throw IOException(strings.get(R.string.error_channel_version))
-            }
+        if (token != null) {
+            val answer = (if (owner == null) http.postJson("api/auth/ws-ticket") else http.postJson(owner, "api/auth/ws-ticket")).jsonObject
             val ticket = answer.string("ticket")
             url.addQueryParameter("ticket", ticket)
         }
@@ -449,7 +445,7 @@ class GatewaySocket(
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
     override suspend fun awaitReady() = awaitReady(http.owner())
 
-    suspend fun awaitReady(owner: WorkOwner?) {
+    override suspend fun awaitReady(owner: WorkOwner?) {
         if (!http.holds(owner)) throw IOException("Retired socket origin")
         start(owner)
         withTimeout(20_000) {

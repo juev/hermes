@@ -6,7 +6,6 @@ import android.provider.Settings
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,18 +53,14 @@ enum class PushState {
 data class PushStatus(val state: PushState = PushState.OFF, val distributors: List<Distributor> = emptyList(), val distributor: String? = null)
 
 /** The routes of the hermes-push plugin of the server. */
-class PushApi(private val http: HermesHttp, private val channel: Boolean = http.androidChannel, private val owner: WorkOwner? = null) {
-    var channelOwner: String? = null
-        private set
-    private val root: String get() = if (channel) "api/plugins/hermes-android/push" else "api/plugins/hermes-push"
+class PushApi(private val http: HermesHttp, private val owner: WorkOwner? = null) {
+    private val root: String get() = "api/plugins/hermes-push"
     private suspend fun get(path: String) = if (owner == null) http.getJson(path) else http.getJson(owner, path)
     private suspend fun post(path: String, body: JsonObject = JsonObject(emptyMap())) =
         if (owner == null) http.postJson(path, body) else http.postJson(owner, path, body)
     /** The VAPID key of the server, or null when the server has no hermes-push plugin. */
     suspend fun key(): String? = try {
-        val answer = get("$root/key").jsonObject
-        channelOwner = answer.string("channel_owner")
-        answer.string("key")
+        get("$root/key").jsonObject.string("key")
     } catch (e: HermesException) {
         if (e.status == 404) null else throw e
     }
@@ -117,13 +112,9 @@ class PushManager(
         val current = session() ?: return false
         val profile = current.profile
         if (instance != null && instance != profile.id) return false
-        if (!profile.androidChannel) return message.channel.isBlank()
-        if (instance != profile.id || message.channel != "android-minimal-v1") return false
-        val origin = current.owner()
-        val kept = data.data.first()
-        return current.holds(origin) && session()?.profile == profile &&
-            kept[channelGenerationKey(profile.id)] == origin.generation &&
-            message.channelOwner.isNotBlank() && kept[channelOwnerKey(profile.id)] == message.channelOwner
+        // A channel conversation is the stock api_server's own: its turns carry that platform.
+        if (profile.androidChannel) return message.platform == CHANNEL_PLATFORM
+        return message.channel.isBlank()
     }
 
     /**
@@ -149,13 +140,13 @@ class PushManager(
         }
         val origin = current.owner()
         val api = PushApi(current.http, owner = origin)
-        val mode = if (current.profile.androidChannel) "android-minimal-v1" else "dashboard"
+        val mode = if (current.profile.androidChannel) CHANNEL_PLATFORM else "dashboard"
         val kept = data.data.first()
         val oldEndpoint = kept[endpointKey(current.profile.id)]
         val oldMode = kept[modeKey(current.profile.id)] ?: "dashboard"
         if (oldEndpoint != null && oldMode != mode) {
             try {
-                PushApi(current.http, channel = oldMode == "android-minimal-v1", owner = origin).unsubscribe(oldEndpoint)
+                PushApi(current.http, owner = origin).unsubscribe(oldEndpoint)
             } catch (e: IOException) {
                 if (e !is HermesException || e.status != 404) {
                     _status.value = PushStatus(PushState.FAILED, installed, chosen)
@@ -167,8 +158,6 @@ class PushManager(
                 if (current.holds(origin) && session()?.profile == current.profile) {
                     it.remove(endpointKey(current.profile.id))
                     it.remove(modeKey(current.profile.id))
-                    it.remove(channelOwnerKey(current.profile.id))
-                    it.remove(channelGenerationKey(current.profile.id))
                 }
             }
         }
@@ -184,19 +173,6 @@ class PushManager(
             return@withLock
         }
         if (!current.holds(origin) || session()?.profile != current.profile) return@withLock
-        if (current.profile.androidChannel) {
-            val channelOwner = api.channelOwner
-            if (channelOwner == null || !channelOwner.matches(Regex("[a-f0-9]{64}"))) {
-                _status.value = PushStatus(PushState.FAILED, installed, chosen)
-                return@withLock
-            }
-            data.edit {
-                if (current.holds(origin) && session()?.profile == current.profile) {
-                    it[channelOwnerKey(current.profile.id)] = channelOwner
-                    it[channelGenerationKey(current.profile.id)] = origin.generation
-                }
-            }
-        }
         val asked = distributor.register(current.profile.id, "Hermes · ${current.profile.url?.host.orEmpty()}", key)
         val endpoint = data.data.first()[endpointKey(current.profile.id)]
         _status.value = PushStatus(
@@ -233,7 +209,7 @@ class PushManager(
             data.edit {
                 if (current.holds(origin) && session()?.profile == current.profile) {
                     it[endpointKey(instance)] = endpoint
-                    it[modeKey(instance)] = if (current.profile.androidChannel) "android-minimal-v1" else "dashboard"
+                    it[modeKey(instance)] = if (current.profile.androidChannel) CHANNEL_PLATFORM else "dashboard"
                 }
             }
             PushState.ON
@@ -276,8 +252,6 @@ class PushManager(
 
     private fun endpointKey(instance: String) = stringPreferencesKey("endpoint:$instance")
     private fun modeKey(instance: String) = stringPreferencesKey("mode:$instance")
-    private fun channelOwnerKey(instance: String) = stringPreferencesKey("channel_owner:$instance")
-    private fun channelGenerationKey(instance: String) = longPreferencesKey("channel_generation:$instance")
 
     /** ANDROID_ID: one per signing key and user of the phone, kept across reinstalls and cleared data. */
     @SuppressLint("HardwareIds")
@@ -285,5 +259,8 @@ class PushManager(
 
     private companion object {
         const val TAG = "HermesPush"
+
+        /** The platform the stock api_server records for the channel's turns. */
+        const val CHANNEL_PLATFORM = "api_server"
     }
 }

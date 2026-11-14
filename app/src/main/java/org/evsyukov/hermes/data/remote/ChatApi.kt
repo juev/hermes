@@ -79,8 +79,8 @@ class ChatPage(val chats: List<ChatSummary>, val total: Int)
 class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, null, ""), cachedReads: Reads? = null, private val owner: org.evsyukov.hermes.data.server.WorkOwner? = null) {
     private val rawReads = reads
     private val reads = object : Reads {
-        override suspend fun kept(path: String, query: Map<String, Any?>): JsonElement = rawReads.kept(http.chatPath(path), query)
-        override suspend fun fresh(path: String, query: Map<String, Any?>): JsonElement = rawReads.fresh(http.chatPath(path), query)
+        override suspend fun kept(path: String, query: Map<String, Any?>): JsonElement = rawReads.kept(path, query)
+        override suspend fun fresh(path: String, query: Map<String, Any?>): JsonElement = rawReads.fresh(path, query)
     }
     /** The same reads answered from the phone's cache alone; null without a cache. Not for changes. */
     val cached: ChatApi? = cachedReads?.let { ChatApi(http, it, owner = owner) }
@@ -102,11 +102,15 @@ class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, nu
                 "exclude_sources" to excludeSources,
             ),
         ).jsonObject
-        val chats = (root["sessions"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::summary) }.orEmpty()
+        val chats = (root["sessions"] as? JsonArray ?: root["data"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::summary) }.orEmpty()
         return ChatPage(chats, root.long("total")?.toInt() ?: chats.size)
     }
 
-    suspend fun get(id: String): ChatSummary? = (reads.kept("api/sessions/$id") as? JsonObject)?.let(::summary)
+    suspend fun get(id: String): ChatSummary? {
+        val root = reads.kept("api/sessions/$id") as? JsonObject ?: return null
+        // The stock api_server wraps the session; the dashboard serves it flat.
+        return summary((root["session"] as? JsonObject) ?: root)
+    }
 
     suspend fun search(query: String, limit: Int = 50): List<SearchHit> {
         if (query.isBlank()) return emptyList()
@@ -122,11 +126,8 @@ class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, nu
 
     suspend fun history(id: String, limit: Int = 500): HistoryPage {
         val root = reads.kept("api/sessions/$id/messages", mapOf("limit" to limit, "order" to "oldest", "inline_images" to false)).jsonObject
-        val rows = (root["messages"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
-        val receipts = if (http.androidChannel && root.string("projection") == "android-minimal-v1")
-            (root["receipt_rows"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
-        else rows
-        return HistoryPage(rows, root.string("session_id"), root.string("profile"), receipts)
+        val rows = (root["messages"] as? JsonArray ?: root["data"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::message) }.orEmpty()
+        return HistoryPage(rows, root.string("session_id"), root.string("profile"), rows)
     }
 
     /**
@@ -146,10 +147,19 @@ class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, nu
         }
     }
 
-    /** Renames, pins, archives or marks read; the server takes such a change only with the revision it was made on. */
+    /** Renames, pins, archives or marks read; the dashboard takes such a change only with the revision it was made on. */
     suspend fun mutate(id: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null, unread: Boolean? = null) {
-        val fence = fence(id)
-        val body = buildJsonObject {
+        // The stock api_server has no mutation snapshot: its PATCH takes the client-safe flags directly.
+        val body = if (http.androidChannel) {
+            buildJsonObject {
+                title?.let { put("title", it) }
+                pinned?.let { put("pinned", it) }
+                archived?.let { put("archived", it) }
+                unread?.let { put("unread", it) }
+            }
+        } else {
+            val fence = fence(id)
+            buildJsonObject {
                 put("request_id", fence.requestId)
                 fence.revision?.let { put("expected_revision", it) }
                 fence.generation?.let { put("expected_generation", it) }
@@ -158,18 +168,22 @@ class ChatApi(private val http: HermesHttp, reads: Reads = NetworkReads(http, nu
                 archived?.let { put("archived", it) }
                 unread?.let { put("unread", it) }
             }
-        val path = http.chatPath("api/sessions/$id")
+        }
+        val path = "api/sessions/$id"
         if (owner == null) http.patchJson(path, body) else http.patchJson(owner, path, body)
     }
 
     suspend fun delete(id: String) {
-        val fence = fence(id)
-        val query = buildString {
-            append("api/sessions/$id?request_id=${fence.requestId}")
-            fence.revision?.let { append("&expected_revision=$it") }
-            fence.generation?.let { append("&expected_generation=$it") }
+        val path = if (http.androidChannel) {
+            "api/sessions/$id"
+        } else {
+            val fence = fence(id)
+            buildString {
+                append("api/sessions/$id?request_id=${fence.requestId}")
+                fence.revision?.let { append("&expected_revision=$it") }
+                fence.generation?.let { append("&expected_generation=$it") }
+            }
         }
-        val path = http.chatPath(query)
         if (owner == null) http.delete(path) else http.delete(owner, path)
     }
 
