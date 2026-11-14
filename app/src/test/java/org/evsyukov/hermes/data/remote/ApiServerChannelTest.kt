@@ -328,7 +328,7 @@ class ApiServerChannelTest {
             server.enqueue(
                 MockResponse.Builder().body(
                     """
-                    {"object":"list","session_id":"api_1","pagination":{"has_more":true},"data":[
+                    {"object":"list","session_id":"api_1","pagination":{"limit":200,"offset":0,"order":"oldest","returned":2},"data":[
                       {"id":"42","role":"user","content":"привет","timestamp":1700000000.0},
                       {"id":"43","role":"assistant","content":"готово","timestamp":1700000001.0,"display_kind":"final"}
                     ]}
@@ -338,10 +338,55 @@ class ApiServerChannelTest {
             val page = channel(server).history("api_1")
             val request = server.takeRequest()
             assertThat(request.url.encodedPath).isEqualTo("/api/sessions/api_1/messages")
-            assertThat(page.hasMore).isTrue()
+            assertThat(page.hasMore).isFalse()
             assertThat(page.rows.map { it.role }).containsExactly("user", "assistant").inOrder()
             assertThat(page.rows.last().text).isEqualTo("готово")
             assertThat(page.rows.last().displayKind).isEqualTo("final")
+        }
+    }
+
+    @Test
+    fun `a full history page means there may be more`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                MockResponse.Builder().body(
+                    """
+                    {"object":"list","session_id":"api_1","pagination":{"limit":2,"offset":0,"order":"oldest","returned":2},"data":[
+                      {"id":"42","role":"user","content":"a","timestamp":1.0},
+                      {"id":"43","role":"assistant","content":"b","timestamp":2.0}
+                    ]}
+                    """.trimIndent(),
+                ).build(),
+            )
+            assertThat(channel(server).history("api_1", limit = 2).hasMore).isTrue()
+        }
+    }
+
+    @Test
+    fun `the newest row id bounds the turn about to be sent`() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                MockResponse.Builder().body(
+                    """
+                    {"object":"list","session_id":"api_1","pagination":{"limit":1,"offset":0,"order":"latest","returned":1},"data":[
+                      {"id":"43","role":"assistant","content":"готово","timestamp":2.0}
+                    ]}
+                    """.trimIndent(),
+                ).build(),
+            )
+            server.enqueue(
+                MockResponse.Builder().body(
+                    """{"object":"list","session_id":"api_1","pagination":{"limit":1,"offset":0,"order":"latest","returned":0},"data":[]}""",
+                ).build(),
+            )
+            val channel = channel(server)
+            assertThat(channel.newestRowId("api_1")).isEqualTo(43L)
+            val request = server.takeRequest()
+            assertThat(request.url.queryParameter("order")).isEqualTo("latest")
+            assertThat(request.url.queryParameter("limit")).isEqualTo("1")
+            assertThat(channel.newestRowId("api_1")).isNull()
         }
     }
 }

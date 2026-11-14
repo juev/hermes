@@ -102,13 +102,20 @@ class ApiServerChannel(private val http: HermesHttp) {
         }
     }
 
+    /** The stock PATCH carries the durable sidebar flags; archive is one of them. */
+    suspend fun archive(id: String, archived: Boolean) {
+        http.execute { url(http.endpoint("api/sessions/$id").build()); patch(buildJsonObject { put("archived", archived) }.toBody()) }.consume { response ->
+            if (!response.isSuccessful) throw errorOf(response)
+        }
+    }
+
     suspend fun delete(id: String) {
         http.delete("api/sessions/$id")
     }
 
-    /** Readable transcript, newest page last; hidden rows are filtered here, not stored away. */
-    suspend fun history(id: String, limit: Int = 200, offset: Int = 0): Page {
-        val root = objectOf(http.getJson("api/sessions/$id/messages", mapOf("limit" to limit, "offset" to offset)))
+    /** Readable transcript; [order] pages oldest-first or latest-first, hidden rows are filtered here, not stored away. */
+    suspend fun history(id: String, limit: Int = 200, offset: Int = 0, order: String = "oldest"): Page {
+        val root = objectOf(http.getJson("api/sessions/$id/messages", mapOf("limit" to limit, "offset" to offset, "order" to order)))
         val rows = (root["data"] as? JsonArray).orEmpty().mapNotNull { row ->
             val obj = row as? JsonObject ?: return@mapNotNull null
             Row(
@@ -120,8 +127,19 @@ class ApiServerChannel(private val http: HermesHttp) {
             )
         }
         val pagination = root["pagination"] as? JsonObject
-        val hasMore = pagination?.bool("has_more") ?: pagination?.bool("has_more_pages") ?: false
+        // The stock envelope reports {limit, offset, order, returned}; a full page may have more.
+        val returned = pagination?.long("returned")
+        val pageLimit = pagination?.long("limit") ?: limit.toLong()
+        val hasMore = returned != null && returned >= pageLimit
         return Page(rows, hasMore)
+    }
+
+    /** The newest stored row id, or null for an empty transcript: the boundary of the next turn. */
+    suspend fun newestRowId(id: String): Long? {
+        val root = objectOf(http.getJson("api/sessions/$id/messages", mapOf("order" to "latest", "limit" to 1)))
+        return (root["data"] as? JsonArray).orEmpty().firstNotNullOfOrNull {
+            (it as? JsonObject)?.string("id")?.toLongOrNull()
+        }
     }
 
     /**
