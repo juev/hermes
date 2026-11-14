@@ -617,6 +617,8 @@
     <string name="chat_local_file">Открыть вложение с устройства: %1$s</string>
     <string name="chat_local_file_failed">Не удалось прочитать вложение на устройстве.</string>
     <string name="error_channel_version">Несовместимая версия плагина Android-канала. Обновите плагин hermes-android и приложение.</string>
+    <string name="error_channel_attachments">Этот канал передаёт только текст; вложения не поддерживаются.</string>
+    <string name="error_channel_run_lost">Сервер больше не знает этот ход; ответ мог потеряться.</string>
     <string name="setup_connection">Подключение чатов</string>
     <string name="setup_connection_dashboard">API панели управления</string>
     <string name="setup_connection_channel">Плагин Android-канала</string>
