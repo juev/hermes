@@ -608,6 +608,8 @@
     <string name="chat_local_file">Open on-device attachment: %1$s</string>
     <string name="chat_local_file_failed">This on-device attachment could not be read.</string>
     <string name="error_channel_version">Unsupported Android channel plugin version. Update the hermes-android plugin and this app.</string>
+    <string name="error_channel_attachments">This channel sends text only; attachments are not supported.</string>
+    <string name="error_channel_run_lost">The server no longer knows this turn; its answer may be lost.</string>
     <string name="setup_connection">Chat connection</string>
     <string name="setup_connection_dashboard">Dashboard API</string>
     <string name="setup_connection_channel">Android channel plugin</string>
