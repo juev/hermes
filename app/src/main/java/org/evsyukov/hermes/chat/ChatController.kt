@@ -1409,25 +1409,26 @@ class ChatController(
         }
         val back = try {
             withTimeout(120_000) {
-                // The gateway goes down and comes back; a coalesced restart may not drop this socket.
-                withTimeoutOrNull(15_000) { socket.state.first { it != SocketState.READY } }
+                // Watch for the drop, but do not block the confirmation on catching its moment: a
+                // coalesced or fast restart may be back before the watch starts.
+                val dropped = withTimeoutOrNull(3_000) { socket.state.first { it != SocketState.READY } } != null
                 socket.state.first { it == SocketState.READY }
-                while (admin.status().bool("gateway_running") != true) delay(1_000)
+                while (admin.status().bool("gateway_running") != true) delay(500)
+                dropped
             }
-            true
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
             Log.w(TAG, "Restart not confirmed", error)
-            false
+            null
         }
         // The command spans the reconnect: its result belongs to the chat on the connection now carrying it.
         operation().transport.set(socket.transport.value)
-        commandResult(
-            key,
-            if (back) CommandState.OK else CommandState.FAILED,
-            strings.get(if (back) R.string.chat_command_restarted else R.string.chat_command_restart_unconfirmed),
-        )
+        when (back) {
+            true -> commandResult(key, CommandState.OK, strings.get(R.string.chat_command_restarted))
+            false -> commandResult(key, CommandState.OK, strings.get(R.string.chat_command_restart_requested))
+            null -> commandResult(key, CommandState.FAILED, strings.get(R.string.chat_command_restart_unconfirmed))
+        }
     }
 
     private fun commandResult(key: String, state: CommandState, output: String) {
