@@ -17,6 +17,7 @@ jobs:
   # there to catch what R8 breaks.
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6

@@ -70,6 +70,7 @@ android {
             it.jvmArgs("--add-exports", "java.base/jdk.internal.access=ALL-UNNAMED")
             // A failure on CI shows its message and cause, not only the class of the exception.
             it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            it.testLogging.events("started", "passed", "failed", "skipped")
         }
     }
 }
