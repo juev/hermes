@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -13,15 +14,16 @@ import java.util.concurrent.TimeUnit
 /**
  * The stock Hermes API server (`gateway.platforms.api_server`) as the phone's channel.
  *
- * Every call here is a documented platform endpoint — `/api/sessions`, `/api/sessions/{id}/chat/stream`,
- * `/v1/runs/{id}` — so the channel adds no server-side API of its own. Sessions listed with
+ * Every call here is a documented platform endpoint — `/api/sessions`, `/v1/runs`,
+ * `/v1/runs/{id}/events` — so the channel adds no server-side API of its own. Sessions listed with
  * `source=api_server` are this channel's conversations: the API server stamps that source on every
  * session it creates, which keeps Telegram, Matrix, desktop and cron conversations out of the list.
  *
- * The turn itself is one SSE request. Its events are the documented ones: `run.started`,
- * `message.started`, `assistant.delta`, `assistant.completed`, `run.completed`, `approval.request`,
- * `tool.*`, `assistant.commentary` and `done`. Questions and approvals are answered through the
- * run control routes, whose bodies require the exact `execution_generation` the server reports.
+ * A turn is a detached run: `POST /v1/runs` admits it and returns at once, and its events stream
+ * from `GET /v1/runs/{id}/events`, which replays after a disconnect (`Last-Event-ID`). The
+ * `chat/stream` wrapper is deliberately not used: it interrupts the run when the client goes away.
+ * Questions and approvals are answered through the run control routes, whose bodies require the
+ * exact `execution_generation` the server reports.
  */
 class ApiServerChannel(private val http: HermesHttp) {
 
@@ -54,17 +56,21 @@ class ApiServerChannel(private val http: HermesHttp) {
     )
 
     sealed interface Event {
-        data class Started(val runId: String) : Event
         data class Delta(val text: String) : Event
         data class Commentary(val text: String) : Event
         /** A tool or reasoning step; the client shows one working indicator, never the payload. */
         data class Working(val tool: String?) : Event
-        data class Approval(val text: String, val runId: String) : Event
+        /** A question or approval the run raised, with the generation its answer must carry. */
+        data class Control(val prompt: Prompt, val runId: String) : Event
+        /** A control the server settled itself; [requestId] names it when the server does. */
+        data class Settled(val kind: String, val requestId: String?, val runId: String) : Event
         /** The readable answer of the turn; [text] is what the phone shows. */
         data class Completed(val text: String, val runId: String) : Event
-        /** The turn is over and the stream is closing; nothing new to show. */
-        data object Finished : Event
         data class Failed(val message: String) : Event
+        /** The replay lost its tail: history must be read again from the server. */
+        data class Truncated(val oldestSeq: Long) : Event
+        /** The stream is over; nothing new to show. */
+        data object Finished : Event
     }
 
     /** The channel's conversations; [offset] pages the same recency order the server uses. */
@@ -119,53 +125,75 @@ class ApiServerChannel(private val http: HermesHttp) {
     }
 
     /**
-     * One turn: the message goes up, the answer streams back. Cancelling the coroutine closes the
-     * request, which is the API server's own "client went away" signal.
+     * Admits one turn and returns its run id at once; the run outlives this request. The same
+     * [idempotencyKey] with the same payload returns the same run, so a lost acceptance is never
+     * a second turn.
      */
-    suspend fun stream(id: String, message: String, onEvent: suspend (Event) -> Unit) {
-        val body = buildJsonObject { put("message", message) }.toBody()
-        val token = http.accessToken()
+    suspend fun startRun(sessionId: String, message: String, idempotencyKey: String): String {
+        val body = buildJsonObject { put("session_id", sessionId); put("input", message) }.toBody()
+        return http.execute {
+            url(http.endpoint("v1/runs").build())
+            header("Idempotency-Key", idempotencyKey)
+            post(body)
+        }.consume { response ->
+            if (!response.isSuccessful) throw errorOf(response)
+            objectOf(HermesJson.parseToJsonElement(response.body.string())).string("run_id")
+                ?: error("The API server did not return a run id")
+        }
+    }
+
+    /** The pollable state of a run: status, output and the controls it still holds. */
+    suspend fun runStatus(runId: String): JsonObject = http.getJson("v1/runs/$runId").jsonObject
+
+    /** A run the server no longer knows is null, not a failure: its turn is over or was forgotten. */
+    suspend fun runStatusOrNull(runId: String): JsonObject? = try {
+        runStatus(runId)
+    } catch (error: HermesException) {
+        if (error.status == 404) null else throw error
+    }
+
+    /**
+     * Streams one run's events, replaying after [lastSeq] when it is given. Each event carries the
+     * seq of its frame so a later reattach asks for exactly what it missed. Cancelling the coroutine
+     * closes the request; the run itself goes on.
+     */
+    suspend fun runEvents(runId: String, lastSeq: Long? = null, onEvent: suspend (Event, Long) -> Unit) {
         val request = Request.Builder()
-            .url(http.endpoint("api/sessions/$id/chat/stream").build())
+            .url(http.endpoint("v1/runs/$runId/events").build())
             .header("Accept", "text/event-stream")
-            .apply { if (token != null) header("Authorization", "Bearer $token") }
-            .post(body)
+            .apply {
+                http.accessToken()?.let { header("Authorization", "Bearer $it") }
+                if (lastSeq != null) header("Last-Event-ID", lastSeq.toString())
+            }
+            .get()
             .build()
         streamClient.newCall(request).await().consume { response ->
             if (!response.isSuccessful) throw errorOf(response)
             var name: String? = null
+            var seq = -1L
             val source = response.body.source()
             while (true) {
                 val line = source.readUtf8Line() ?: break
                 when {
+                    line.startsWith(":") -> Unit
+                    line.startsWith("id:") -> seq = line.removePrefix("id:").trim().toLongOrNull() ?: seq
                     line.startsWith("event:") -> name = line.removePrefix("event:").trim()
                     line.startsWith("data:") -> {
                         val event = parse(name, line.removePrefix("data:").trim())
                         name = null
-                        if (event != null) onEvent(event)
+                        if (event != null) onEvent(event, seq)
                     }
                     line.isBlank() -> name = null
                 }
             }
+            onEvent(Event.Finished, seq)
         }
     }
 
     /** The run's pending questions and approvals, with the generation the answer must carry. */
     suspend fun pending(runId: String): List<Prompt> {
         val root = objectOf(http.getJson("v1/runs/$runId"))
-        return (root["pending_controls"] as? JsonArray).orEmpty().mapNotNull { control ->
-            val obj = control as? JsonObject ?: return@mapNotNull null
-            val kind = obj.string("kind") ?: return@mapNotNull null
-            if (kind != "clarify" && kind != "approval") return@mapNotNull null
-            Prompt(
-                kind = kind,
-                promptId = obj.string("prompt_id") ?: return@mapNotNull null,
-                generation = obj.long("execution_generation") ?: return@mapNotNull null,
-                question = obj.string("question") ?: obj.string("description") ?: obj.string("command").orEmpty(),
-                choices = (obj["choices"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull },
-                multi = obj.bool("multi_select") ?: false,
-            )
-        }
+        return (root["pending_controls"] as? JsonArray).orEmpty().mapNotNull { promptOf(it as? JsonObject) }
     }
 
     /** Answer the exact request the server reported; a stale generation is refused, never retried. */
@@ -194,6 +222,20 @@ class ApiServerChannel(private val http: HermesHttp) {
         http.client.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).build()
     }
 
+    private fun promptOf(obj: JsonObject?): Prompt? {
+        if (obj == null) return null
+        val kind = obj.string("kind") ?: return null
+        if (kind != "clarify" && kind != "approval") return null
+        return Prompt(
+            kind = kind,
+            promptId = obj.string("prompt_id") ?: return null,
+            generation = obj.long("execution_generation") ?: return null,
+            question = obj.string("question") ?: obj.string("description") ?: obj.string("command").orEmpty(),
+            choices = (obj["choices"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull },
+            multi = obj.bool("multi_select") ?: false,
+        )
+    }
+
     private fun parse(name: String?, data: String): Event? {
         val root = try {
             HermesJson.parseToJsonElement(data) as? JsonObject ?: return null
@@ -202,15 +244,18 @@ class ApiServerChannel(private val http: HermesHttp) {
         }
         val runId = root.string("run_id").orEmpty()
         return when (name) {
-            "run.started" -> Event.Started(runId)
-            "assistant.delta" -> Event.Delta(root.string("delta").orEmpty()).takeIf { it.text.isNotEmpty() }
-            "assistant.commentary" -> Event.Commentary(root.string("text").orEmpty()).takeIf { it.text.isNotBlank() }
-            "tool.progress", "tool.started", "tool.completed", "tool.failed" ->
-                Event.Working(root.string("tool_name"))
-            "approval.request" -> Event.Approval(root.string("description") ?: root.string("command").orEmpty(), runId)
-            "assistant.completed" -> Event.Completed(root.string("content").orEmpty(), runId)
-            "run.completed", "done" -> Event.Finished
-            "run.cancelled", "run.failed" -> Event.Failed(root.string("error") ?: name.orEmpty())
+            "message.delta" -> Event.Delta(root.string("delta").orEmpty()).takeIf { it.text.isNotEmpty() }
+            "message.interim" -> Event.Commentary(root.string("text").orEmpty()).takeIf { it.text.isNotBlank() }
+            "tool.started", "tool.completed" -> Event.Working(root.string("tool"))
+            // Reasoning crosses the wire as a step only: its text never becomes an event payload.
+            "reasoning.available" -> Event.Working(null)
+            "approval.request", "clarify.request" -> promptOf(root)?.let { Event.Control(it, runId) }
+            "approval.settled", "clarify.settled" ->
+                Event.Settled(name.removeSuffix(".settled"), root.string("request_id"), runId)
+            "run.completed" -> Event.Completed(root.string("output").orEmpty(), runId)
+            "run.cancelled" -> Event.Failed(root.string("error") ?: "cancelled")
+            "run.failed", "run.interrupted" -> Event.Failed(root.string("error") ?: name.orEmpty())
+            "replay.truncated" -> Event.Truncated(root.long("oldest_retained_seq") ?: -1L)
             "error" -> Event.Failed(root.string("message").orEmpty())
             else -> null
         }
