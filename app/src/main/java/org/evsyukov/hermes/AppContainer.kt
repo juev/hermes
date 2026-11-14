@@ -39,6 +39,9 @@ import org.evsyukov.hermes.data.auth.TokenCipher
 import org.evsyukov.hermes.data.cache.CacheDatabase
 import org.evsyukov.hermes.data.cache.ResponseCache
 import org.evsyukov.hermes.data.files.AttachmentCache
+import org.evsyukov.hermes.data.remote.ApiServerChannel
+import org.evsyukov.hermes.data.remote.ApiServerGateway
+import org.evsyukov.hermes.data.remote.GatewayChannel
 import org.evsyukov.hermes.data.remote.GatewaySocket
 import org.evsyukov.hermes.data.remote.SocketState
 import org.evsyukov.hermes.data.server.ProxyType
@@ -54,8 +57,8 @@ import org.evsyukov.hermes.tailnet.Tailnet
 import org.evsyukov.hermes.ui.chat.ProfileDraftMemory
 import java.io.File
 
-/** The server the app works with now, its HTTP routes and its chat socket. */
-class Connection(val session: ServerSession, val socket: GatewaySocket) {
+/** The server the app works with now, its HTTP routes and its chat channel. */
+class Connection(val session: ServerSession, val socket: GatewayChannel) {
     /**
      * The questions of the agent in the chats of this server, for as long as it is the app's: a chat
      * opened again finds them, another server, profile or route starts without them.
@@ -134,7 +137,12 @@ class AppContainer(
             if (!ready || profile?.url == null) return@runningFold null
             val client = clientFor(http, profile.proxy, tailnetProxy)
             val session = ServerSession(profile, client, servers, strings, responses)
-            Connection(session, GatewaySocket(session.http, scope, strings)).also { connection ->
+            val socket: GatewayChannel = if (profile.androidChannel) {
+                ApiServerGateway(ApiServerChannel(session.http), { session.owner() }, scope, strings)
+            } else {
+                GatewaySocket(session.http, scope, strings)
+            }
+            Connection(session, socket).also { connection ->
                 connectionConstructionObserver?.invoke(connection, profile, incarnation)
             }
         }

@@ -102,7 +102,7 @@ class ServerEditScreenTest {
         var saved: ServerProfile? = null
         var checked: ServerProfile? = null
         show(TailnetStatus(available = false), existing = existing, onSave = { saved = it }, onCheck = { checked = it; "OK" })
-        compose.onNodeWithText("Android channel plugin").performScrollTo().performClick()
+        compose.onNodeWithText("Android channel").performScrollTo().performClick()
         compose.onNodeWithText(string(R.string.setup_check)).performScrollTo().performClick()
         compose.waitForIdle()
         assertThat(checked?.androidChannel).isTrue()

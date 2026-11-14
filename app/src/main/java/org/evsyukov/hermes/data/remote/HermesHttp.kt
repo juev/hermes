@@ -89,10 +89,6 @@ class HermesHttp(
 
     fun endpoint(path: String): HttpUrl.Builder = base.newBuilder().addPathSegments(path.trimStart('/'))
 
-    fun chatPath(path: String): String = if (androidChannel &&
-        (path == "api/sessions" || path.startsWith("api/sessions/") || path.startsWith("api/sessions?"))
-    ) "api/plugins/hermes-android/$path" else path
-
     /** A valid access token, refreshed when it is about to run out; null on a server without sign-in. */
     suspend fun accessToken(force: Boolean = false): String? = accessToken(force, generation())
 

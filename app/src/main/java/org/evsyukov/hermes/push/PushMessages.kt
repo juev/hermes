@@ -56,13 +56,16 @@ class PushMessages(private val container: AppContainer) {
             title,
             stripMedia(message.preview).ifBlank { container.strings.get(R.string.notify_new_message) },
             // A chat of this app keeps the answers channel; cron, Telegram, Matrix and the other
-            // devices keep theirs.
-            own = message.platform == ANDROID,
+            // devices keep theirs. The dashboard socket records "android", the stock channel "api_server".
+            own = message.platform == ANDROID || message.platform == CHANNEL,
         )
     }
 
     private companion object {
         /** The platform the gateway records for a turn the app submitted over its socket. */
         const val ANDROID = "android"
+
+        /** The platform the stock api_server records for a turn of the phone's channel. */
+        const val CHANNEL = "api_server"
     }
 }

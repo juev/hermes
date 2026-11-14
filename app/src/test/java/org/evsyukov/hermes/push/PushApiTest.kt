@@ -35,18 +35,16 @@ class PushApiTest {
     }
 
     @Test
-    fun `channel push uses its principal scoped key and subscription endpoints`() = runBlocking<Unit> {
-        val owner = "a".repeat(64)
-        server.enqueue(MockResponse.Builder().body("""{"key":"fixture-vapid","channel":"android-minimal-v1","channel_owner":"$owner"}""").build())
+    fun `channel push uses the stock hermes-push key and subscription endpoints`() = runBlocking<Unit> {
+        server.enqueue(MockResponse.Builder().body("""{"key":"fixture-vapid"}""").build())
         server.enqueue(MockResponse.Builder().body("""{"ok":true}""").build())
         val strings = AppStrings(ApplicationProvider.getApplicationContext<Application>().resources)
         val http = HermesHttp(server.url("/"), OkHttpClient(), tokens = { null }, strings = strings, androidChannel = true)
         val api = PushApi(http)
         assertThat(api.key()).isEqualTo("fixture-vapid")
-        assertThat(server.takeRequest().url.encodedPath).isEqualTo("/api/plugins/hermes-android/push/key")
-        assertThat(api.channelOwner).isEqualTo(owner)
+        assertThat(server.takeRequest().url.encodedPath).isEqualTo("/api/plugins/hermes-push/key")
         api.subscribe("https://push.example/a", "fixture-public", "fixture-auth", "Phone", "device")
-        assertThat(server.takeRequest().url.encodedPath).isEqualTo("/api/plugins/hermes-android/push/subscriptions")
+        assertThat(server.takeRequest().url.encodedPath).isEqualTo("/api/plugins/hermes-push/subscriptions")
     }
 
     @Test

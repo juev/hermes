@@ -52,8 +52,26 @@ interface GatewayChannel {
     /** Waits until the socket is ready, opening it if needed; a stopped socket fails at once. */
     suspend fun awaitReady()
 
+    /** Waits for ready under [owner]; a channel without owner-scoped connects uses the plain wait. */
+    suspend fun awaitReady(owner: org.evsyukov.hermes.data.server.WorkOwner?) { awaitReady() }
+
+    /** The owner the transport belongs to; null when the channel does not track owners. */
+    fun ownerOn(transport: Long): org.evsyukov.hermes.data.server.WorkOwner? = null
+
     /** Answers a [ServerRequest]; [error] rejects it instead. */
     fun respond(id: String, result: JsonElement?, error: String? = null)
+
+    /** Opens the channel; safe to call many times. A synthetic peer needs no connection. */
+    fun start() {}
+
+    /** Opens the channel under [owner]; a channel without owner-scoped connects ignores it. */
+    fun start(owner: org.evsyukov.hermes.data.server.WorkOwner?) { start() }
+
+    /** Closes the channel for good; a replacement brings its own. */
+    fun stop() {}
+
+    /** Verifies a quiet channel is still usable; a REST channel probes on its calls. */
+    fun checkAlive() {}
 
     fun respondOwned(owner: org.evsyukov.hermes.data.server.WorkOwner, transport: Long, id: String, result: JsonElement?, error: String? = null): Boolean {
         if (transport == 0L || this.transport.value != transport) return false
