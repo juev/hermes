@@ -444,6 +444,19 @@ class ChatController(
     private val sends = SendActivityTracker()
 
     /**
+     * A stop pressed before the join named the live session: the interrupt goes out over the first
+     * join that does, and the flag is cleared then. Without it a stop pressed during the join was
+     * lost, and the turn the user stopped ran to its end. Guarded by [lock].
+     */
+    private var stopPending = false
+
+    /**
+     * The answer [stop] closed when the user pressed it: the interrupted turn's own terminal frame
+     * belongs to that answer, not to a new, empty one. Guarded by [lock].
+     */
+    private var stoppedAnswerKey: String? = null
+
+    /**
      * The questions and withdrawals that came over the connection the socket is on while the chat has
      * no join over it yet — one on its way, or none begun — in the order they came. Guarded by [lock].
      * None is left out: a withdrawal or a question dropped here could be newer than the answer of the
@@ -556,7 +569,7 @@ class ChatController(
         publish(snapshotOwner) { synchronized(lock) { flushStreamed(); observationBook.refreshItems(_state.value.items); stageObservations(); persistObservations() } }
         closed = true
         jobs.forEach { it.cancel() }
-        synchronized(lock) { early.clear() }
+        synchronized(lock) { early.clear(); stopPending = false; stoppedAnswerKey = null }
         // Keep what the chat shows on the phone: opening it again puts that on the screen at once
         // and refreshes it under the surface, rather than waiting for the server with an empty chat.
         val origin = lastLoadOwner ?: liveOwner
@@ -1149,6 +1162,9 @@ class ChatController(
         }
         if (stored == null && storedId != null) onSessionCreated(storedId)
         if (storedId != null) onLive(live, storedId, _state.value.title)
+        // A stop pressed before this join named the session goes out now, over the work of the join.
+        val stoppedWhileJoining = synchronized(lock) { stopPending.also { if (it) stopPending = false } }
+        if (stoppedWhileJoining) launchOwned(captureWork(joinAnswer.owner, liveObservationTicket)) { interrupt(live) }
         // A card left open while the chat was away comes back with the server's deadline; one the
         // server no longer has open ended while the socket was down and takes no answers.
         val pending = connectionOf(result["pending_connection"] as? JsonObject)
@@ -1164,6 +1180,7 @@ class ChatController(
                 onRequest(ServerRequest(id, obj.string("method").orEmpty(), obj["params"] as? JsonObject ?: JsonObject(emptyMap()), joinAnswer.transport), generation, listed = true)
             }
             closeUnlisted(listed, joinAnswer.asked)
+            withdrawPrompt(listed, joinAnswer.transport)
         }
         live
     } ?: throw IOException("Retired chat operation")
@@ -1290,6 +1307,9 @@ class ChatController(
     /** The submission did not go through: the message keeps its place with the outcome, in one update. */
     private fun failDelivery(sendId: Long, key: String, delivery: Delivery, error: String) {
         sends.finish(sendId)
+        // A stop that waited for this send's join has no session left to interrupt: it must not
+        // reach a later join of the chat.
+        synchronized(lock) { stopPending = false }
         edit { state ->
             state.copy(
                 items = state.items.map { item -> if (item is ChatItem.User && item.key == key) item.copy(delivery = delivery) else item },
@@ -1328,17 +1348,33 @@ class ChatController(
     }
 
     fun stop() = withRoot { origin ->
-        val live = liveId ?: return@withRoot
+        val live = liveId
         launchOwned(origin) {
-            try {
-                rpc("session.interrupt", buildJsonObject { put("session_id", live) })
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                edit { it.copy(error = e.message) }
+            if (live == null) {
+                // The send has not joined yet, so there is no session id to interrupt: the join that
+                // names it sends the interrupt. A stop pressed in that window used to do nothing.
+                synchronized(lock) { stopPending = true }
+            } else {
+                interrupt(live)
             }
             awaitingStart = false
             sends.stopAll()
-            edit { it.copy(items = closeOpen(it.items, interrupted = true), running = false) }
+            edit { state ->
+                val items = closeOpen(state.items, interrupted = true)
+                if (items !== state.items) stoppedAnswerKey = (items.last() as ChatItem.Assistant).key
+                // The stopped turn takes no answer any more: its sheet must not stay over the chat.
+                state.copy(items = items, running = false, prompt = null)
+            }
+        }
+    }
+
+    /** Interrupts the live turn; a refusal is reported on the chat. */
+    private suspend fun interrupt(live: String) {
+        try {
+            rpc("session.interrupt", buildJsonObject { put("session_id", live) })
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            edit { it.copy(error = e.message) }
         }
     }
 
@@ -1560,6 +1596,17 @@ class ChatController(
         } else {
             state.copy(questions = state.questions.map { if (it in gone) it.copy(state = QuestionState.CLOSED, confirmed = false) else it })
         }
+    }
+
+    /**
+     * Closes the approval or secret sheet a join does not list, when its request came over a
+     * connection the chat has left: the server withdrew it while the socket was down, and the
+     * sheet would otherwise cover the chat, taking answers that reach nobody.
+     */
+    private fun withdrawPrompt(listed: Set<String>, transport: Long) = edit(flush = false) { state ->
+        val prompt = state.prompt
+        if (prompt == null || prompt.request.id in listed || prompt.request.transport == transport) state
+        else state.copy(prompt = null)
     }
 
     fun answerSecret(value: String?) = withRoot(liveOwner ?: lastLoadOwner ?: initialWork.owner) { origin ->
@@ -1834,7 +1881,7 @@ class ChatController(
             // The fields of the turn leave the transcript alone, so the buffered words wait for a change that needs them.
             when (event.type) {
                 // A turn starts only after a queued model switch has been applied, so the pick is the model now.
-                "message.start" -> edit(flush = false) { it.copy(running = true, status = null, modelPending = false) }
+                "message.start" -> edit(flush = false) { stoppedAnswerKey = null; it.copy(running = true, status = null, modelPending = false) }
                 "message.complete" -> {
                     edit(flush = false) { it.copy(running = false, status = null) }
                     refreshUsage(origin)
@@ -1859,7 +1906,19 @@ class ChatController(
                 "connection.request" -> connectionOf(event.payload)?.let(::showConnection)
                 "connection.update" -> edit(flush = false) { state -> state.copy(connections = state.connections.map { it.applying(event.payload) }) }
             }
-            if (event.type in TRANSCRIPT_EVENTS) edit { it.copy(items = reduce(it.items, event, keyOf = { "live$localNamespace:${keys.incrementAndGet()}" })) }
+            if (event.type in TRANSCRIPT_EVENTS) edit {
+                // The terminal frame of a turn whose answer a local stop closed belongs to that
+                // answer: it opens for this one frame, so the text lands where the user expects it
+                // instead of in a new, empty bubble under it.
+                val tail = it.items.lastOrNull() as? ChatItem.Assistant
+                val reopened = if (event.type == "message.complete" && tail != null && tail.key == stoppedAnswerKey && !tail.streaming) {
+                    stoppedAnswerKey = null
+                    it.items.dropLast(1) + tail.copy(streaming = true)
+                } else {
+                    it.items
+                }
+                it.copy(items = reduce(reopened, event, keyOf = { "live$localNamespace:${keys.incrementAndGet()}" }))
+            }
             if (event.type in setOf("message.start", "message.interim", "reasoning.available", "tool.start", "tool.complete", "message.complete", "error")) {
                 val observed = observationBook.snapshot()
                 if (observed.none { it.id == observationBook.active && !it.completed }) {
