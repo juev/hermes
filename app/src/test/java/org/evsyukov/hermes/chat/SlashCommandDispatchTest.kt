@@ -207,7 +207,7 @@ class SlashCommandDispatchTest {
         runBlocking { gateway.connect() }
 
         // The drop may land before the confirmation starts watching: it then waits out its
-        // 15 s drop window and confirms over the status poll. Either schedule confirms once.
+        // short drop window and confirms over the status poll. Either schedule confirms once.
         val card = awaitCommand(CommandState.OK, timeoutMillis = 25_000)
         assertThat(card.name).isEqualTo("restart")
         assertThat(server.restarts.get()).isEqualTo(1)

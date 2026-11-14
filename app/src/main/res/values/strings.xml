@@ -301,6 +301,7 @@
     <string name="chat_command_unavailable">Not available on this channel.</string>
     <string name="chat_command_restarting">Restarting the gateway (force restart: active runs are interrupted)…</string>
     <string name="chat_command_restarted">Gateway restarted and back online.</string>
+    <string name="chat_command_restart_requested">Restart requested; the gateway is online.</string>
     <string name="chat_command_restart_unconfirmed">Restart requested, but the gateway did not come back in time. Check the server before trying again; the request is not repeated automatically.</string>
     <string name="chat_command_help_channel">Channel commands: /new — new chat, /stop — stop the turn, /title &lt;name&gt; — rename, /approve / /deny — answer a pending approval, /help — this list. Other Hermes commands are not available on this channel.</string>
     <string name="chat_read_aloud">Read aloud</string>

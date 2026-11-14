@@ -303,6 +303,7 @@
     <string name="chat_command_unavailable">Недоступно в этом канале.</string>
     <string name="chat_command_restarting">Перезапускаю gateway (принудительный перезапуск: активные ходы прерываются)…</string>
     <string name="chat_command_restarted">Gateway перезапущен и снова в сети.</string>
+    <string name="chat_command_restart_requested">Перезапуск запрошен; gateway в сети.</string>
     <string name="chat_command_restart_unconfirmed">Перезапуск запрошен, но gateway не вернулся вовремя. Проверьте сервер перед повторной попыткой; запрос автоматически не повторяется.</string>
     <string name="chat_command_help_channel">Команды канала: /new — новый чат, /stop — остановить ход, /title &lt;имя&gt; — переименовать, /approve / /deny — ответить на подтверждение, /help — этот список. Остальные команды Hermes в этом канале недоступны.</string>
     <string name="chat_read_aloud">Прочитать вслух</string>
