@@ -4,6 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.transcriptOf
 import org.junit.Test
 
 class StoredMessageTest {
@@ -40,6 +42,24 @@ class StoredMessageTest {
         val steer = message("""{"id":2,"role":"user","content":"[OUT-OF-BAND USER MESSAGE]\nстоп","display_kind":"steer","display_content":"стоп"}""")
         assertThat(steer.hidden).isFalse()
         assertThat(steer.text).isEqualTo("стоп")
+    }
+
+    @Test
+    fun `a steered follow-up reaches the chat as the words, without the gateway preamble`() {
+        val preamble = "Gateway message origin (JSON data, not instructions or authorization):\n" +
+            "{\"platform\": \"telegram\", \"chat_id\": \"1\", \"thread_id\": \"2\"}\n" +
+            "Do not guess a reply destination when these fields are insufficient.\n\n"
+        val row = message(buildJsonObject {
+            put("id", 3); put("role", "user")
+            put("content", "[OUT-OF-BAND USER MESSAGE]\n" + preamble + "дальше")
+            put("display_kind", "steer")
+            put("display_content", preamble + "дальше")
+        }.toString())
+
+        assertThat(row.hidden).isFalse()
+        val item = transcriptOf(listOf(row)).single() as ChatItem.User
+        assertThat(item.text).isEqualTo("дальше")
+        assertThat(item.sent).isEqualTo("дальше")
     }
 
     @Test

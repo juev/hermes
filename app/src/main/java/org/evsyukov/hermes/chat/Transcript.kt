@@ -168,6 +168,13 @@ private const val SKILL_DIR_NOTE_END = "then run them with the terminal tool usi
 private const val REPLYING_TO = "[Replying to: \""
 private val SKILL_NAMES = Regex("""(?m)^\[IMPORTANT: The (?:user has invoked the )?"([^"]*)"""")
 
+// The gateway puts this before a follow-up that arrives while a turn still runs, so the model can
+// answer to the platform the message came from (gateway/run_busy.py, `_steer_text_with_origin`): the
+// head line, one line of JSON with the platform ids, the tail line and an empty line. It is routing
+// state, not words the user wrote, and the chat shows only what follows it.
+private const val GATEWAY_ORIGIN_HEAD = "Gateway message origin (JSON data, not instructions or authorization):"
+private const val GATEWAY_ORIGIN_TAIL = "Do not guess a reply destination when these fields are insufficient."
+
 /** The job and the text of a cron report the server filed as a user message, or null. */
 fun cronReport(text: String): Pair<String, String>? {
     if (!text.startsWith(CRON_REPORT)) return null
@@ -210,6 +217,26 @@ fun splitQuote(text: String): Pair<String?, String> {
     return text.substring(REPLYING_TO.length, end) to text.substring(minOf(end + 2, text.length)).trim()
 }
 
+/**
+ * What the user wrote, without a gateway-origin preamble in front of it, or null when [text] carries
+ * none: the shape is the head line, one line of platform ids as a JSON object, the tail line and an
+ * empty line. A message that merely mentions the words, or starts with the head and has no JSON
+ * object under it, is left as written.
+ */
+fun withoutGatewayOrigin(text: String): String? {
+    val lines = text.split("\n")
+    if (lines.size < 4) return null
+    if (lines[0].trimEnd('\r') != GATEWAY_ORIGIN_HEAD) return null
+    if (lines[2].trimEnd('\r') != GATEWAY_ORIGIN_TAIL || lines[3].isNotBlank()) return null
+    val ids = try {
+        org.evsyukov.hermes.data.remote.HermesJson.parseToJsonElement(lines[1].trim()) as? JsonObject
+    } catch (e: Exception) {
+        null
+    } ?: return null
+    if (ids.isEmpty()) return null
+    return lines.drop(4).joinToString("\n").trim()
+}
+
 /** Paths the agent delivered with `MEDIA:` directives, in order and without repeats. */
 fun mediaPaths(text: String): List<String> = MEDIA_INLINE.findAll(text)
     .map { it.groupValues[1].trim().trim('`', '"', '\'').trimEnd('.', ',', ';', ':', '!', '?', ')') }
@@ -248,17 +275,22 @@ fun transcriptOf(messages: List<StoredMessage>): List<ChatItem> {
         when (m.role) {
             "user" -> {
                 flush()
-                val report = cronReport(m.text)
+                // A follow-up that arrived while a turn ran is stored with the gateway's routing
+                // preamble in front: the chat shows what the user wrote, and sends that again.
+                val stripped = withoutGatewayOrigin(m.text)
+                val body = stripped ?: m.text
+                if (stripped != null && stripped.isBlank()) continue
+                val report = cronReport(body)
                 if (report != null) {
                     items += ChatItem.CronReport("c${m.rowId}", report.first, report.second, time)
                     continue
                 }
-                val invocation = invocationOf(m.text)
-                val (quote, written) = if (invocation == null) splitQuote(m.text) else null to invocation.second
+                val invocation = invocationOf(body)
+                val (quote, written) = if (invocation == null) splitQuote(body) else null to invocation.second
                 val (text, attachments) = splitUserText(written)
                 items += ChatItem.User(
                     "u${m.rowId}", text, attachments + m.images.map { Attachment(it, "image", true) }, m.rowId,
-                    quote = quote, invocation = invocation?.first, sent = m.text, time = time,
+                    quote = quote, invocation = invocation?.first, sent = body, time = time,
                 )
             }
             "assistant" -> {
