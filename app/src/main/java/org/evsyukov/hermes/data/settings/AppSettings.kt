@@ -63,6 +63,9 @@ class AppSettings(private val context: Context, scope: CoroutineScope, backing: 
 
     val current: StateFlow<Settings> = stored.stateIn(scope, SharingStarted.Eagerly, Settings())
 
+    /** Notification work must wait for the persisted choice, not the UI's initial defaults. */
+    internal val activitySettings: StateFlow<Settings?> = stored.stateIn(scope, SharingStarted.Eagerly, null)
+
     /**
      * The permanent-connection switch as it is on disk; null until it is read. Unlike [current] it
      * does not start from the defaults, so a process the system started for the service does not

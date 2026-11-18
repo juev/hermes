@@ -6,6 +6,7 @@ import android.net.Network
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -69,7 +70,7 @@ class Connection(val session: ServerSession, val socket: GatewayChannel) {
 /** Objects shared by the whole app. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 class AppContainer(
-    context: Context,
+    private val context: Context,
     cipher: TokenCipher = KeystoreTokenCipher(),
     responseCache: ResponseCache? = null,
     connectionConstructionObserver: ((Connection, org.evsyukov.hermes.data.server.ServerProfile, Long?) -> Unit)? = null,
@@ -148,11 +149,35 @@ class AppContainer(
         }
         .stateIn(scope, SharingStarted.Eagerly, null)
 
-    val notifications = Notifications(context)
-    val turns = TurnWatcher(context, scope, connection, notifications, settings.keepConnected)
+    val notifications = Notifications(context) { settings.activitySettings.value?.notifyActivity == true }
     val activity = ActivityCheck(context)
-    val push = PushManager(context, pushDistributor ?: UnifiedPushDistributor(context), { connection.value?.session }, { settings.current.value.push }, pushData)
+    val turns = TurnWatcher(
+        context, scope, connection, notifications, settings.keepConnected,
+        replyReady = { origin ->
+            if (connection.value === origin && settings.activitySettings.value?.notifyActivity == true) {
+                ActivityCheck.request(context, origin.session.profile.id)
+            }
+        },
+    )
+    val push = PushManager(context, pushDistributor ?: UnifiedPushDistributor(context), { connection.value?.session }, { settings.activitySettings.value?.push == true }, pushData)
     val pushMessages = PushMessages(this)
+
+    internal fun requestActivityCheck(profile: String?) {
+        val origin = connection.value ?: return
+        if (profile != null && profile != origin.session.profile.id) return
+        ActivityCheck.request(context, origin.session.profile.id)
+    }
+
+    internal suspend fun checkActivity(origin: Connection) {
+        if (connection.value !== origin || settings.activitySettings.value?.notifyActivity != true) return
+        val owner = origin.session.owner()
+        val wanted = { connection.value === origin && settings.activitySettings.value?.notifyActivity == true }
+        activity.run(origin.session, { id, title, text, own ->
+            origin.session.publish(owner) {
+                if (wanted()) turns.announce(id, title, text, own = own, fromHistory = true)
+            }
+        }, visibleChat = null, owner = owner, wanted = wanted)
+    }
 
     private val _online = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
@@ -163,9 +188,12 @@ class AppContainer(
         // The authority adopts the persisted profiles and credentials once, before a session is exposed.
         scope.launch { servers.authority.bootstrap(servers) }
         scope.launch {
-            settings.current.map { it.notifyActivity to it.checkMinutes }.distinctUntilChanged().collect { (on, minutes) ->
+            settings.activitySettings.filterNotNull().map { it.notifyActivity to it.checkMinutes }.distinctUntilChanged().collect { (on, minutes) ->
                 if (on) ActivityCheck.schedule(context, minutes) else ActivityCheck.cancel(context)
             }
+        }
+        scope.launch {
+            connection.filterNotNull().collect { if (turns.inForeground) activity.initialize(it.session) }
         }
         // The screens open the socket only while the app is in front; a permanent connection opens
         // every connection itself, also one built while only the service runs. A connection replaced
@@ -187,21 +215,23 @@ class AppContainer(
                 }
             },
         )
-        // With a permanent connection the gateway's change signal replaces the periodic check.
+        // Connected clients can check sooner; the periodic check remains a fallback.
         scope.launch {
             connection.filterNotNull().flatMapLatest { c -> c.socket.events.map { c to it } }
                 .filter { (_, event) -> event.type == "sessions.changed" }
                 .debounce(2_000)
                 .collect { (c, _) ->
                     val current = settings.current.value
-                    if (current.keepConnected && current.notifyActivity && !turns.inForeground) {
-                        runCatching { activity.run(c.session, { id, title, text, own -> turns.announce(id, title, text, own = own) }, turns.visibleChat) }
+                    if (current.keepConnected) {
+                        try { checkActivity(c) }
+                        catch (cancel: CancellationException) { throw cancel }
+                        catch (error: Exception) { Log.w(TIMING_TAG, "Activity check failed", error) }
                     }
                 }
         }
         // A new server or the push switch registers again; a sign-in does it through MainViewModel.
         scope.launch {
-            combine(connection.map { it?.session?.profile?.id }.distinctUntilChanged(), settings.current.map { it.push }.distinctUntilChanged()) { _, _ -> }
+            combine(connection.map { it?.session?.profile?.id }.distinctUntilChanged(), settings.activitySettings.filterNotNull().map { it.push }.distinctUntilChanged()) { _, _ -> }
                 .collect { runCatching { push.reconcile() } }
         }
         // A removal event can lag same-ID recreation. Only its still-current removal marker

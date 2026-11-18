@@ -134,8 +134,8 @@
     <string name="settings_haptics">Vibration</string>
     <string name="settings_background">Background and notifications</string>
     <string name="settings_background_hint">While the agent replies, the app keeps the connection after you leave it, and sends a notification when the answer is ready.</string>
-    <string name="settings_activity">New activity</string>
-    <string name="settings_activity_hint">Cron replies, messages from Telegram and other devices</string>
+    <string name="settings_activity">App notifications</string>
+    <string name="settings_activity_hint">Replies and requests. No server plugin or ntfy is required.</string>
     <string name="settings_check_every">Check every</string>
     <string name="settings_minutes">%1$d min</string>
     <string name="settings_keep">Permanent connection</string>
@@ -518,8 +518,8 @@
         <item quantity="other">%1$s: works, %2$d tools</item>
     </plurals>
     <string name="settings_push">Push</string>
-    <string name="settings_push_switch">Push from the server</string>
-    <string name="settings_push_switch_hint">Answers, cron results and messages from other channels arrive at once, with the app closed</string>
+    <string name="settings_push_switch">Faster background checks</string>
+    <string name="settings_push_switch_hint">Use UnifiedPush to signal the app when an important update is ready</string>
     <string name="push_state_off">Push is off.</string>
     <string name="push_state_no_distributor">Install a UnifiedPush distributor, such as ntfy, to receive push.</string>
     <string name="push_state_choose">Choose the app that delivers push:</string>
@@ -529,8 +529,7 @@
     <string name="push_state_failed">Push did not connect; the app checks for news by itself and tries again at the next start.</string>
     <string name="push_test">Send a test push</string>
     <string name="push_test_sent">Sent to %1$d phone(s)</string>
-    <string name="push_test_title">Hermes push</string>
-    <string name="push_test_text">Push from the server works.</string>
+
     <string name="notify_connection_title">The agent asks to connect a service</string>
     <string name="notify_connection_text">Open the chat to connect %1$s</string>
     <string name="connect_title_accounts">Connect services</string>

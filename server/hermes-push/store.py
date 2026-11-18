@@ -80,11 +80,11 @@ def _same_phone(item: dict, endpoint: str, name: str, device: str) -> bool:
     return bool(name) and item.get("name") == name
 
 
-def subscribe(endpoint: str, p256dh: str, auth: str, name: str = "", device: str = "", root: Path | None = None) -> None:
+def subscribe(endpoint: str, p256dh: str, auth: str, name: str = "", device: str = "", root: Path | None = None, *, delivery: str = "") -> None:
     """Adds the phone in place of its older subscriptions; the oldest subscriptions go beyond the limit."""
     with _lock:
         items = [s for s in subscriptions(root) if not _same_phone(s, endpoint, name, device)]
-        items.append({"endpoint": endpoint, "p256dh": p256dh, "auth": auth, "name": name, "device": device})
+        items.append({"endpoint": endpoint, "p256dh": p256dh, "auth": auth, "name": name, "device": device, "delivery": delivery})
         _save(items[-MAX_SUBSCRIPTIONS:], root)
 
 

@@ -71,6 +71,7 @@ class TurnWatcher(
     private val inFront: () -> Boolean = {
         ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     },
+    private val replyReady: ((Connection) -> Unit)? = null,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** Live session id to the stored id the notification opens. */
@@ -105,20 +106,21 @@ class TurnWatcher(
 
     /**
      * Announces a finished turn of [storedId], unless its chat is on the screen of the app in front.
-     * The same answer arrives twice — the socket of the app says the turn ended, the push of that turn
-     * follows seconds later — and is one notification; another answer is a new notification however
-     * recently this chat was announced. [own] tells a chat the phone opened from one of another channel
-     * or device, which keeps its own notification channel.
+     * The history check tracks progress on disk, so two distinct replies with identical text can
+     * both notify. Direct announcements (such as errors) use short-lived duplicate suppression.
+     * [own] distinguishes a chat of this app from one on another channel or device.
      */
-    fun announce(storedId: String, title: String, text: String, failed: Boolean = false, own: Boolean = true) {
+    fun announce(storedId: String, title: String, text: String, failed: Boolean = false, own: Boolean = true, fromHistory: Boolean = false) {
         if (showing(storedId)) {
             read(storedId)
             return
         }
-        val words = words(text) ?: return
-        val previous = announced[storedId]
-        if (previous != null && previous.first == words && now() - previous.second < DUPLICATE_MS) return
-        announced[storedId] = words to now()
+        if (!fromHistory) {
+            val words = words(text) ?: return
+            val previous = announced[storedId]
+            if (previous != null && previous.first == words && now() - previous.second < DUPLICATE_MS) return
+            announced[storedId] = words to now()
+        }
         if (own) notifications.answer(storedId, title, text, failed) else notifications.activity(storedId, title, text)
     }
 
@@ -150,7 +152,7 @@ class TurnWatcher(
         scope.launch {
             connection.collectLatest { c ->
                 if (c == null) return@collectLatest
-                launch { c.socket.events.collect(::onEvent) }
+                launch { c.socket.events.collect { onEvent(it, c) } }
                 c.socket.requests.collect(::onRequest)
             }
         }
@@ -223,7 +225,7 @@ class TurnWatcher(
         }
     }
 
-    internal fun onEvent(event: GatewayEvent) {
+    internal fun onEvent(event: GatewayEvent, origin: Connection? = connection.value) {
         val live = event.sessionId ?: return
         when (event.type) {
             "session.title" -> event.payload.string("session_id")?.let { stored ->
@@ -247,8 +249,10 @@ class TurnWatcher(
                 _running.update { it - live }
                 val failed = event.payload.string("status") == "error"
                 val shown = if (failed) event.payload.string("error") ?: context.getString(R.string.notify_model_error) else stripMedia(text).take(400)
-                // Every finished turn is announced, unless its chat is the one on the screen of the app in front.
-                if (showing(stored)) read(stored) else announce(stored, titles[stored] ?: "Hermes", shown, failed)
+                if (!failed && replyReady != null) {
+                    if (showing(stored)) read(stored)
+                    origin?.let(replyReady)
+                } else announce(stored, titles[stored] ?: "Hermes", shown, failed)
                 settle()
             }
             "request.cancel" -> event.payload.string("id")?.let(notifications::cancelRequest)

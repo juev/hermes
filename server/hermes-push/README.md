@@ -5,6 +5,11 @@ chats of the app, Telegram, Matrix and cron runs. Messages go through UnifiedPus
 example the ntfy app and its server) encrypted with the phone's keys (RFC 8291), so the
 push server sees only ciphertext. Only the `cryptography` package of Hermes is used.
 
+Android uses this optional plugin only to request an earlier background check. A subscription
+with `delivery: "refresh-v1"` gets an encrypted refresh signal for a non-empty finished reply,
+not a session ID, job name or reply text. Older subscriptions still get the legacy payload;
+current Android treats that payload as a signal too. Notifications work without this plugin.
+
 Subagents that `delegate_task` starts inside a chat send nothing: their turns run with the
 platform `subagent`, and the turn of the chat that started them sends the push.
 
@@ -79,7 +84,7 @@ directly.
 2. In ntfy: Settings → Default server, enter the server's URL.
 3. If the server has access control: Settings → Manage users → Add new user, with the same
    URL, the user name and the password.
-4. In Hermes: Settings → Push → Push from the server. With several distributors installed,
+4. In Hermes: Settings → Push → Faster background checks. With several distributors installed,
    pick ntfy.
 5. Settings → Push shows `On: the server pushes to ntfy`. Send a test push.
 

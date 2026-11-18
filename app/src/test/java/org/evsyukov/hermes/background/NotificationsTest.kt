@@ -52,6 +52,20 @@ class NotificationsTest {
     }
 
     @Test
+    fun `app setting blocks posts even with Android permission granted`() {
+        var enabled = false
+        val notifications = Notifications(context) { enabled }
+        notifications.answer("chat", "Chat", "hidden", error = false)
+        notifications.activity("other", "Other", "hidden")
+        notifications.request("chat", "request", "Approval", "Run it?", listOf("once"))
+        assertThat(shadowOf(manager).allNotifications).isEmpty()
+
+        enabled = true
+        notifications.answer("chat", "Chat", "visible", error = false)
+        assertThat(posted("chat", "chat".hashCode())).isNotNull()
+    }
+
+    @Test
     fun `an approval is not a message notification of the chat and stays`() {
         val notifications = Notifications(context)
         notifications.answer("chat", "Chat", "an answer", error = false)

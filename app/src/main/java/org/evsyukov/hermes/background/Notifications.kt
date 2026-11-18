@@ -16,7 +16,7 @@ import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.plainText
 
 /** The notifications of the app, one channel per kind so each can be muted on its own. */
-class Notifications(private val context: Context) {
+class Notifications(private val context: Context, private val enabled: () -> Boolean = { true }) {
     private val manager = NotificationManagerCompat.from(context)
 
     init {
@@ -42,6 +42,7 @@ class Notifications(private val context: Context) {
 
     /** Posts unless the user has not allowed notifications; the check sits here for lint to see it. */
     private fun post(tag: String, id: Int, notification: Notification) {
+        if (!enabled()) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         manager.notify(tag, id, notification)
     }

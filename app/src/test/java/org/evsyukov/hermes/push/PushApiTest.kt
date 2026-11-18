@@ -64,6 +64,7 @@ class PushApiTest {
             "auth", "secret",
             "name", "CPH2747",
             "device", "9774d56d682e549c",
+            "delivery", "refresh-v1",
         )
     }
 }

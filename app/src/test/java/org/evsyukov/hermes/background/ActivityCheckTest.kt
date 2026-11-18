@@ -1,6 +1,8 @@
 package org.evsyukov.hermes.background
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
@@ -34,6 +36,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -116,6 +119,48 @@ class ActivityCheckTest {
     @Test
     fun `a history that fails holds back no other answer, and is announced once it reads, when it is the older chat`() =
         failingHistoryHoldsBackNothing(failingFirst = false)
+
+    @Test
+    fun `a local check announces ordinary replies but not standalone runs`() = runBlocking<Unit> {
+        history.sessions += listOf(
+            session("normal", lastActive = 120.0, source = "android"),
+            session("oneshot", lastActive = 121.0, source = "oneshot"),
+            session("cli", lastActive = 122.0, source = "cli", extra = """, "created_source": "oneshot""""),
+        )
+        for ((id, timestamp) in listOf("normal" to 120.0, "oneshot" to 121.0, "cli" to 122.0)) {
+            history.rows[id] = listOf(answer(1, timestamp, "reply from $id"))
+        }
+
+        run()
+        run(check = ActivityCheck(context))
+
+        assertThat(announced).containsExactly("normal" to "reply from normal")
+    }
+
+    @Test
+    fun `local history posts once per discovered reply without a push preview or plugin`() = runBlocking<Unit> {
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val manager = shadowOf(context.getSystemService(NotificationManager::class.java))
+        val notifications = Notifications(context)
+        val deliver: (String, String, String, Boolean) -> Unit = { id, title, text, own ->
+            if (own) notifications.answer(id, title, text, error = false) else notifications.activity(id, title, text)
+        }
+        history.sessions += session("normal", lastActive = 120.0, source = "android", preview = "Not notification text")
+        history.rows["normal"] = listOf(answer(1, 120.0, "Stored answer"))
+        check.run(session, deliver, null)
+        val posted = manager.getNotification("chat", "normal".hashCode())
+        assertThat(posted).isNotNull()
+        assertThat(shadowOf(posted!!).contentText.toString()).isEqualTo("Stored answer")
+
+        notifications.cancelChat("normal")
+        ActivityCheck(context).run(session, deliver, null)
+        assertThat(manager.getNotification("chat", "normal".hashCode())).isNull()
+
+        history.sessions[0] = session("normal", lastActive = 130.0, source = "android")
+        history.rows["normal"] = history.rows.getValue("normal") + answer(2, 130.0, "Stored answer")
+        check.run(session, deliver, null)
+        assertThat(manager.getNotification("chat", "normal".hashCode())).isNotNull()
+    }
 
     @Test
     fun `answers past the limit of one check are announced by the next, each once`() = runBlocking<Unit> {

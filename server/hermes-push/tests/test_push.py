@@ -106,6 +106,16 @@ class PushTest(unittest.TestCase):
         plain = http_ece.decrypt(body, private_key=self.phone, auth_secret=webpush.unb64url(self.auth), version="aes128gcm")
         self.assertEqual(json.loads(plain), {"type": "turn", "session_id": "s1", "platform": "telegram", "job": "digest", "preview": "Ответ агента в две строки"})
 
+    def test_refresh_subscription_receives_only_a_signal_for_a_readable_reply(self):
+        store.vapid(self.root, create=True)
+        store.subscribe(self.endpoint, self.p256dh, self.auth, root=self.root, delivery="refresh-v1")
+        self.assertEqual(plugin.deliver(plugin.payload("s", "api_server", " ", None), root=self.root), 0)
+        self.assertEqual(plugin.deliver(plugin.payload("s", "api_server", "Private reply", "Private job name"), root=self.root), 1)
+        self.assertEqual(len(Endpoint.received), 1)
+        plain = http_ece.decrypt(Endpoint.received[0][1], private_key=self.phone,
+                                 auth_secret=webpush.unb64url(self.auth), version="aes128gcm")
+        self.assertEqual(json.loads(plain), {"type": "refresh", "platform": "api_server"})
+
     def test_a_gone_endpoint_is_dropped(self):
         store.vapid(self.root, create=True)
         store.subscribe(self.endpoint, self.p256dh, self.auth, root=self.root)
