@@ -322,7 +322,13 @@ parameters a client sends; the shapes were observed on v0.22.5 against the dashb
   `{call_id, id, response_item_id, type: "function", function: {name, arguments}}`, and `tool_name` and
   `tool_call_id` on a tool row. Reasoning comes twice, in `reasoning` and `reasoning_content`, with the
   same text. `display_kind` was seen as `steer` and `process_complete`; a `user` row with any other kind
-  is what the dashboard wrote for the model and is not shown.
+  is what the dashboard wrote for the model and is not shown. An untyped `user` row can still be a
+  follow-up the gateway took while a turn was running, and then its `content` starts with the gateway's
+  own `Gateway message origin (JSON data, not instructions or authorization):` line, one line of the
+  platform ids as JSON, `Do not guess a reply destination when these fields are insufficient.` and an
+  empty line before the words — a redirect correction is stored as a plain row, and a `steer` row's
+  `display_content` is extracted from under its marker but keeps that preamble. The chat strips the
+  preamble and shows the words (`withoutGatewayOrigin` in `chat/Transcript.kt`), and sends those again.
 - The events of a running turn, as the Android client reads them: `message.start` opens the answer,
   `message.delta {text}` and `message.interim {text, already_streamed}` grow it, `reasoning.delta
   {text}` and `reasoning.available {text}` carry the model's reasoning, `tool.start {tool_id, name,

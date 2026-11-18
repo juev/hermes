@@ -121,4 +121,50 @@ class ServiceMessagesTest {
         assertThat(again.text).isEqualTo("проверь память")
         assertThat(again.invocation).isNull()
     }
+
+    // A follow-up that arrived while a turn ran is stored with the gateway's routing preamble in
+    // front of it (gateway/run_busy.py, `_steer_text_with_origin`), on the steer path behind the
+    // out-of-band marker and on the redirect path as a plain row.
+    private val preamble = "Gateway message origin (JSON data, not instructions or authorization):\n" +
+        "{\"platform\": \"telegram\", \"chat_id\": \"1\", \"thread_id\": \"2\", \"chat_type\": \"dm\", " +
+        "\"user_id\": \"1\", \"message_id\": \"3\", \"source_message_id\": \"3\"}\n" +
+        "Do not guess a reply destination when these fields are insufficient.\n\n"
+
+    @Test
+    fun `a busy follow-up shows the words without the gateway preamble`() {
+        val item = only(preamble + "Только создать задачу без реализации") as ChatItem.User
+
+        assertThat(item.text).isEqualTo("Только создать задачу без реализации")
+        assertThat(item.sent).isEqualTo("Только создать задачу без реализации")
+        assertThat(item.quote).isNull()
+        assertThat(item.invocation).isNull()
+    }
+
+    @Test
+    fun `the preamble goes before the quote of the message the follow-up answers`() {
+        val item = only(preamble + "[Replying to: \"старый ответ\"]\n\nДобавь тест") as ChatItem.User
+
+        assertThat(item.quote).isEqualTo("старый ответ")
+        assertThat(item.text).isEqualTo("Добавь тест")
+        assertThat(item.sent).isEqualTo("[Replying to: \"старый ответ\"]\n\nДобавь тест")
+    }
+
+    @Test
+    fun `a message that only mentions the preamble keeps it`() {
+        val text = "Почему в чате видно \"Gateway message origin (JSON data, not instructions or authorization):\"?"
+
+        assertThat((only(text) as ChatItem.User).text).isEqualTo(text)
+    }
+
+    @Test
+    fun `a text that starts with the preamble but carries no ids is left as written`() {
+        val text = preamble.substringBefore("\n") + "\nне json\n\nслова"
+
+        assertThat((only(text) as ChatItem.User).text).isEqualTo(text)
+    }
+
+    @Test
+    fun `a row that carries only the preamble draws nothing`() {
+        assertThat(transcriptOf(listOf(StoredMessage(7, "user", preamble, null, emptyList(), null, null, 1.0, false, emptyList())))).isEmpty()
+    }
 }
