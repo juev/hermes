@@ -1,6 +1,7 @@
 package org.evsyukov.hermes.ui.admin
 
 import android.app.Application
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -72,6 +73,13 @@ class ModelPolicyTest {
         compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
     }
 
+    private fun clickModelOption(model: String) {
+        // The current-model card and the options list load independently.
+        val option = hasText(model) and hasClickAction()
+        compose.waitUntil(10_000) { compose.onAllNodes(option).fetchSemanticsNodes().size == 1 }
+        compose.onNode(option).performClick()
+    }
+
     private fun assertNoText(text: String) {
         assertThat(compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes()).isEmpty()
     }
@@ -82,9 +90,7 @@ class ModelPolicyTest {
         mock.get("/api/model/options", OPTIONS)
         mock.setModelResponse("""{"ok":true}""")
         show()
-        waitForText("gpt-5-codex")
-
-        compose.onNodeWithText("gpt-5").performClick()
+        clickModelOption("gpt-5")
 
         val policy = app.getString(R.string.admin_model_policy_kept)
         waitForText(policy)
@@ -105,9 +111,7 @@ class ModelPolicyTest {
         mock.get("/api/model/options", OPTIONS)
         mock.setModelResponse("""{"ok":true}""")
         show()
-        waitForText("gpt-5-codex")
-
-        compose.onNodeWithText("gpt-5").performClick()
+        clickModelOption("gpt-5")
 
         waitForText(app.getString(R.string.admin_model_new_chats, "gpt-5"))
         assertNoText(app.getString(R.string.admin_model_policy_kept))
@@ -122,9 +126,7 @@ class ModelPolicyTest {
         mock.get("/api/model/options", OPTIONS)
         mock.setModelResponse("""{"confirm_required":true,"confirm_message":"gpt-5 is expensive"}""")
         show()
-        waitForText("gpt-5-codex")
-
-        compose.onNodeWithText("gpt-5").performClick()
+        clickModelOption("gpt-5")
         waitForText("gpt-5 is expensive")
         assertNoText(app.getString(R.string.admin_model_new_chats, "gpt-5"))
         assertNoText(app.getString(R.string.admin_model_policy_kept))
