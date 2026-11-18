@@ -6,10 +6,12 @@ Run: uv run --no-project --with cryptography --with http_ece python -m unittest 
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +27,13 @@ store, webpush = plugin.store, plugin.webpush
 import http_ece  # noqa: E402
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+
+
+def turn_hook(home, execution=None):
+    hooks = {}
+    plugin.register(SimpleNamespace(register_hook=hooks.__setitem__, current_cron_execution=lambda: execution))
+    constants = {"hermes_constants": SimpleNamespace(get_hermes_home=lambda: home)}
+    return hooks["post_llm_call"], mock.patch.dict(sys.modules, constants)
 
 
 class Endpoint(BaseHTTPRequestHandler):
@@ -113,17 +122,89 @@ class PushTest(unittest.TestCase):
         self.assertEqual(len(plugin.payload("s", "tui", "x" * 5000, None)["preview"]), plugin.PREVIEW_CHARS)
 
     def test_only_turns_of_chats_notify_not_their_subagents(self):
-        hooks = {}
-        ctx = SimpleNamespace(register_hook=hooks.__setitem__, current_cron_execution=lambda: None)
-        plugin.register(ctx)
+        hook, profile = turn_hook(self.root)
         sent = []
         # The send runs here rather than on a thread, so a push the hook started is seen at once.
         inline = SimpleNamespace(Thread=lambda target, args, **_: SimpleNamespace(start=lambda: target(*args)))
-        with mock.patch.object(plugin.store, "subscriptions", return_value=[{"endpoint": self.endpoint}]), \
+        with profile, mock.patch.object(plugin.store, "subscriptions", return_value=[{"endpoint": self.endpoint}]), \
                 mock.patch.object(plugin, "deliver", sent.append), mock.patch.object(plugin, "threading", inline):
-            hooks["post_llm_call"](session_id="child", assistant_response="Found three files", platform="subagent")
-            hooks["post_llm_call"](session_id="chat", assistant_response="Done", platform="tui")
+            hook(session_id="child", assistant_response="Found three files", platform="subagent")
+            hook(session_id="chat", assistant_response="Done", platform="tui")
         self.assertEqual([m["session_id"] for m in sent], ["chat"])
+
+    def test_only_eligible_turns_reach_the_test_subscription(self):
+        store.vapid(self.root, create=True)
+        store.subscribe(self.endpoint, self.p256dh, self.auth, root=self.root)
+        with closing(sqlite3.connect(self.root / "state.db")) as db, db:
+            db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, created_source TEXT)")
+            db.executemany("INSERT INTO sessions VALUES (?, ?, ?)", [
+                ("smoke", "local", "oneshot"),
+                ("chat", "local", "cli"),
+                ("phone", "api_server", "api_server"),
+                ("scheduled", "cron", "cron"),
+            ])
+        hook, profile = turn_hook(self.root)
+        cron_hook, _ = turn_hook(self.root, SimpleNamespace(job_name="Digest"))
+        # Inline scheduling makes absence of an HTTP request observable without a sleep.
+        def inline(target, args, **_):
+            return SimpleNamespace(start=lambda: target(*args, root=self.root))
+
+        with profile, mock.patch.object(plugin.store, "data_dir", return_value=self.root), \
+                mock.patch.object(plugin, "threading", SimpleNamespace(Thread=inline)):
+            hook(session_id="smoke", platform="local", assistant_response="No push")
+            self.assertEqual(Endpoint.received, [])
+            hook(session_id="chat", platform="local", assistant_response="Interactive reply")
+            hook(session_id="phone", platform="api_server", assistant_response="Android reply")
+            cron_hook(session_id="scheduled", platform="cron", assistant_response="Scheduled report")
+            self.assertEqual(plugin.deliver({"type": "test"}, root=self.root), 1)
+        auth = webpush.unb64url(self.auth)
+        received = [json.loads(http_ece.decrypt(body, private_key=self.phone, auth_secret=auth, version="aes128gcm"))
+                    for _, body in Endpoint.received]
+        self.assertEqual([(msg.get("session_id"), msg.get("platform"), msg.get("job")) for msg in received], [
+            ("chat", "local", None), ("phone", "api_server", None), ("scheduled", "cron", "Digest"),
+            (None, None, None),
+        ])
+        self.assertEqual(received[-1], {"type": "test"})
+
+
+class TurnProvenanceTest(unittest.TestCase):
+    def test_only_standalone_one_shots_are_silent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with closing(sqlite3.connect(home / "state.db")) as db, db:
+                db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, created_source TEXT)")
+                db.executemany("INSERT INTO sessions VALUES (?, ?, ?)", [
+                    ("direct", "oneshot", None),
+                    ("gateway", "local", "oneshot"),
+                    ("chat", "local", "cli"),
+                ])
+            hook, profile = turn_hook(home)
+            with profile, \
+                    mock.patch.object(plugin.store, "subscriptions", return_value=[{}]), \
+                    mock.patch.object(plugin, "threading") as scheduler:
+                for session_id, platform in [("direct", "cli"), ("gateway", "local"), ("chat", "local")]:
+                    hook(session_id=session_id, platform=platform, assistant_response="Done")
+                scheduled = [call.kwargs["args"][0]["session_id"] for call in scheduler.Thread.call_args_list]
+            self.assertEqual(scheduled, ["chat"])
+
+    def test_old_or_missing_state_db_preserves_normal_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db_path = home / "state.db"
+            hook, profile = turn_hook(home)
+            with profile, mock.patch.object(plugin.store, "subscriptions", return_value=[{}]), \
+                    mock.patch.object(plugin, "threading") as scheduler:
+                hook(session_id="explicit", platform="oneshot")
+                scheduler.Thread.assert_not_called()
+                hook(session_id="unknown", platform="cli")
+                self.assertFalse(db_path.exists())
+                with closing(sqlite3.connect(db_path)) as db, db:
+                    db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT)")
+                    db.executemany("INSERT INTO sessions VALUES (?, ?)", [("smoke", "oneshot"), ("chat", "cli")])
+                hook(session_id="smoke", platform="cli")
+                hook(session_id="chat", platform="cli")
+                scheduled = [call.kwargs["args"][0]["session_id"] for call in scheduler.Thread.call_args_list]
+            self.assertEqual(scheduled, ["unknown", "chat"])
 
 
 if __name__ == "__main__":

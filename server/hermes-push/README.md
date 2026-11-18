@@ -8,6 +8,12 @@ push server sees only ciphertext. Only the `cryptography` package of Hermes is u
 Subagents that `delegate_task` starts inside a chat send nothing: their turns run with the
 platform `subagent`, and the turn of the chat that started them sends the push.
 
+Standalone one-shot sessions (such as a fresh `hermes chat -q` run) send nothing either.
+The plugin checks the active profile's stored `source` and `created_source` before sending,
+even when the turn's platform is `local` or `cli`. A one-shot command that resumes an ordinary
+chat does not reclassify that chat. If session metadata is unavailable, normal delivery is
+unchanged unless the hook explicitly reports `oneshot`.
+
 ## Parts
 
 - `__init__.py` registers the `post_llm_call` hook; it runs in the process that ran the turn

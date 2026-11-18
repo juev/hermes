@@ -7,7 +7,9 @@ dashboard for its own chats); the send happens on a thread, so the turn does not
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
+from contextlib import closing
 
 from . import store, webpush
 
@@ -48,9 +50,37 @@ def deliver(message: dict, root=None) -> int:
     return sent
 
 
+def _is_one_shot(session_id: str, platform: str | None) -> bool:
+    if platform == "oneshot":
+        return True
+
+    # The hook reports the turn's transport (e.g. local or cli), not the session's
+    # creator. Read only provenance from the active profile; do not open a store
+    # that can initialize or migrate the database during a notification callback.
+    from hermes_constants import get_hermes_home
+
+    uri = (get_hermes_home() / "state.db").absolute().as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.05)) as db:
+            try:
+                row = db.execute("SELECT source, created_source FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "no such column: created_source":
+                    raise
+                # Older Hermes releases only record the session source.
+                row = db.execute("SELECT source FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    except sqlite3.Error:
+        # Missing or unavailable provenance is not evidence that a chat is a smoke run.
+        logger.debug("hermes-push: session provenance unavailable", exc_info=True)
+        return False
+    return row is not None and "oneshot" in row
+
+
 def register(ctx) -> None:
     def on_turn(session_id=None, assistant_response=None, platform=None, **_kwargs):
         if not session_id or platform == SUBAGENT or not store.subscriptions():
+            return
+        if _is_one_shot(session_id, platform):
             return
         execution = ctx.current_cron_execution()
         job = (getattr(execution, "job_name", None) or getattr(execution, "job_id", None)) if execution else None
