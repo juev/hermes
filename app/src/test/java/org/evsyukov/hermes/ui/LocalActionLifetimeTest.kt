@@ -1253,9 +1253,11 @@ class LocalActionLifetimeTest {
         val beta = profile("life-late-mark-beta", "Beta", betaServer.server)
         makeContainer()
         seed(alpha, beta)
-        startViewModel(alpha)
+        startViewModel(alpha, readyReplacementInitial = true)
         alphaServer.chats = mapOf("late" to summary("late"))
         val origin = container.connection.value!!
+        val owner = origin.session.owner()
+        val connections = origin.socket.connections.value
 
         val activeBefore = alphaServer.activeLists.get()
         val hold = alphaServer.holdNextMessages()
@@ -1269,23 +1271,48 @@ class LocalActionLifetimeTest {
         withTimeout(10_000) { while (alphaServer.activeLists.get() == activeBefore) delay(10) }
         assertThat(container.reads.of(alpha.id)["late"]).isNull()
 
-        withContext(mainDispatcher) { chat.reload() }
-        assertThat(withTimeout(10_000) { vm.signOut(alpha) }).isTrue()
-        assertThat(container.servers.load().tokens[alpha.id]).isNull()
-        assertThat(container.reads.of(alpha.id)).isEmpty()
-        assertThat(container.connection.value).isSameInstanceAs(origin)
-        assertThat(vm.chat.value).isSameInstanceAs(chat)
-        hold.release.countDown()
+        val reconnectHandled = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val historyPath = "/api/sessions/late/messages"
+        try {
+            withContext(mainDispatcher) {
+                val accepted = chat.acceptedReloadRequests.get()
+                chat.reload()
+                assertThat(chat.acceptedReloadRequests.get()).isEqualTo(accepted + 1)
+                chat.afterReconnectEnqueue = { reconnectHandled.complete(Unit) }
+            }
+            assertThat(withTimeout(10_000) { vm.signOut(alpha) }).isTrue()
+            assertThat(container.servers.load().tokens[alpha.id]).isNull()
+            assertThat(container.reads.of(alpha.id)).isEmpty()
+            assertThat(container.connection.value).isSameInstanceAs(origin)
+            assertThat(vm.chat.value).isSameInstanceAs(chat)
 
-        // The load finishes and delivers its read after the cleanup.
-        withTimeout(10_000) { while (chat.completedLoadCycles.get() == 0L) delay(5) }
-        assertThat(chat.state.value.error).isNull()
-        withTimeout(10_000) {
-            chat.loadCompletion!!.await()
-            vm.readProducers.toList().forEach { it.join() }
+            // This fixture allows anonymous access. Let the same Connection announce its new
+            // authorization while the old history is still holding the load cycle open.
+            val current = origin.session.owner()
+            assertThat(current).isNotEqualTo(owner)
+            withTimeout(10_000) {
+                origin.socket.connections.first { it > connections }
+                reconnectHandled.await()
+            }
+            assertThat(origin.socket.ownerOn(origin.socket.transport.value)).isEqualTo(current)
+            hold.release.countDown()
+
+            // The entire cycle includes any queued reload/rejoin and its synchronous read
+            // callback. Only then is it safe to join the writes launched by that callback.
+            withTimeout(10_000) {
+                while (chat.completedLoadCycles.get() == 0L) delay(5)
+                vm.readProducers.toList().forEach { it.join() }
+            }
+            assertThat(chat.state.value.error).isNull()
+            com.google.common.truth.Truth.assertWithMessage("Retired history must not mark late read")
+                .that(container.reads.of(alpha.id)).doesNotContainKey("late")
+            val histories = alphaServer.requests.filter { it.url.encodedPath == historyPath }
+            assertThat(histories).hasSize(1)
+            assertThat(histories.single().headers["Authorization"]).isEqualTo("Bearer alpha-token")
+        } finally {
+            hold.release.countDown()
+            chat.afterReconnectEnqueue = null
         }
-
-        assertThat(container.reads.of(alpha.id)).doesNotContainKey("late")
 
         // The server the app works with now still writes its own marks.
         val betaSince = betaServer.listed.get()
