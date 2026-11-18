@@ -521,7 +521,10 @@ class ChatController(
                 }
                 // The load that opens a chat joins the connection it finds; only a later one needs it again.
                 if (joinedGeneration.get() == 0 && generation <= connectedWhenMade) return@collect
-                val owner = (socket as? org.evsyukov.hermes.data.remote.GatewaySocket)?.ownerOn(socket.transport.value) ?: liveOwner ?: lastLoadOwner ?: initialWork.owner
+                // A reconnect continues the chat's own work. A new transport can belong to a
+                // newer authorization (even on the same Connection); it cannot authorize this
+                // retained chat to reload on its own. A fresh explicit action can start new work.
+                val owner = liveOwner?.takeIf(::holds) ?: lastLoadOwner ?: initialWork.owner
                 val origin = captureWork(owner, liveObservationTicket)
                 beforeReconnectEnqueue?.invoke()
                 // The initial observation can wait while another load joins this transport.
