@@ -75,6 +75,7 @@ class PushApi(private val http: HermesHttp, private val owner: WorkOwner? = null
                 put("auth", auth)
                 put("name", name)
                 put("device", device)
+                put("delivery", "refresh-v1")
             },
         )
     }
@@ -113,7 +114,7 @@ class PushManager(
         val profile = current.profile
         if (instance != null && instance != profile.id) return false
         // A channel conversation is the stock api_server's own: its turns carry that platform.
-        if (profile.androidChannel) return message.platform == CHANNEL_PLATFORM
+        if (profile.androidChannel) return message.type == "test" || message.platform == CHANNEL_PLATFORM
         return message.channel.isBlank()
     }
 

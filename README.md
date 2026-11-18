@@ -81,10 +81,12 @@ drawer, a new chat from the pencil button or by pulling the chat up past its las
   not for the notifications. The screens take new state only while the app is in front. This saves
   work on the phone; it does not change what the network delivers, and no battery measurement backs a
   figure.
-- Push: with the `server/hermes-push` plugin on the server and a UnifiedPush distributor such as
-  ntfy on the phone, every finished turn (chats, Telegram, Matrix, cron) arrives at once, end-to-end
-  encrypted. A self-hosted ntfy server works too; how to connect it is in
-  `server/hermes-push/README.md`. Without them a periodic check, or an optional permanent connection, reports news.
+- Android posts reply notifications when they are enabled in the app and allowed by the system.
+  No server plugin, UnifiedPush distributor or permanent connection is required. Without a live
+  connection or push, updates arrive on the background check schedule, subject to Android's battery
+  and network restrictions. The optional `server/hermes-push` plugin and a UnifiedPush distributor
+  such as ntfy can signal an earlier check after a finished reply; the app fetches notification text
+  from the server itself. See `server/hermes-push/README.md` for setup, including self-hosted ntfy.
   While the permanent connection is on, Settings shows whether battery optimization is on for the
   app and opens the system list to change it. Push needs no exemption: the distributor holds the
   connection.

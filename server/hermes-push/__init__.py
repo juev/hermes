@@ -40,8 +40,15 @@ def deliver(message: dict, root=None) -> int:
         return 0
     sent = 0
     for sub in store.subscriptions(root):
+        wire = message
+        if sub.get("delivery") == "refresh-v1" and message.get("type") == "turn":
+            if not message.get("preview"):
+                continue
+            wire = {"type": "refresh", "platform": message["platform"]}
+        elif sub.get("delivery") == "refresh-v1" and message.get("type") == "test":
+            wire = {"type": "test"}
         try:
-            webpush.send(sub["endpoint"], sub["p256dh"], sub["auth"], message, key, SUBJECT)
+            webpush.send(sub["endpoint"], sub["p256dh"], sub["auth"], wire, key, SUBJECT)
             sent += 1
         except webpush.PushGone:
             store.unsubscribe(sub["endpoint"], root)

@@ -16,5 +16,12 @@ class PushMessageTest {
     fun `anything else is not a message`() {
         assertThat(PushMessage.parse("not json".toByteArray())).isNull()
         assertThat(PushMessage.parse("""{"kind":"entries"}""".toByteArray())).isNull()
+        assertThat(PushMessage.parse("""{"type":"presence","session_id":"chat"}""".toByteArray())).isNull()
+    }
+
+    @Test
+    fun `refresh signals do not need a chat or preview`() {
+        assertThat(PushMessage.parse("""{"type":"refresh","platform":"api_server"}""".toByteArray()))
+            .isEqualTo(PushMessage("refresh", platform = "api_server"))
     }
 }

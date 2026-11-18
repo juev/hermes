@@ -9,16 +9,21 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.evsyukov.hermes.HermesApplication
@@ -38,7 +43,10 @@ private val Context.seenStore by preferencesDataStore(name = "seen")
  */
 fun unseenChats(chats: List<ChatSummary>, mark: Double?, behind: Map<String, Double> = emptyMap()): List<ChatSummary> {
     if (mark == null) return emptyList()
-    return chats.filter { it.lastActive > (behind[it.id] ?: mark) && it.messageCount > 0 && !it.archived }
+    return chats.filter {
+        it.lastActive > (behind[it.id] ?: mark) && it.messageCount > 0 && !it.archived &&
+            it.source != "oneshot" && it.createdSource != "oneshot"
+    }
 }
 
 /**
@@ -48,6 +56,13 @@ fun unseenChats(chats: List<ChatSummary>, mark: Double?, behind: Map<String, Dou
  */
 class ActivityCheck(private val context: Context) {
     private val lock = Mutex()
+
+    /** A new profile starts at the current time; returning to the app never skips pending replies. */
+    suspend fun initialize(session: ServerSession) = lock.withLock {
+        context.seenStore.edit {
+            if (it[key(session)] == null) it[key(session)] = System.currentTimeMillis() / 1000.0
+        }
+    }
 
     /**
      * Moves the mark to now: what the user saw in the app needs no notification later. It waits for a
@@ -66,11 +81,15 @@ class ActivityCheck(private val context: Context) {
         session: ServerSession,
         announce: (chatId: String, title: String, text: String, own: Boolean) -> Unit,
         visibleChat: String?,
+        owner: org.evsyukov.hermes.data.server.WorkOwner = session.owner(),
+        wanted: () -> Boolean = { true },
     ) = lock.withLock {
+        if (!wanted() || !session.holds(owner)) return@withLock
         val prefs = context.seenStore.data.first()
+        val api = session.chatFor(owner)
         val mark = prefs[key(session)]
         val behind = decode(prefs[behindKey(session)])
-        val chats = session.chat.list(limit = 30).chats
+        val chats = api.list(limit = 30).chats
         val fresh = unseenChats(chats, mark, behind).filter { it.id != visibleChat }
         // The mark moves past every chat; one whose history did not read, or whose answer is past the
         // limit of a check, stays behind it where its check stood, and the next check takes it again.
@@ -81,13 +100,14 @@ class ActivityCheck(private val context: Context) {
         var shown = 0
         try {
             for (chat in fresh) {
+                if (!wanted() || !session.holds(owner)) break
                 val since = behind[chat.id] ?: mark ?: break
                 if (shown == MAX_NOTIFICATIONS) {
                     stays[chat.id] = since
                 } else {
                     // Activity is not an answer: reasoning, tool runs and the user's own words move it too.
                     val reply = try {
-                        session.chat.lastReply(chat.id, after = since)
+                        api.lastReply(chat.id, after = since)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -95,12 +115,13 @@ class ActivityCheck(private val context: Context) {
                         stays[chat.id] = since
                         null
                     }
+                    if (!wanted() || !session.holds(owner)) break
                     if (reply != null) {
                         announce(
                             chat.id,
                             chat.label.ifBlank { context.getString(R.string.common_new_chat) },
                             stripMedia(reply.text).take(400).ifBlank { context.getString(R.string.notify_new_message) },
-                            chat.source == ANDROID,
+                            chat.source == ANDROID || (session.profile.androidChannel && chat.source == "api_server"),
                         )
                         shown++
                     }
@@ -113,6 +134,7 @@ class ActivityCheck(private val context: Context) {
             val newest = chats.maxOfOrNull { it.lastActive } ?: mark ?: System.currentTimeMillis() / 1000.0
             withContext(NonCancellable) {
                 context.seenStore.edit {
+                    if (!wanted() || !session.holds(owner)) return@edit
                     it[key(session)] = maxOf(newest, it[key(session)] ?: 0.0)
                     if (stays.isEmpty()) it.remove(behindKey(session)) else it[behindKey(session)] = json.encodeToString(stays.toMap())
                 }
@@ -130,6 +152,7 @@ class ActivityCheck(private val context: Context) {
 
     companion object {
         private const val WORK = "activity-check"
+        internal const val PROFILE = "profile"
         private const val MAX_NOTIFICATIONS = 5
         private const val TAG = "HermesActivity"
         private val json = Json { ignoreUnknownKeys = true }
@@ -147,18 +170,31 @@ class ActivityCheck(private val context: Context) {
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK)
         }
+
+        fun request(context: Context, profile: String) {
+            val request = OneTimeWorkRequestBuilder<ActivityWorker>()
+                .setInputData(workDataOf(PROFILE to profile))
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork("$WORK:$profile", ExistingWorkPolicy.KEEP, request)
+        }
     }
 }
 
 class ActivityWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val container = (applicationContext as HermesApplication).container
-        // With push working the server announces new answers itself.
-        if (container.turns.inForeground || container.push.active) return Result.success()
-        val session = container.connection.value?.session ?: return Result.success()
         return try {
-            container.activity.run(session, { id, title, text, own -> container.turns.announce(id, title, text, own = own) }, null)
+            val enabled = withTimeoutOrNull(10_000) { container.settings.activitySettings.filterNotNull().first().notifyActivity }
+                ?: return Result.retry()
+            if (!enabled) return Result.success()
+            val connection = withTimeoutOrNull(10_000) { container.connection.filterNotNull().first() }
+                ?: return Result.success()
+            val profile = inputData.getString(ActivityCheck.PROFILE)
+            if (profile == null || profile == connection.session.profile.id) container.checkActivity(connection)
             Result.success()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("HermesActivity", "Check failed", e)
             Result.retry()

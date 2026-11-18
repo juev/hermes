@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -38,6 +39,7 @@ class Subscription(BaseModel):
     name: str = ""
     # A stable id of the phone: its new subscription replaces the ones it no longer reads.
     device: str = ""
+    delivery: Literal["", "refresh-v1"] = ""
 
 
 class Endpoint(BaseModel):
@@ -54,7 +56,7 @@ async def key():
 async def subscribe(body: Subscription):
     if not body.endpoint.startswith("https://"):
         raise HTTPException(status_code=400, detail="endpoint must be https")
-    store.subscribe(body.endpoint, body.p256dh, body.auth, body.name, body.device)
+    store.subscribe(body.endpoint, body.p256dh, body.auth, body.name, body.device, delivery=body.delivery)
     return {"ok": True}
 
 
