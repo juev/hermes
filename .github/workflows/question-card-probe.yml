@@ -18,8 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: question-card-probe-${{ github.ref }}
-  cancel-in-progress: true
+  group: question-card-probe-${{ github.run_id }}
 
 jobs:
   probe:
