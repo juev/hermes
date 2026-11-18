@@ -7,7 +7,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertCountEquals
@@ -27,7 +26,6 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
@@ -170,28 +168,7 @@ class QuestionCardTest {
             gateway.ask(id, "clarify", params)
             gateway.deliverRequests()
         } }
-        try {
-            waitFor(hasTestTag("question:$id"))
-        } catch (missing: ComposeTimeoutException) {
-            probe("after-5s", id)
-            val late = runCatching {
-                compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("question:$id")).fetchSemanticsNodes().isNotEmpty() }
-            }
-            probe("after-15s-late=${late.isSuccess}", id)
-            throw missing
-        }
-    }
-
-    /** Temporary diagnostic for the intermittent missing card: what the chat holds and what the screen shows. */
-    private fun probe(stage: String, id: String) {
-        println("PROBE-CARD $stage id=$id questions=${current?.state?.value?.questions?.map { it.id to it.state }}")
-        println("PROBE-CARD $stage calls=${gateway.calls.map { it.first }} responses=${gateway.responses.map { it.id }}")
-        println("PROBE-CARD $stage waiting-chip=${compose.onAllNodes(hasTestTag("question-waiting")).fetchSemanticsNodes().size}")
-        println("PROBE-CARD $stage main-stack=" + Thread.getAllStackTraces().entries
-            .filter { it.key.name == "main" }.joinToString("\n") { (thread, frames) ->
-                "$thread\n" + frames.take(25).joinToString("\n") { "    at $it" }
-            })
-        println("PROBE-CARD $stage tree=${compose.onRoot(useUnmergedTree = true).printToString()}")
+        waitFor(hasTestTag("question:$id"))
     }
 
     private fun waitFor(matcher: androidx.compose.ui.test.SemanticsMatcher) =
@@ -392,6 +369,19 @@ class QuestionCardTest {
 
         compose.waitUntil(5_000) { chat.state.value.questions.single().state == QuestionState.SUBMITTED }
         assertThat(gateway.responses.single().result).isEqualTo(json("""{"answers":{"q0":null,"q1":"api first"},"outcome":"submitted"}"""))
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h360dp")
+    fun `a question asked to a reader at the end comes into view on a short screen`() {
+        open()
+        val long = "Before I change the deployment, which of the environments listed in the runbook should I treat as " +
+            "the source of truth for the database credentials, given that staging was rebuilt last week?"
+        ask("r1", clarify(long to listOf("production", "staging", "none"), "Should I restart the services afterwards, and in which order?" to emptyList()))
+
+        compose.onNodeWithTag("question:r1").assertIsDisplayed()
+        compose.onNodeWithTag("question-waiting").assertDoesNotExist()
+        assertThat(gateway.responses).isEmpty()
     }
 
     @Test
