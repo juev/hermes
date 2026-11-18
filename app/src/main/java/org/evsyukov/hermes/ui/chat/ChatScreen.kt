@@ -197,15 +197,17 @@ fun ChatScreen(
     val lastAnswer = (state.items.lastOrNull() as? ChatItem.Assistant)?.key
     val lastUser = state.items.lastOrNull { it is ChatItem.User }?.key
     // A new message or question joins the reader who is at the end; one who scrolled up stays put, and
-    // a screen that comes back to the messages it showed keeps its place. The place is read from the
-    // list's position rather than [atBottom], which knows nothing before the first layout.
+    // a screen that comes back to the messages it showed keeps its place. The place is read while the
+    // new rows are still only in composition: the list lays them out by keeping the row the reader saw
+    // at the edge, so a position read after that layout is the kept row, not where the reader was.
+    val atEnd: Boolean by remember(controller) { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
+    val wasAtEnd = atEnd
     val shownRows = state.items.size + state.questions.size
     LaunchedEffect(controller, shownRows) {
         val seen = draft.shownItems
         draft.shownItems = shownRows
         if (seen == shownRows) return@LaunchedEffect
-        val atEnd = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        if (atEnd || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
+        if (wasAtEnd || state.items.lastOrNull() is ChatItem.User) listState.scrollToItem(0)
     }
 
     val threshold = with(LocalDensity.current) { 96.dp.toPx() }

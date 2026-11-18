@@ -372,6 +372,19 @@ class QuestionCardTest {
     }
 
     @Test
+    @Config(qualifiers = "w360dp-h360dp")
+    fun `a question asked to a reader at the end comes into view on a short screen`() {
+        open()
+        val long = "Before I change the deployment, which of the environments listed in the runbook should I treat as " +
+            "the source of truth for the database credentials, given that staging was rebuilt last week?"
+        ask("r1", clarify(long to listOf("production", "staging", "none"), "Should I restart the services afterwards, and in which order?" to emptyList()))
+
+        compose.onNodeWithTag("question:r1").assertIsDisplayed()
+        compose.onNodeWithTag("question-waiting").assertDoesNotExist()
+        assertThat(gateway.responses).isEmpty()
+    }
+
+    @Test
     fun `a card kept from an earlier visit shows its words at once and answers only once its chat has joined`() {
         open()
         ask("r1", clarify("Which file?" to emptyList()))
