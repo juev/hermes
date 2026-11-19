@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
@@ -268,7 +269,7 @@ class ApiServerGateway(
 
     private fun startStream(sid: String, runId: String) {
         streamJobs[sid]?.cancel()
-        streamJobs[sid] = scope.launch {
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var started = false
             var terminal = false
             try {
@@ -307,7 +308,7 @@ class ApiServerGateway(
                                 }
                                 is ApiServerChannel.Event.Failed -> {
                                     terminal = true
-                                    failTurn(sid, runId, event.message)
+                                    failTurn(sid, runId, event.message, event.terminal)
                                 }
                                 // A lost replay tail is repaired from the raw history at the turn's end.
                                 is ApiServerChannel.Event.Truncated -> Unit
@@ -338,9 +339,11 @@ class ApiServerGateway(
                     }
                 }
             } finally {
-                streamJobs.remove(sid)
+                streamJobs.remove(sid, coroutineContext.job)
             }
         }
+        streamJobs[sid] = job
+        job.start()
     }
 
     private suspend fun completeTurn(sid: String, runId: String, text: String) {
@@ -360,13 +363,16 @@ class ApiServerGateway(
         emit(sid, "message.complete", payload)
     }
 
-    private suspend fun failTurn(sid: String, runId: String, message: String) {
+    private suspend fun failTurn(sid: String, runId: String, message: String, terminal: Boolean = false) {
         activeRuns.remove(sid)
         inflight.remove(sid)
         runSeq.remove(sid)
         boundaries.remove(runId)
         admissions.remove(runId)
-        emit(sid, "error", buildJsonObject { put("message", message) })
+        emit(sid, "error", buildJsonObject {
+            put("message", message)
+            if (terminal) put("terminal", true)
+        })
     }
 
     /**

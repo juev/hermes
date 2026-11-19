@@ -66,7 +66,7 @@ class ApiServerChannel(private val http: HermesHttp) {
         data class Settled(val kind: String, val requestId: String?, val runId: String) : Event
         /** The readable answer of the turn; [text] is what the phone shows. */
         data class Completed(val text: String, val runId: String) : Event
-        data class Failed(val message: String) : Event
+        data class Failed(val message: String, val terminal: Boolean = false) : Event
         /** The replay lost its tail: history must be read again from the server. */
         data class Truncated(val oldestSeq: Long) : Event
         /** The stream is over; nothing new to show. */
@@ -271,8 +271,8 @@ class ApiServerChannel(private val http: HermesHttp) {
             "approval.settled", "clarify.settled" ->
                 Event.Settled(name.removeSuffix(".settled"), root.string("request_id"), runId)
             "run.completed" -> Event.Completed(root.string("output").orEmpty(), runId)
-            "run.cancelled" -> Event.Failed(root.string("error") ?: "cancelled")
-            "run.failed", "run.interrupted" -> Event.Failed(root.string("error") ?: name.orEmpty())
+            "run.cancelled" -> Event.Failed(root.string("error") ?: "cancelled", terminal = true)
+            "run.failed", "run.interrupted" -> Event.Failed(root.string("error") ?: name.orEmpty(), terminal = true)
             "replay.truncated" -> Event.Truncated(root.long("oldest_retained_seq") ?: -1L)
             "error" -> Event.Failed(root.string("message").orEmpty())
             else -> null

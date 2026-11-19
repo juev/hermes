@@ -236,6 +236,44 @@ class ChatScreenStateTest {
     }
 
     @Test
+    fun `an offline completion drains only after a current idle rejoin`() = runBlocking<Unit> {
+        val chat = runningChat()
+        val draft = ChatDraft().apply { text = "after reconnect" }
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        assertThat(chat.followUps.entries.value.map { it.text }).containsExactly("after reconnect")
+        gateway.drop()
+        gateway.finishWithoutEvent()
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        gateway.establish()
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        gateway.announce()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") < 2) delay(10) }
+        assertThat(gateway.calls.filter { it.first == "prompt.submit" }.map { it.second.string("text") }).containsExactly("first", "after reconnect").inOrder()
+        assertThat(gateway.count("session.interrupt")).isEqualTo(0)
+        chat.close()
+    }
+
+    @Test
+    fun `Stop does not use optimistic idle to release the queue`() = runBlocking<Unit> {
+        val chat = runningChat()
+        val draft = ChatDraft().apply { text = "already queued" }
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        compose.onNode(hasSetTextAction()).performTextInput("still drafting")
+        compose.onNodeWithContentDescription(app.getString(R.string.composer_stop)).performClick()
+        withTimeout(5_000) { chat.state.first { !it.running } }
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        assertThat(chat.followUps.entries.value.map { it.text }).containsExactly("already queued")
+        assertThat(draft.text).isEqualTo("still drafting")
+        gateway.complete()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") < 2) delay(10) }
+        assertThat(gateway.calls.filter { it.first == "prompt.submit" }.map { it.second.string("text") }).containsExactly("first", "already queued").inOrder()
+        assertThat(gateway.count("session.interrupt")).isEqualTo(1)
+        chat.close()
+    }
+
+    @Test
     fun `sending clears only the draft of the chat it goes from`() {
         val memory = ChatDraftMemory()
         val first = chat(null)

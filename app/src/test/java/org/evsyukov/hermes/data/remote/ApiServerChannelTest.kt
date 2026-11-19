@@ -240,7 +240,7 @@ class ApiServerChannelTest {
             val events = mutableListOf<ApiServerChannel.Event>()
             channel(server).runEvents("run_1") { event, _ -> events += event }
             assertThat(events).containsExactly(
-                ApiServerChannel.Event.Failed("provider auth failed"),
+                ApiServerChannel.Event.Failed("provider auth failed", terminal = true),
                 ApiServerChannel.Event.Finished,
             ).inOrder()
         }

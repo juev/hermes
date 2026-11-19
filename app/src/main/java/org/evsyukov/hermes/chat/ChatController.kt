@@ -2146,7 +2146,7 @@ class ChatController(
             if (event.type == "message.complete" || event.type == "error") {
                 observationBook.terminal(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.payload, _state.value.items, _state.value.error, admissionId = event.admissionId)
                 syncObservations()
-                if (event.type == "message.complete") {
+                if (event.type == "message.complete" || (channelMode && event.payload.bool("terminal") == true)) {
                     queueIdleOn = event.transport
                     wakeFollowUps(origin)
                 }
