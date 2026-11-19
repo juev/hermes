@@ -106,4 +106,4 @@ class ChatDraftMemory(private val capacity: Int = DEFAULT_CAPACITY) {
 }
 
 /** Whether the draft holds something the user would miss: words, or files picked for the message. */
-val ChatDraft.hasContent: Boolean get() = text.isNotBlank() || attachments.isNotEmpty()
+val ChatDraft.hasContent: Boolean get() = text.isNotBlank() || attachments.isNotEmpty() || followUps.entries.value.isNotEmpty()

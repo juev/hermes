@@ -846,6 +846,7 @@ class MainViewModel(
             questionMemory = connection.questions,
             wanted = { container.connection.value === connection },
             initialOwner = initialOwner,
+            followUps = draft.followUps,
         )
         owner = created
         draftBindings[created] = DraftBinding(connection, draft, memory)

@@ -259,6 +259,7 @@
     <string name="composer_file">Файл</string>
     <string name="composer_stop">Остановить</string>
     <string name="composer_queue">Добавить в очередь</string>
+    <string name="chat_followups_queued">В очереди на устройстве (%1$d): %2$s</string>
     <string name="composer_remove">Убрать</string>
     <string name="chat_choice_once">Разрешить один раз</string>
     <string name="chat_choice_session">Разрешить в этом чате</string>

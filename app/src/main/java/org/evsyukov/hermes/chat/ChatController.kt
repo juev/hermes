@@ -48,6 +48,7 @@ import org.evsyukov.hermes.data.server.ServerSession
 import org.evsyukov.hermes.data.server.WorkOwner
 import java.io.IOException
 import java.util.Base64
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -148,9 +149,13 @@ class ChatController(
     private val questionMemory: QuestionMemory = QuestionMemory(),
     private val wanted: () -> Boolean = { true },
     initialOwner: WorkOwner = session.owner(),
+    val followUps: FollowUpQueue = FollowUpQueue(),
 ) {
     /** Orders every change of the chat's state, its publication and the change of its visibility. */
     private val lock = Any()
+    /** Idle proof on the current transport. Local Stop and disconnect do not establish idle. */
+    private var queueIdleOn = 0L
+    private var stopping = false
 
     /** The chat's own state, always current but for the words in [streamed]; guarded by [lock]. */
     private val _state = MutableStateFlow(
@@ -1038,6 +1043,7 @@ class ChatController(
     /** The join can no longer be trusted: its connection is lost. Guarded by [lock]. */
     private fun invalidateJoin() {
         joinedOn = 0L
+        queueIdleOn = 0L
         unconfirm()
     }
 
@@ -1190,6 +1196,13 @@ class ChatController(
             }
             closeUnlisted(listed, joinAnswer.asked)
             withdrawPrompt(listed, joinAnswer.transport)
+            synchronized(lock) {
+                if (!starting && !serverRunning && !sentAfterAsk && !_state.value.running &&
+                    !stoppedWhileJoining && !stopping && (result.runningFlag() ?: info?.runningFlag()) == false &&
+                    (!bound || joinAnswer.boundRevision == currentEventRevision)
+                ) queueIdleOn = joinAnswer.transport
+            }
+            wakeFollowUps(joinAnswer.owner)
         }
         live
     } ?: throw IOException("Retired chat operation")
@@ -1215,20 +1228,53 @@ class ChatController(
         }
     }
 
-    fun send(text: String, attachments: List<LocalAttachment>) {
+    fun send(text: String, attachments: List<LocalAttachment>, fromComposer: Boolean = false) {
         // A recognized control command never enters the prompt path; attachments keep it a prompt.
         val command = if (attachments.isEmpty()) SlashCommands.parse(text) else null
         if (command != null) {
             withRoot(publicAction = "command") { origin -> dispatchCommand(origin, command) }
             return
         }
-        submitPrompt(text, text, attachments)
+        submitPrompt(text, text, attachments, fromComposer = fromComposer)
+    }
+
+    private fun wakeFollowUps(owner: WorkOwner) {
+        if (followUps.entries.value.isNotEmpty()) scope.launch {
+            submitPrompt("", "", emptyList(), fromComposer = true, drain = true, owner = owner)
+        }
     }
 
     /** The ordinary prompt path; [sent] is what the server takes when it differs from the shown [text]. */
-    private fun submitPrompt(text: String, sent: String, attachments: List<LocalAttachment>) {
+    private fun submitPrompt(
+        text: String,
+        sent: String,
+        attachments: List<LocalAttachment>,
+        fromComposer: Boolean = false,
+        drain: Boolean = false,
+        owner: WorkOwner? = null,
+    ) {
         var start: (() -> Unit)? = null
-        withRoot(publicAction = "send") { origin ->
+        withRoot(owner, publicAction = "send") { origin ->
+            val next = synchronized(lock) {
+                if (closed) return@withRoot
+                if (drain) {
+                    if (stopping || stopPending || awaitingStart || _state.value.running || queueIdleOn == 0L ||
+                        queueIdleOn != validJoin() || socket.state.value != SocketState.READY ||
+                        submitCompletion?.isCompleted == false
+                    ) return@withRoot
+                    followUps.take() ?: return@withRoot
+                } else {
+                    if (fromComposer && (_state.value.running || stopping || stopPending || followUps.entries.value.isNotEmpty())) {
+                        if (text.isNotBlank() || attachments.isNotEmpty()) followUps.add(text, attachments)
+                        wakeFollowUps(origin.owner)
+                        return@withRoot
+                    }
+                    null
+                }.also { queueIdleOn = 0L }
+            }
+            val text = next?.text ?: text
+            val sent = next?.text ?: sent
+            val attachments = next?.files ?: attachments
             if (text.isBlank() && attachments.isEmpty()) return@withRoot
             val sendId = sends.begin()
             val key = "local$localNamespace:${keys.incrementAndGet()}"
@@ -1277,7 +1323,14 @@ class ChatController(
                             publish(origin.owner) { synchronized(lock) { observationBook.moveSession(observationId, _state.value.storedId.orEmpty()); stageObservations() } }
                             synchronized(lock) { persistObservations() }
                             val proofOrigin = ReceiptOrigin(origin.owner.profileId, origin.owner.generation, live, operation().transport.get(), liveRemoteProfile)
-                            val ack = rpc("prompt.submit", buildJsonObject { put("session_id", live); put("text", prompt) })
+                            val ack = rpc("prompt.submit", buildJsonObject {
+                                put("session_id", live)
+                                put("text", prompt)
+                                if (fromComposer && !channelMode) {
+                                    put("queued", true)
+                                    put("submission_id", UUID.randomUUID().toString())
+                                }
+                            })
                             publish(origin.owner) { synchronized(lock) { observationBook.bind(observationId, key, proofOrigin, prompt, ack); syncObservations() } }
                             markDelivery(key, Delivery.SENT)
                             hold.submitted()
@@ -1304,6 +1357,7 @@ class ChatController(
                         hold.release()
                         sends.finish(sendId)
                     }
+                    wakeFollowUps(origin.owner)
                 }
                 submit.start()
             }
@@ -1497,11 +1551,15 @@ class ChatController(
     }
 
     fun stop() = withRoot { origin ->
-        val live = liveId
+        val live = synchronized(lock) {
+            if (stopping) return@withRoot
+            stopping = true
+            queueIdleOn = 0L
+            liveId
+        }
         launchOwned(origin) {
             if (live == null) {
-                // The send has not joined yet, so there is no session id to interrupt: the join that
-                // names it sends the interrupt. A stop pressed in that window used to do nothing.
+                // The join that names the session sends the interrupt.
                 synchronized(lock) { stopPending = true }
             } else {
                 interrupt(live)
@@ -1511,9 +1569,11 @@ class ChatController(
             edit { state ->
                 val items = closeOpen(state.items, interrupted = true)
                 if (items !== state.items) stoppedAnswerKey = (items.last() as ChatItem.Assistant).key
-                // The stopped turn takes no answer any more: its sheet must not stay over the chat.
                 state.copy(items = items, running = false, prompt = null)
             }
+        }.invokeOnCompletion {
+            synchronized(lock) { stopping = false }
+            wakeFollowUps(origin.owner)
         }
     }
 
@@ -2013,6 +2073,7 @@ class ChatController(
         }
         when (event.type) {
             "message.start" -> {
+                synchronized(lock) { queueIdleOn = 0L }
                 awaitingStart = false
                 sends.started()
             }
@@ -2085,6 +2146,10 @@ class ChatController(
             if (event.type == "message.complete" || event.type == "error") {
                 observationBook.terminal(ReceiptOrigin(origin.profileId, origin.generation, event.sessionId.orEmpty(), event.transport, liveRemoteProfile), event.payload, _state.value.items, _state.value.error, admissionId = event.admissionId)
                 syncObservations()
+                if (event.type == "message.complete") {
+                    queueIdleOn = event.transport
+                    wakeFollowUps(origin)
+                }
             }
             afterCurrentEvent?.invoke(event.type)
         }

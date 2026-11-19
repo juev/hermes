@@ -223,7 +223,7 @@ fun ChatScreen(
     fun send(text: String = draft.text.trim()) {
         if (text.isEmpty() && draft.attachments.isEmpty()) return
         if (settings.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-        controller.send(text, draft.attachments)
+        controller.send(text, draft.attachments, fromComposer = true)
         draft.text = ""
         draft.attachments = emptyList()
         draft.fromShare = false
@@ -464,6 +464,15 @@ fun ChatScreen(
             ) { Text(error, color = colors.text, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         }
         Column(Modifier.navigationBarsPadding()) {
+            val queued by controller.followUps.entries.collectAsStateWithLifecycle()
+            if (queued.isNotEmpty()) {
+                val next = queued.first()
+                Text(
+                    stringResource(R.string.chat_followups_queued, queued.size, next.text.ifBlank { next.files.joinToString { it.name } }),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    color = colors.text, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
             if (quickActions) {
                 val resources = LocalResources.current
                 QuickActions(onAction = { send(quickMessage(resources.getString(it.prompt), draft.text)) }, modifier = Modifier.padding(top = 8.dp))

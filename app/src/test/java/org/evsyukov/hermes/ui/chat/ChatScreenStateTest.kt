@@ -187,19 +187,51 @@ class ChatScreenStateTest {
     }
 
     @Test
-    fun `queue submits the follow-up once and clears it while a turn runs`() = runBlocking<Unit> {
+    fun `queue leaves the active answer streaming and sends the follow-up after completion`() = runBlocking<Unit> {
         val chat = runningChat()
         val draft = ChatDraft().apply { text = "follow-up" }
         compose.setContent { HermesTheme { Screen(chat, draft) } }
-        val submitted = gateway.count("prompt.submit")
-        assertThat(submitted).isEqualTo(1)
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
 
         compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
-        withTimeout(5_000) { while (gateway.count("prompt.submit") < submitted + 1) delay(10) }
         compose.waitForIdle()
-
-        assertThat(gateway.count("prompt.submit")).isEqualTo(submitted + 1)
+        compose.onNodeWithText("follow-up", substring = true).assertExists()
         assertThat(draft.text).isEmpty()
+        gateway.delta("first answer")
+        withTimeout(5_000) { chat.state.first { state -> state.items.filterIsInstance<ChatItem.Assistant>().any { it.text == "first answer" && it.streaming } } }
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        assertThat(gateway.count("session.interrupt")).isEqualTo(0)
+
+        gateway.complete()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") < 2) delay(10) }
+        assertThat(gateway.calls.filter { it.first == "prompt.submit" }.map { it.second.string("text") }).containsExactly("first", "follow-up").inOrder()
+        assertThat(chat.state.value.items.filterIsInstance<ChatItem.Assistant>().map { it.text }).contains("first answer")
+        chat.close()
+    }
+
+    @Test
+    fun `multiple follow-ups stay queued and run in order after each real completion`() = runBlocking<Unit> {
+        val chat = runningChat()
+        val draft = ChatDraft()
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        for (text in listOf("second", "third")) {
+            compose.onNode(hasSetTextAction()).performTextInput(text)
+            compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
+        }
+        assertThat(chat.followUps.entries.value.map { it.text }).containsExactly("second", "third").inOrder()
+        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        gateway.complete()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") != 2) delay(10) }
+        gateway.start("second")
+        gateway.delta("second answer")
+        withTimeout(5_000) { chat.state.first { s -> s.items.lastOrNull().let { it is ChatItem.Assistant && it.text == "second answer" && it.streaming } } }
+        assertThat(gateway.count("prompt.submit")).isEqualTo(2)
+        gateway.complete()
+        withTimeout(5_000) { while (gateway.count("prompt.submit") != 3) delay(10) }
+        val prompts = gateway.calls.filter { it.first == "prompt.submit" }.map { it.second }
+        assertThat(prompts.map { it.string("text") }).containsExactly("first", "second", "third").inOrder()
+        assertThat(prompts.drop(1).map { it.string("submission_id") }.toSet()).hasSize(2)
+        assertThat(gateway.count("session.interrupt")).isEqualTo(0)
         chat.close()
     }
 

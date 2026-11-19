@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.evsyukov.hermes.chat.LocalAttachment
+import org.evsyukov.hermes.chat.FollowUpQueue
 
 /**
  * What the user has prepared in one chat and where they were in it. The app keeps it while the chat is
@@ -11,6 +12,7 @@ import org.evsyukov.hermes.chat.LocalAttachment
  * takes the chat screen away, and coming back finds the words, the files and the place as they were.
  */
 class ChatDraft {
+    internal val followUps = FollowUpQueue()
     var text by mutableStateOf("")
     var attachments by mutableStateOf<List<LocalAttachment>>(emptyList())
 

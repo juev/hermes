@@ -175,6 +175,16 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
   chat as idle.
 - A prompt goes into the live session: `prompt.submit {session_id, text}`. A turn is ended with
   `session.interrupt {session_id}`, and the live session is released with `session.close {session_id}`.
+- A non-interrupting composer submit includes `queued: true` and a fresh `submission_id` for that
+  submission. Upstream legacy handlers at v0.22.5 (`bf0203a7`) and the v0.23.0 pin (`2bd378ed`)
+  explicitly use `queued: true` to bypass the configured steer/redirect/interrupt path; the newer
+  session-authority handler in v0.23.1 (`3b421578`) requires `submission_id` and admits to a FIFO.
+  This is source evidence for these revisions, not a claim that every dashboard listener exposes
+  the canonical handler. A rejected or uncertain submit is not retried without the flag.
+- In the client fallback, drafts waiting behind an active turn are a local FIFO, not a server
+  admission or a transcript row. Only dispatch its head after the active terminal frame or a
+  current confirmed idle snapshot; attach files at dispatch, never while filling the queue.
+  Do not use Stop's optimistic display state or a disconnected stream as proof of idle.
 - Events that follow a join are not all turn events: `session.info` and `platforms.changed` arrive
   for the session itself and say what the chat is doing, not what the answer says.
 - A reconnect has two things to catch up on, and they are different questions. The **events** a client
