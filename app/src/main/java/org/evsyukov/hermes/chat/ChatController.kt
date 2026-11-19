@@ -1323,14 +1323,7 @@ class ChatController(
                             publish(origin.owner) { synchronized(lock) { observationBook.moveSession(observationId, _state.value.storedId.orEmpty()); stageObservations() } }
                             synchronized(lock) { persistObservations() }
                             val proofOrigin = ReceiptOrigin(origin.owner.profileId, origin.owner.generation, live, operation().transport.get(), liveRemoteProfile)
-                            val ack = rpc("prompt.submit", buildJsonObject {
-                                put("session_id", live)
-                                put("text", prompt)
-                                if (fromComposer && !channelMode) {
-                                    put("queued", true)
-                                    put("submission_id", UUID.randomUUID().toString())
-                                }
-                            })
+                            val ack = submitPromptRpc(live, prompt, fromComposer)
                             publish(origin.owner) { synchronized(lock) { observationBook.bind(observationId, key, proofOrigin, prompt, ack); syncObservations() } }
                             markDelivery(key, Delivery.SENT)
                             hold.submitted()
@@ -1363,6 +1356,27 @@ class ChatController(
             }
         }
         start?.invoke()
+    }
+
+    private suspend fun submitPromptRpc(live: String, prompt: String, fromComposer: Boolean): JsonElement {
+        val useDashboardQueue = fromComposer && !channelMode
+        val params = buildJsonObject {
+            put("session_id", live)
+            put("text", prompt)
+            if (useDashboardQueue) put("queued", true)
+        }
+        if (!useDashboardQueue) return rpc("prompt.submit", params)
+
+        val withId = JsonObject(params + ("submission_id" to JsonPrimitive(UUID.randomUUID().toString())))
+        return try {
+            rpc("prompt.submit", withId)
+        } catch (error: RpcException) {
+            // The legacy Dashboard validates extras before entering the handler. Only that
+            // refusal proves the turn was not admitted; keep queued=true to avoid busy steering.
+            val explanation = error.message?.substringBefore(" — ")
+            if (error.code != 4000 || explanation != "invalid params for prompt.submit: submission_id: Extra inputs are not permitted") throw error
+            rpc("prompt.submit", params)
+        }
     }
 
     /**

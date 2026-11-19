@@ -179,8 +179,14 @@ Source: `../app/src/main/java/org/evsyukov/hermes/data/remote/` (`HermesHttp.kt`
   submission. Upstream legacy handlers at v0.22.5 (`bf0203a7`) and the v0.23.0 pin (`2bd378ed`)
   explicitly use `queued: true` to bypass the configured steer/redirect/interrupt path; the newer
   session-authority handler in v0.23.1 (`3b421578`) requires `submission_id` and admits to a FIFO.
-  This is source evidence for these revisions, not a claim that every dashboard listener exposes
-  the canonical handler. A rejected or uncertain submit is not retried without the flag.
+  The Dashboard's legacy TUI schema accepts `queued` but rejects `submission_id` before the
+  handler with RPC `4000`, `invalid params for prompt.submit: submission_id: Extra inputs are not
+  permitted` (optionally followed by a version hint). Android retries that specific rejection once
+  on the same transport and live session, omitting only `submission_id`. It keeps `queued: true`
+  in case the session became busy since the client observed idle. Losing the ACK, timing out or
+  reconnecting does not authorize resubmission. The same rule applies if the retry's ACK is lost.
+  These schemas are source evidence; Android's compatibility and FIFO tests use simulated
+  Dashboard responses, not the reporter's deployed version.
 - In the client fallback, drafts waiting behind an active turn are a local FIFO, not a server
   admission or a transcript row. Only dispatch its head after the active terminal frame or a
   current confirmed idle snapshot; attach files at dispatch, never while filling the queue.

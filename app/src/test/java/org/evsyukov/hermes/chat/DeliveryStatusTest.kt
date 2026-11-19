@@ -53,8 +53,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * What the app says after a submission: the server took it, refused it, or the answer never came.
- * The protocol has no client message id and no idempotency key on `prompt.submit`, so an unknown
- * outcome is never retried on its own; the message stays in the chat and says so.
+ * Not every backend supports submission IDs. An unknown outcome is never retried on its own;
+ * the message stays in the chat and says so.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], application = Application::class)
@@ -114,7 +114,7 @@ class DeliveryStatusTest {
         val chat = openChat()
         gateway.failure = IOException("the answer was lost")
 
-        chat.send("hello", emptyList())
+        chat.send("hello", emptyList(), fromComposer = true)
         val unknown = withTimeout(5_000) {
             chat.state.first { s -> (s.items.lastOrNull { it is ChatItem.User } as? ChatItem.User)?.delivery == Delivery.UNKNOWN }
         }
@@ -128,6 +128,33 @@ class DeliveryStatusTest {
         delay(500)
         chat.close()
         assertThat(gateway.prompts.get()).isEqualTo(1)
+    }
+
+    @Test
+    fun `a lost answer to the legacy retry stays unknown without a third submit`() = runBlocking<Unit> {
+        val chat = openChat()
+        gateway.failureFor = { params ->
+            if ("submission_id" in params) RpcException(
+                4000, "invalid params for prompt.submit: submission_id: Extra inputs are not permitted", null,
+            ) else IOException("the answer was lost")
+        }
+        chat.send("hello", emptyList(), fromComposer = true)
+        val settled = withTimeout(5_000) {
+            chat.state.first { state -> state.items.filterIsInstance<ChatItem.User>().any { it.text == "hello" && it.delivery != Delivery.SENDING } }
+        }
+        assertThat(settled.items.filterIsInstance<ChatItem.User>().last().delivery).isEqualTo(Delivery.UNKNOWN)
+        assertThat(gateway.prompts.get()).isEqualTo(2)
+        chat.close()
+    }
+
+    @Test
+    fun `a dashboard refusal of queued is not retried without the queue flag`() = runBlocking<Unit> {
+        val chat = openChat()
+        gateway.failure = RpcException(4000, "invalid params for prompt.submit: queued: Extra inputs are not permitted", null)
+        chat.send("hello", emptyList(), fromComposer = true)
+        withTimeout(5_000) { chat.state.first { state -> state.items.filterIsInstance<ChatItem.User>().any { it.text == "hello" && it.delivery == Delivery.FAILED } } }
+        assertThat(gateway.prompts.get()).isEqualTo(1)
+        chat.close()
     }
 
     @Test
@@ -151,7 +178,7 @@ class DeliveryStatusTest {
     }
 }
 
-/** A connected gateway whose `prompt.submit` either works or fails the way [failure] says. */
+/** A connected gateway with configurable `prompt.submit` failures. */
 private class DeliveryGateway : GatewayChannel {
     private val _state = MutableStateFlow(SocketState.READY)
     override val state: StateFlow<SocketState> = _state
@@ -175,6 +202,8 @@ private class DeliveryGateway : GatewayChannel {
     /** The exception `prompt.submit` throws; null when the server takes it. */
     @Volatile
     var failure: Exception? = null
+    @Volatile
+    var failureFor: ((JsonObject) -> Exception?)? = null
 
     fun drop() {
         _state.value = SocketState.DISCONNECTED
@@ -200,6 +229,7 @@ private class DeliveryGateway : GatewayChannel {
             ).jsonObject
             "prompt.submit" -> {
                 prompts.incrementAndGet()
+                failureFor?.invoke(params)?.let { throw it }
                 failure?.let { throw it }
                 HermesJson.parseToJsonElement("""{"status":"streaming"}""").jsonObject
             }
