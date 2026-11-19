@@ -30,14 +30,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.evsyukov.hermes.AppStrings
 import org.evsyukov.hermes.R
 import org.evsyukov.hermes.chat.ChatController
 import org.evsyukov.hermes.chat.ChatItem
+import org.evsyukov.hermes.chat.Delivery
 import org.evsyukov.hermes.chat.LiveGateway
 import org.evsyukov.hermes.chat.LiveServer
 import org.evsyukov.hermes.chat.closeWithOwnedJobs
 import org.evsyukov.hermes.chat.LocalAttachment
+import org.evsyukov.hermes.data.remote.RpcException
 import org.evsyukov.hermes.data.remote.string
 import org.evsyukov.hermes.data.settings.Settings
 import org.evsyukov.hermes.ui.theme.HermesTheme
@@ -83,7 +87,7 @@ class ChatScreenStateTest {
     private fun field(text: String) = compose.onNode(hasSetTextAction() and hasText(text))
 
     /** A live chat with a turn started on the fake server, as the gateway has it after the first message. */
-    private suspend fun runningChat(): ChatController {
+    private suspend fun runningChat(fromComposer: Boolean = false): ChatController {
         gateway.connect()
         val adopted = CompletableDeferred<Unit>()
         val chat = ChatController(server.session(app, scope, db), gateway, scope, strings, "s1",
@@ -92,8 +96,8 @@ class ChatScreenStateTest {
         // The chat's own join has been applied: the history is on the screen and the live model is
         // known. `!loading` alone is true before the load even starts.
         withTimeout(5_000) { chat.state.first { it.model == "live-model" && !it.loading } }
-        chat.send("first", emptyList())
-        withTimeout(5_000) { while (gateway.count("prompt.submit") < 1) delay(10) }
+        chat.send("first", emptyList(), fromComposer)
+        withTimeout(5_000) { chat.state.first { state -> state.items.filterIsInstance<ChatItem.User>().any { it.text == "first" && it.delivery == Delivery.SENT } } }
         // A recorded submit is not a running server: the fake starts the turn and the chat takes its
         // start, which opens the streaming answer under the message.
         gateway.start("first")
@@ -209,9 +213,54 @@ class ChatScreenStateTest {
         chat.close()
     }
 
+    private fun rejectUnsupportedSubmissionId() {
+        gateway.beforePrompt = { params ->
+            if ("submission_id" in params) throw RpcException(
+                4000,
+                "invalid params for prompt.submit: submission_id: Extra inputs are not permitted — " +
+                    "the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both",
+                null,
+            )
+        }
+    }
+
+    @Test
+    fun `new chat sends on a dashboard that rejects submission IDs before admission`() = runBlocking<Unit> {
+        gateway.connect()
+        rejectUnsupportedSubmissionId()
+        val chat = chat(null)
+        val draft = ChatDraft().apply { text = "first from Android" }
+        compose.setContent { HermesTheme { Screen(chat, draft) } }
+        compose.onNodeWithContentDescription(app.getString(R.string.common_send)).performClick()
+        val settled = withTimeout(5_000) {
+            chat.state.first { s -> s.items.filterIsInstance<ChatItem.User>().any { it.text == "first from Android" && it.delivery != Delivery.SENDING } }
+        }
+        assertThat(settled.items.filterIsInstance<ChatItem.User>().single().delivery).isEqualTo(Delivery.SENT)
+        assertThat(gateway.count("session.create")).isEqualTo(1)
+        val attempts = gateway.calls.filter { it.first == "prompt.submit" }.map { it.second }
+        assertThat(attempts).hasSize(2)
+        assertThat(attempts.first().string("submission_id")).isNotNull()
+        assertThat(attempts.last()).isEqualTo(JsonObject(attempts.first() - "submission_id"))
+        assertThat(attempts.last()["queued"]).isEqualTo(JsonPrimitive(true))
+        assertThat(gateway.count("session.interrupt")).isEqualTo(0)
+        chat.close()
+    }
+
     @Test
     fun `multiple follow-ups stay queued and run in order after each real completion`() = runBlocking<Unit> {
-        val chat = runningChat()
+        assertFollowUpOrder(legacy = false)
+    }
+
+    @Test
+    fun `an existing dashboard chat sends and drains follow-ups in order without submission IDs`() = runBlocking<Unit> {
+        rejectUnsupportedSubmissionId()
+        assertFollowUpOrder(legacy = true)
+    }
+
+    private suspend fun assertFollowUpOrder(legacy: Boolean) {
+        val attemptsPerPrompt = if (legacy) 2 else 1
+        fun attempts() = gateway.calls.filter { it.first == "prompt.submit" }.map { it.second }
+        val chat = runningChat(fromComposer = true)
         val draft = ChatDraft()
         compose.setContent { HermesTheme { Screen(chat, draft) } }
         for (text in listOf("second", "third")) {
@@ -219,18 +268,23 @@ class ChatScreenStateTest {
             compose.onNodeWithContentDescription(app.getString(R.string.composer_queue)).performClick()
         }
         assertThat(chat.followUps.entries.value.map { it.text }).containsExactly("second", "third").inOrder()
-        assertThat(gateway.count("prompt.submit")).isEqualTo(1)
+        assertThat(attempts()).hasSize(attemptsPerPrompt)
         gateway.complete()
-        withTimeout(5_000) { while (gateway.count("prompt.submit") != 2) delay(10) }
+        withTimeout(5_000) { chat.state.first { state -> state.items.filterIsInstance<ChatItem.User>().any { it.text == "second" && it.delivery == Delivery.SENT } } }
         gateway.start("second")
         gateway.delta("second answer")
         withTimeout(5_000) { chat.state.first { s -> s.items.lastOrNull().let { it is ChatItem.Assistant && it.text == "second answer" && it.streaming } } }
-        assertThat(gateway.count("prompt.submit")).isEqualTo(2)
+        assertThat(attempts()).hasSize(2 * attemptsPerPrompt)
         gateway.complete()
-        withTimeout(5_000) { while (gateway.count("prompt.submit") != 3) delay(10) }
-        val prompts = gateway.calls.filter { it.first == "prompt.submit" }.map { it.second }
-        assertThat(prompts.map { it.string("text") }).containsExactly("first", "second", "third").inOrder()
-        assertThat(prompts.drop(1).map { it.string("submission_id") }.toSet()).hasSize(2)
+        withTimeout(5_000) { chat.state.first { state -> state.items.filterIsInstance<ChatItem.User>().any { it.text == "third" && it.delivery == Delivery.SENT } } }
+        val prompts = attempts().chunked(attemptsPerPrompt)
+        assertThat(prompts.map { it.last().string("text") }).containsExactly("first", "second", "third").inOrder()
+        val ids = prompts.map { checkNotNull(it.first().string("submission_id")) }
+        assertThat(ids.toSet()).hasSize(3)
+        prompts.forEach { pair ->
+            assertThat(pair.last()["queued"]).isEqualTo(JsonPrimitive(true))
+            if (legacy) assertThat(pair.last()).isEqualTo(JsonObject(pair.first() - "submission_id"))
+        }
         assertThat(gateway.count("session.interrupt")).isEqualTo(0)
         chat.close()
     }
