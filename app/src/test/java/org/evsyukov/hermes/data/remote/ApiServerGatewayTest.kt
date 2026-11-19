@@ -263,6 +263,17 @@ class ApiServerGatewayTest {
     }
 
     @Test
+    fun `a cancelled run confirms terminal idle without making its error a successful reply`() = runBlocking<Unit> {
+        server.runSse = listOf(sse("id: 1\nevent: run.cancelled\ndata: {\"run_id\":\"run_1\"}\n\n"))
+        ready()
+        gateway.call("prompt.submit", buildJsonObject { put("session_id", "api_1"); put("text", "first") })
+        val ended = waitEvent("error")
+        assertThat(ended.payload.bool("terminal")).isTrue()
+        assertThat(ended.payload.string("message")).isEqualTo("cancelled")
+        assertThat(events.none { it.type == "message.complete" }).isTrue()
+    }
+
+    @Test
     fun `the receipt excludes rows before the boundary and server-injected user rows`() = runBlocking<Unit> {
         server.historyRows = listOf(row(10, "user", "old"), row(11, "assistant", "old answer"))
         server.afterRunRows = listOf(

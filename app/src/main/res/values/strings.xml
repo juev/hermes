@@ -257,6 +257,7 @@
     <string name="composer_file">File</string>
     <string name="composer_stop">Stop</string>
     <string name="composer_queue">Add to queue</string>
+    <string name="chat_followups_queued">Queued on this device (%1$d): %2$s</string>
     <string name="composer_remove">Remove</string>
     <string name="chat_choice_once">Allow once</string>
     <string name="chat_choice_session">Allow in this chat</string>
