@@ -16,24 +16,14 @@ import org.evsyukov.hermes.chat.LocalAttachment
 import java.util.Base64
 import org.evsyukov.hermes.ui.theme.ChatTheme
 
-@Composable
-internal fun ObservationDisclosure(unsaved: Boolean, refresh: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(16.dp).testTag("local-observation-disclosure")) {
-        Text(stringResource(R.string.chat_local_overlap), color = ChatTheme.colors.text, fontSize = 14.sp)
-        if (unsaved) Text(stringResource(R.string.chat_local_unsaved), color = ChatTheme.colors.text, fontSize = 14.sp)
-        TextButton(onClick = refresh) { Text(stringResource(R.string.chat_local_refresh)) }
-    }
-}
-
 /** Archived observations have no live request cards or implicit resubmit action. */
 @Composable
-internal fun ObservationPanel(row: LocalObservation, actions: MessageActions, refresh: () -> Unit, collapse: (Boolean) -> Unit, openLocal: (LocalAttachment) -> Unit = {}, active: Boolean = false) {
+internal fun ObservationPanel(row: LocalObservation, actions: MessageActions, collapse: (Boolean) -> Unit, openLocal: (LocalAttachment) -> Unit = {}, active: Boolean = false) {
     val collapsed = row.collapsed ?: row.reconciled
     val lastUser = row.items.filterIsInstance<ChatItem.User>().lastOrNull()?.key
     val lastAnswer = row.items.filterIsInstance<ChatItem.Assistant>().lastOrNull()?.key
     Column(Modifier.fillMaxWidth().testTag("observation:${row.id}")) {
         Text(stringResource(if (row.reconciled) R.string.chat_local_matched else R.string.chat_local_copy), color = ChatTheme.colors.secondaryText, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
-        if (!row.reconciled) ObservationDisclosure(false, refresh)
         TextButton(onClick = { collapse(!collapsed) }) { Text(stringResource(if (collapsed) R.string.chat_local_reopen else R.string.chat_local_collapse)) }
         if (!collapsed) {
             row.items.forEach { item -> when (item) {

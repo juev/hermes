@@ -26,8 +26,9 @@ import java.util.concurrent.TimeUnit
 class ReconciliationScreenTest {
     @get:Rule val compose = createComposeRule()
     private val app = ApplicationProvider.getApplicationContext<Application>()
-    private fun show(current: ChatController) {
-        compose.setContent { HermesTheme { ChatScreen(current, Settings(), "Synthetic", true, {}, {}, {}, { null }, { error("not requested") }, {}, { c, visible -> c.setVisible(visible) }, remember { ChatDraft() }) } }
+    private val overlapNotice = hasText("Recent on-device replies may overlap stored history", substring = true)
+    private fun show(current: ChatController, openLocal: (LocalAttachment) -> Unit = {}) {
+        compose.setContent { HermesTheme { ChatScreen(current, Settings(), "Synthetic", true, {}, {}, {}, { null }, { error("not requested") }, openLocal, { c, visible -> c.setVisible(visible) }, remember { ChatDraft() }) } }
     }
     @Test fun `ordinary receiptless reply stays in the transcript without copy warnings`() {
         val fixture = FirstHistoryReconciliationTest()
@@ -40,7 +41,7 @@ class ReconciliationScreenTest {
             withTimeout(10_000) { terminal.await() }
             backend.release.countDown(); withTimeout(10_000) { load.await() }
             show(current)
-            compose.onAllNodes(hasText(app.getString(R.string.chat_local_overlap))).assertCountEquals(0)
+            compose.onAllNodes(overlapNotice).assertCountEquals(0)
             compose.onAllNodes(hasText(app.getString(R.string.chat_local_copy))).assertCountEquals(0)
             compose.waitUntil(5_000) { compose.onAllNodes(hasText("done", substring = true)).fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("transcript").performScrollToNode(hasText("done", substring = true))
@@ -50,27 +51,69 @@ class ReconciliationScreenTest {
             assertThat(backend.prompts.get()).isEqualTo(1)
         }
     }
-    @Test fun `starting another turn does not hide the previous local conversation`() {
+    @Test fun `two unmatched copies remain accessible without a mismatch notice`() {
         val fixture = FirstHistoryReconciliationTest()
         fixture.withScreenController({}) { current, backend ->
             check(backend.firstEntered.await(10, TimeUnit.SECONDS))
             withTimeout(10_000) { checkNotNull(current.loadCompletion).await() }
+            val attachment = LocalAttachment("retained.txt", "text/plain", byteArrayOf(1, 2, 3))
             for (prompt in listOf("first local prompt", "second local prompt")) {
                 val terminal = CompletableDeferred<Unit>()
                 current.afterCurrentEvent = { if (it == "message.complete") terminal.complete(Unit) }
-                current.send(prompt, emptyList())
-                withTimeout(10_000) { terminal.await() }
+                current.send(prompt, if (prompt.startsWith("first")) listOf(attachment) else emptyList())
+                withTimeout(10_000) { terminal.await(); checkNotNull(current.submitCompletion).join() }
             }
-            show(current)
+            val copies = current.state.value.observations
+            assertThat(copies).hasSize(2)
+            assertThat(copies.none { it.reconciled }).isTrue()
+            var opened: LocalAttachment? = null
+            show(current) { opened = it }
+            val transcript = compose.onNodeWithTag("transcript")
             // Markdown parsing is asynchronous; all these short rows fit in this viewport.
             compose.waitUntil(5_000) { compose.onAllNodes(hasText("first local prompt")).fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("transcript").performScrollToNode(hasText("first local prompt"))
+            transcript.performScrollToNode(hasText("first local prompt"))
             compose.onNodeWithText("first local prompt").assertIsDisplayed()
-            assertThat(current.state.value.observations).hasSize(2)
+            compose.onAllNodes(overlapNotice).assertCountEquals(0)
+            for (copy in copies) compose.onNodeWithTag("observation:${copy.id}").assertDoesNotExist()
+
+            transcript.performScrollToNode(hasTestTag("local-copies"))
+            compose.onNodeWithTag("local-copies").performTouchInput { click(center) }
+            for (copy in copies) {
+                val tag = "observation:${copy.id}"
+                transcript.performScrollToNode(hasTestTag(tag))
+                compose.onAllNodes(overlapNotice and hasAnyAncestor(hasTestTag(tag))).assertCountEquals(0)
+                val prompt = copy.items.filterIsInstance<ChatItem.User>().single().text
+                compose.onNode(hasText(prompt, substring = true) and hasAnyAncestor(hasTestTag(tag))).assertExists()
+            }
+            val fileLabel = app.getString(R.string.chat_local_file, attachment.name)
+            transcript.performScrollToNode(hasText(fileLabel))
+            compose.onNodeWithText(fileLabel).performClick()
+            compose.runOnIdle {
+                assertThat(opened?.name).isEqualTo(attachment.name)
+                assertThat(opened?.mime).isEqualTo(attachment.mime)
+                assertThat(opened?.bytes).isEqualTo(attachment.bytes)
+            }
             assertThat(backend.prompts.get()).isEqualTo(2)
         }
     }
-    @Test fun `refresh shows server history and keeps the unmatched reply only in recovery`() {
+    @Test fun `a storage failure remains visible without opening recovery`() {
+        FirstHistoryReconciliationTest().withScreenController({}, failJournalWrites = true) { current, backend ->
+            check(backend.firstEntered.await(10, TimeUnit.SECONDS))
+            withTimeout(10_000) { checkNotNull(current.loadCompletion).await() }
+            val terminal = CompletableDeferred<Unit>()
+            current.afterCurrentEvent = { if (it == "message.complete") terminal.complete(Unit) }
+            current.send("retain this reply", emptyList())
+            withTimeout(10_000) {
+                terminal.await()
+                current.state.first { it.observationStorageError }
+            }
+            show(current)
+            compose.onNodeWithText(app.getString(R.string.chat_local_unsaved)).assertIsDisplayed()
+            compose.onAllNodes(hasText(app.getString(R.string.chat_local_copy))).assertCountEquals(0)
+            assertThat(backend.prompts.get()).isEqualTo(1)
+        }
+    }
+    @Test fun `history refresh retains an unmatched reply on success and on visible failure`() {
         val fixture = FirstHistoryReconciliationTest()
         fixture.withScreenController({ it.holdFirst = true; it.freezeFirst = true; it.toolRich = true }) { current, backend ->
             check(backend.firstEntered.await(10, TimeUnit.SECONDS))
@@ -92,7 +135,7 @@ class ReconciliationScreenTest {
             backend.secondRelease.countDown(); withTimeout(10_000) { refresh.await() }
             compose.waitForIdle()
             assertThat(current.state.value.currentObservationId).isNull()
-            compose.onAllNodes(hasText(app.getString(R.string.chat_local_overlap))).assertCountEquals(0)
+            compose.onAllNodes(overlapNotice).assertCountEquals(0)
             compose.onAllNodes(hasText("done")).assertCountEquals(0)
             compose.onNodeWithTag("transcript").performScrollToNode(hasText("hi"))
             compose.onNodeWithText("hi").assertIsDisplayed()
@@ -100,6 +143,18 @@ class ReconciliationScreenTest {
             assertThat(current.state.value.observations.single().reconciled).isFalse()
             compose.onNodeWithTag("transcript").performScrollToNode(hasTestTag("local-copies"))
             compose.onNodeWithTag("local-copies").performTouchInput { click(center) }
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText("done"))
+            compose.onNodeWithText("done").assertIsDisplayed()
+
+            val histories = backend.histories.get()
+            backend.frozen = "not valid JSON"
+            compose.onNodeWithTag("transcript").performScrollToNode(hasText(app.getString(R.string.chat_local_refresh)))
+            compose.onNodeWithText(app.getString(R.string.chat_local_refresh)).performTouchInput { click(center) }
+            val failure = withTimeout(10_000) { checkNotNull(current.state.first { it.error != null }.error) }
+            compose.onNodeWithText(failure).assertIsDisplayed()
+            assertThat(backend.histories.get()).isGreaterThan(histories)
+            assertThat(current.state.value.observations.single().items).isEqualTo(retained)
+            assertThat(current.state.value.observations.single().reconciled).isFalse()
             compose.onNodeWithTag("transcript").performScrollToNode(hasText("done"))
             compose.onNodeWithText("done").assertIsDisplayed()
             assertThat(backend.prompts.get()).isEqualTo(1)

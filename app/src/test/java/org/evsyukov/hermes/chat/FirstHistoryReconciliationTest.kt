@@ -467,8 +467,13 @@ class FirstHistoryReconciliationTest {
     @Test fun `fresh remote running snapshot succeeds without intervening event`() = scenario { startupSnapshot(null) }
     @Test fun `fresh remote idle snapshot succeeds without intervening event`() = scenario { startupSnapshot(null, running = false) }
 
-    internal fun withScreenController(configure: (HistoryBackend) -> Unit, body: suspend (ChatController, HistoryBackend) -> Unit) = scenario {
+    internal fun withScreenController(
+        configure: (HistoryBackend) -> Unit,
+        failJournalWrites: Boolean = false,
+        body: suspend (ChatController, HistoryBackend) -> Unit,
+    ) = scenario {
         configure(backend)
+        if (failJournalWrites) journal = org.evsyukov.hermes.testing.FaultJournal(scope).apply { fail = true }
         val controller = open()
         body(controller, backend)
     }

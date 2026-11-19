@@ -611,7 +611,6 @@
     <string name="chat_local_show_copies">On-device copies (%1$d)</string>
     <string name="chat_local_hide_copies">Hide on-device copies (%1$d)</string>
     <string name="chat_local_copy">On-device reply · not matched to stored history</string>
-    <string name="chat_local_overlap">Recent on-device replies may overlap stored history and cannot yet be matched. Both copies are kept. Refresh reads history only; it never sends a message.</string>
     <string name="chat_local_unsaved">Some on-device replies could not be saved. Keep this chat open until local storage is available.</string>
     <string name="chat_local_refresh">Refresh stored history</string>
     <string name="chat_local_matched">On-device copy · matched to stored history</string>

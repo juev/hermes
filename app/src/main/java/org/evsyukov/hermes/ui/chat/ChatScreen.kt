@@ -397,7 +397,12 @@ fun ChatScreen(
                     // Recovery is opt-in, above the transcript, never a replacement for each reply.
                     if (showCopies) state.observations.asReversed().forEach { observation ->
                         item(key = "observation:${observation.id}") {
-                            ObservationPanel(observation, actions, controller::refreshHistory, { controller.reviewObservation(observation.id, it) }, openLocal)
+                            ObservationPanel(observation, actions, { controller.reviewObservation(observation.id, it) }, openLocal)
+                        }
+                    }
+                    if (showCopies && state.observations.any { !it.reconciled }) {
+                        item(key = "local-copies-refresh") {
+                            TextButton(onClick = controller::refreshHistory) { Text(stringResource(R.string.chat_local_refresh)) }
                         }
                     }
                     if (state.observations.isNotEmpty()) {
